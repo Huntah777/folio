@@ -1,0 +1,831 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Folio · Second Brain</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600&family=Manrope:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css"/>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+tailwind.config = {
+  theme: { extend: {
+    colors: {
+      ink:  { 950:'#0a0a0b', 900:'#101012', 800:'#17171b', 700:'#1f1f24', 600:'#2a2a31', 500:'#3a3a44' },
+      bone: { 50:'#fafaf7', 100:'#f4f3ee', 200:'#e6e4dc', 300:'#c9c6b8', 400:'#9a9788' },
+    },
+    fontFamily: {
+      display: ['Fraunces','Georgia','serif'],
+      sans:    ['Manrope','system-ui','sans-serif'],
+      mono:    ['"JetBrains Mono"','monospace'],
+    }
+  }}
+}
+</script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;background:#0a0a0b;color:#f4f3ee;font-family:'Manrope',system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+::-webkit-scrollbar{width:5px;height:5px}
+::-webkit-scrollbar-thumb{background:#2a2a31;border-radius:4px}
+::-webkit-scrollbar-track{background:transparent}
+
+/* layout */
+#app{display:flex;height:100vh;overflow:hidden}
+.sidebar{width:232px;min-width:232px;background:#0d0d10;border-right:1px solid #1f1f24;display:flex;flex-direction:column;overflow:hidden}
+.main{flex:1;overflow:hidden;display:flex;flex-direction:column}
+
+/* sidebar nav */
+.nav-item{display:flex;align-items:center;gap:9px;padding:7px 10px;border-radius:8px;font-size:13px;font-weight:500;color:#9a9788;cursor:pointer;transition:all 110ms;user-select:none}
+.nav-item:hover{background:#17171b;color:#f4f3ee}
+.nav-item.active{background:#1f1f24;color:#f4f3ee}
+.nav-item svg{width:15px;height:15px;flex-shrink:0}
+
+/* cards */
+.card{background:linear-gradient(160deg,#141418,#101012);border:1px solid #1f1f24;border-radius:12px}
+.note-card{padding:14px;cursor:pointer;transition:all 150ms}
+.note-card:hover{border-color:#2a2a31;transform:translateY(-1px);box-shadow:0 6px 20px -8px #000}
+.note-card.sel{border-color:#818cf8;box-shadow:0 0 0 1px rgba(129,140,248,.18)}
+
+/* editor */
+.editor-title{background:transparent;border:none;outline:none;font-family:'Fraunces',serif;font-size:30px;font-weight:600;color:#f4f3ee;width:100%;resize:none;line-height:1.25}
+.editor-body{background:transparent;border:none;outline:none;font-family:'Manrope',sans-serif;font-size:14.5px;color:#e6e4dc;line-height:1.75;width:100%;resize:none;flex:1}
+textarea::placeholder{color:#3a3a44}
+input::placeholder{color:#3a3a44}
+input:focus,textarea:focus{outline:none}
+
+/* code block */
+.code-wrap{position:relative;border-radius:8px;overflow:hidden;border:1px solid #2a2a31;background:#0d0d10}
+.code-wrap pre[class*=language-]{margin:0;background:#0d0d10!important;font-size:12.5px;line-height:1.6}
+.code-wrap textarea{position:absolute;inset:0;opacity:0;resize:none;font-family:'JetBrains Mono',monospace;font-size:12.5px;line-height:1.6;padding:12px 16px;border:none;outline:none;caret-color:#f4f3ee;background:transparent;color:transparent;z-index:1;tab-size:2}
+
+/* tag pill */
+.tag{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:99px;font-size:11.5px;font-weight:600;cursor:pointer}
+
+/* tick */
+.tick{width:17px;height:17px;border-radius:5px;border:1.5px solid #3a3a44;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;cursor:pointer;transition:all 120ms}
+.tick.on{background:#818cf8;border-color:#818cf8}
+
+/* cal */
+.cal-cell{border-radius:7px;padding:5px;min-height:72px;cursor:pointer;transition:background 110ms;font-size:12px}
+.cal-cell:hover{background:#17171b}
+.cal-cell.today{background:#17171b}
+.cal-cell.sel{outline:1.5px solid #818cf8}
+.cal-dot{width:6px;height:6px;border-radius:99px;background:#818cf8;margin:1px 0}
+
+/* modal */
+.modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.6);backdrop-filter:blur(3px);z-index:50;display:flex;align-items:center;justify-content:center}
+.modal{background:#131317;border:1px solid #2a2a31;border-radius:14px;width:480px;max-width:95vw;box-shadow:0 24px 64px -12px rgba(0,0,0,.8)}
+
+/* misc */
+.input{background:#17171b;border:1px solid #1f1f24;border-radius:8px;padding:8px 11px;color:#f4f3ee;font-family:'Manrope',sans-serif;font-size:13px;width:100%;transition:border-color 120ms}
+.input:focus{outline:none;border-color:#818cf8}
+.btn-primary{background:#818cf8;color:#fff;border:none;border-radius:8px;padding:8px 16px;font-family:'Manrope',sans-serif;font-size:13px;font-weight:600;cursor:pointer;transition:all 120ms}
+.btn-primary:hover{background:#6366f1}
+.btn-ghost{background:transparent;color:#9a9788;border:1px solid #1f1f24;border-radius:8px;padding:7px 14px;font-family:'Manrope',sans-serif;font-size:13px;cursor:pointer;transition:all 120ms}
+.btn-ghost:hover{border-color:#2a2a31;color:#f4f3ee}
+@keyframes fadeUp{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:none}}
+.fadeUp{animation:fadeUp 220ms ease both}
+.divider{border-top:1px solid #1f1f24}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-javascript.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-typescript.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-rust.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-go.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-sql.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-json.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-css.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-jsx.min.js"></script>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useRef, useMemo, useCallback } = React;
+
+/* ── utils ── */
+const uid = () => Math.random().toString(36).slice(2,9);
+const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+const DAY_SHORT = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+const fmtKey = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+const todayKey = () => fmtKey(new Date());
+const parseKey = s => { const [y,m,d]=s.split('-').map(Number); return new Date(y,m-1,d); };
+
+/* ── storage ── */
+const STORE = 'folio_v1';
+const save = s => { try { localStorage.setItem(STORE, JSON.stringify(s)); } catch {} };
+const load = () => { try { const v=localStorage.getItem(STORE); return v?JSON.parse(v):null; } catch { return null; } };
+
+/* ── seed ── */
+const SEED = () => ({
+  notes: [
+    { id:'n1', emoji:'💡', title:'Welcome to Folio', body:'This is your second brain. Write anything here.\n\nTry creating new notes, linking them with tags, and adding tasks.', tags:['#getting-started'], links:[], created: Date.now(), updated: Date.now() },
+  ],
+  tasks: [
+    { id:'t1', title:'Set up Folio', done:false, priority:'high', due: todayKey(), subtasks:[{id:'s1',title:'Read the welcome note',done:true},{id:'s2',title:'Create your first note',done:false}], created: Date.now() },
+    { id:'t2', title:'Explore the calendar', done:false, priority:'medium', due:'', subtasks:[], created: Date.now() },
+  ],
+  meetings: [
+    { id:'m1', title:'Team standup', date: todayKey(), time:'09:00', duration:30, attendees:'Team', noteId:'' },
+  ],
+  tags: ['#getting-started','#work','#personal','#ideas','#meeting'],
+  ui: { view:'today', noteId: null, calDate: todayKey() },
+});
+
+/* ── icons ── */
+const Ic = {
+  today:   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/><line x1="8" y1="14" x2="8.01" y2="14" strokeWidth="3"/><line x1="12" y1="14" x2="12.01" y2="14" strokeWidth="3"/></svg>,
+  notes:   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><line x1="10" y1="9" x2="8" y2="9"/></svg>,
+  tasks:   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>,
+  cal:     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>,
+  tags:    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82Z"/><line x1="7" y1="7" x2="7.01" y2="7" strokeWidth="3"/></svg>,
+  plus:    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>,
+  x:       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>,
+  trash:   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>,
+  check:   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>,
+  chevD:   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polyline points="6 9 12 15 18 9"/></svg>,
+  link:    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>,
+  code:    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>,
+  img:     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>,
+  copy:    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>,
+};
+
+const LANGS = ['plaintext','javascript','typescript','python','rust','go','bash','sql','json','css','jsx'];
+const TAG_COLORS = { '#getting-started':'#818cf8','#work':'#22d3ee','#personal':'#10b981','#ideas':'#f59e0b','#meeting':'#f43f5e' };
+const tagColor = t => TAG_COLORS[t] || '#818cf8';
+const PRIO = { high:'#f43f5e', medium:'#f59e0b', low:'#22d3ee', none:'#3a3a44' };
+
+/* ── CodeBlock ── */
+function CodeBlock({ value='', lang='javascript', onChange, onLangChange }) {
+  const taRef = useRef(null);
+  const preRef = useRef(null);
+  const lines = value.split('\n').length;
+  const h = Math.max(80, lines * 21 + 28);
+
+  const highlighted = useMemo(() => {
+    if (!window.Prism || !Prism.languages[lang]) return value.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    return Prism.highlight(value, Prism.languages[lang], lang);
+  }, [value, lang]);
+
+  const sync = () => { if(preRef.current && taRef.current) preRef.current.scrollTop = taRef.current.scrollTop; };
+
+  return (
+    <div style={{marginTop:4}}>
+      <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:6}}>
+        <select value={lang} onChange={e=>onLangChange(e.target.value)}
+          style={{background:'#17171b',border:'1px solid #2a2a31',borderRadius:6,color:'#9a9788',fontSize:11,padding:'3px 8px',fontFamily:'Manrope,sans-serif',cursor:'pointer'}}>
+          {LANGS.map(l=><option key={l} value={l}>{l}</option>)}
+        </select>
+        <button onClick={()=>navigator.clipboard.writeText(value)} style={{background:'none',border:'none',color:'#9a9788',cursor:'pointer',display:'flex',alignItems:'center',gap:3,fontSize:11}}>
+          <svg style={{width:12,height:12}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+          copy
+        </button>
+      </div>
+      <div className="code-wrap" style={{height:h}}>
+        <pre ref={preRef} className={`language-${lang}`} style={{height:'100%',overflow:'hidden',padding:'12px 16px'}}>
+          <code className={`language-${lang}`} dangerouslySetInnerHTML={{__html: highlighted+'\n'}}/>
+        </pre>
+        <textarea ref={taRef} value={value} onChange={e=>onChange(e.target.value)} onScroll={sync} spellCheck={false}/>
+      </div>
+    </div>
+  );
+}
+
+/* ── NoteEditor ── */
+function NoteEditor({ note, state, update }) {
+  const [showCode, setShowCode] = useState(false);
+  const [codeLang, setCodeLang] = useState('javascript');
+  const [codeVal, setCodeVal] = useState('');
+  const [showTagPicker, setShowTagPicker] = useState(false);
+  const [tagInput, setTagInput] = useState('');
+
+  if (!note) return (
+    <div style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center',flexDirection:'column',gap:12,color:'#3a3a44'}}>
+      <div style={{fontSize:40}}>📝</div>
+      <div style={{fontFamily:'Fraunces,serif',fontSize:18,color:'#2a2a31'}}>Select or create a note</div>
+    </div>
+  );
+
+  const upNote = patch => update('notes', state.notes.map(n => n.id===note.id ? {...n,...patch,updated:Date.now()} : n));
+
+  const insertCode = () => {
+    if (!codeVal.trim()) return;
+    const fence = '```' + codeLang + '\n' + codeVal + '\n```';
+    upNote({ body: note.body + '\n\n' + fence });
+    setCodeVal(''); setShowCode(false);
+  };
+
+  const removeTag = t => upNote({ tags: note.tags.filter(x=>x!==t) });
+  const addTag = t => { const clean=t.startsWith('#')?t:'#'+t; if(!note.tags.includes(clean)) upNote({tags:[...note.tags,clean]}); };
+
+  const bodyParts = useMemo(() => {
+    const parts = []; let rest = note.body || '';
+    const re = /```(\w+)?\n([\s\S]*?)```/g; let m; let last=0;
+    while((m=re.exec(rest))!==null){
+      if(m.index>last) parts.push({type:'text',content:rest.slice(last,m.index)});
+      parts.push({type:'code',lang:m[1]||'plaintext',content:m[2]});
+      last=m.index+m[0].length;
+    }
+    if(last<rest.length) parts.push({type:'text',content:rest.slice(last)});
+    return parts.length ? parts : [{type:'text',content:''}];
+  }, [note.body]);
+
+  return (
+    <div style={{flex:1,display:'flex',flexDirection:'column',overflow:'hidden'}}>
+      {/* header */}
+      <div style={{padding:'24px 32px 0',flexShrink:0}}>
+        <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:16}}>
+          <span style={{fontSize:28,cursor:'pointer'}} title="Click to change emoji"
+            onClick={()=>{const emojis=['📝','💡','🔬','📚','🎯','🔧','🗓','⭐','🚀','🧠'];upNote({emoji:emojis[Math.floor(Math.random()*emojis.length)]})}}>
+            {note.emoji||'📝'}
+          </span>
+          <textarea className="editor-title" rows={1} value={note.title}
+            onChange={e=>{e.target.style.height='auto';e.target.style.height=e.target.scrollHeight+'px';upNote({title:e.target.value})}}
+            placeholder="Untitled" style={{height:'auto'}}/>
+        </div>
+        <div style={{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap',paddingBottom:12}} className="divider">
+          {note.tags.map(t=>(
+            <span key={t} className="tag" style={{background:`${tagColor(t)}18`,color:tagColor(t)}}>
+              {t}
+              <span onClick={()=>removeTag(t)} style={{cursor:'pointer',opacity:.7,marginLeft:2}}>×</span>
+            </span>
+          ))}
+          {showTagPicker ? (
+            <form onSubmit={e=>{e.preventDefault();addTag(tagInput);setTagInput('');setShowTagPicker(false)}} style={{display:'flex',gap:4}}>
+              <input autoFocus value={tagInput} onChange={e=>setTagInput(e.target.value)} placeholder="#tag"
+                style={{background:'#17171b',border:'1px solid #2a2a31',borderRadius:6,padding:'2px 8px',color:'#f4f3ee',fontSize:12,width:100}}/>
+              <button type="submit" style={{background:'#818cf8',border:'none',borderRadius:6,color:'#fff',padding:'2px 8px',fontSize:12,cursor:'pointer'}}>add</button>
+              <button type="button" onClick={()=>setShowTagPicker(false)} style={{background:'none',border:'none',color:'#9a9788',cursor:'pointer',fontSize:16}}>×</button>
+            </form>
+          ) : (
+            <button onClick={()=>setShowTagPicker(true)}
+              style={{background:'none',border:'1px dashed #2a2a31',borderRadius:6,color:'#3a3a44',padding:'2px 8px',fontSize:12,cursor:'pointer',display:'flex',alignItems:'center',gap:3}}>
+              <svg style={{width:10,height:10}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>tag
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* body */}
+      <div style={{flex:1,overflow:'auto',padding:'16px 32px 32px'}} className="scrollbar">
+        {bodyParts.map((part,i)=>
+          part.type==='code'
+            ? <CodeBlock key={i} value={part.content} lang={part.lang}
+                onChange={v=>{
+                  const np=[...bodyParts];np[i]={...np[i],content:v};
+                  upNote({body:np.map(p=>p.type==='code'?'```'+p.lang+'\n'+p.content+'\n```':p.content).join('')});
+                }}
+                onLangChange={l=>{
+                  const np=[...bodyParts];np[i]={...np[i],lang:l};
+                  upNote({body:np.map(p=>p.type==='code'?'```'+p.lang+'\n'+p.content+'\n```':p.content).join('')});
+                }}/>
+            : <textarea key={i} className="editor-body" value={part.content}
+                rows={Math.max(4,(part.content.match(/\n/g)||[]).length+2)}
+                onChange={e=>{
+                  const np=[...bodyParts];np[i]={...np[i],content:e.target.value};
+                  upNote({body:np.map(p=>p.type==='code'?'```'+p.lang+'\n'+p.content+'\n```':p.content).join('')});
+                }}
+                placeholder={i===0?'Start writing…':''}/>
+        )}
+
+        {/* code insert */}
+        {showCode ? (
+          <div style={{marginTop:16}}>
+            <CodeBlock value={codeVal} lang={codeLang} onChange={setCodeVal} onLangChange={setCodeLang}/>
+            <div style={{display:'flex',gap:8,marginTop:8}}>
+              <button className="btn-primary" onClick={insertCode} style={{fontSize:12,padding:'5px 12px'}}>Insert snippet</button>
+              <button className="btn-ghost" onClick={()=>setShowCode(false)} style={{fontSize:12,padding:'5px 12px'}}>Cancel</button>
+            </div>
+          </div>
+        ) : (
+          <button onClick={()=>setShowCode(true)}
+            style={{display:'flex',alignItems:'center',gap:6,background:'none',border:'1px dashed #2a2a31',borderRadius:8,color:'#3a3a44',padding:'6px 14px',fontSize:12,cursor:'pointer',marginTop:12}}>
+            {Ic.code} Add code snippet
+          </button>
+        )}
+      </div>
+
+      {/* footer */}
+      <div style={{padding:'8px 32px',borderTop:'1px solid #1f1f24',display:'flex',justifyContent:'space-between',alignItems:'center',flexShrink:0}}>
+        <span style={{fontSize:11,color:'#3a3a44'}}>Updated {new Date(note.updated).toLocaleDateString()}</span>
+        <button onClick={()=>{if(confirm('Delete note?')) update('notes',state.notes.filter(n=>n.id!==note.id)); update('ui',{...state.ui,noteId:null});}}
+          style={{background:'none',border:'none',color:'#3a3a44',cursor:'pointer',display:'flex',alignItems:'center',gap:4,fontSize:12}}>
+          <svg style={{width:13,height:13}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg> delete
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ── NotesView ── */
+function NotesView({ state, update }) {
+  const [search, setSearch] = useState('');
+  const [filterTag, setFilterTag] = useState('');
+  const noteId = state.ui.noteId;
+
+  const filtered = useMemo(() => state.notes.filter(n => {
+    const q = search.toLowerCase();
+    const matchQ = !q || n.title.toLowerCase().includes(q) || (n.body||'').toLowerCase().includes(q);
+    const matchT = !filterTag || n.tags.includes(filterTag);
+    return matchQ && matchT;
+  }), [state.notes, search, filterTag]);
+
+  const newNote = () => {
+    const n = { id:uid(), emoji:'📝', title:'', body:'', tags:[], links:[], created:Date.now(), updated:Date.now() };
+    update('notes', [n, ...state.notes]);
+    update('ui', {...state.ui, noteId:n.id});
+  };
+
+  const selectedNote = state.notes.find(n=>n.id===noteId);
+  const allTags = [...new Set(state.notes.flatMap(n=>n.tags))];
+
+  return (
+    <div style={{display:'flex',height:'100%',overflow:'hidden'}}>
+      {/* list panel */}
+      <div style={{width:280,minWidth:280,borderRight:'1px solid #1f1f24',display:'flex',flexDirection:'column',overflow:'hidden'}}>
+        <div style={{padding:'16px 14px 10px',flexShrink:0}}>
+          <div style={{display:'flex',gap:8,marginBottom:10}}>
+            <input className="input" value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search notes…" style={{flex:1}}/>
+            <button className="btn-primary" onClick={newNote} style={{padding:'8px 12px',display:'flex',alignItems:'center'}}>
+              {React.cloneElement(Ic.plus,{style:{width:15,height:15}})}
+            </button>
+          </div>
+          <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
+            <span onClick={()=>setFilterTag('')} className="tag" style={{background:filterTag===''?'#818cf830':'none',color:filterTag===''?'#818cf8':'#9a9788',border:'1px solid #1f1f24',cursor:'pointer'}}>All</span>
+            {allTags.map(t=>(
+              <span key={t} onClick={()=>setFilterTag(filterTag===t?'':t)} className="tag"
+                style={{background:filterTag===t?`${tagColor(t)}20`:'none',color:filterTag===t?tagColor(t):'#9a9788',border:'1px solid #1f1f24',cursor:'pointer'}}>
+                {t}
+              </span>
+            ))}
+          </div>
+        </div>
+        <div style={{flex:1,overflow:'auto',padding:'0 10px 10px'}} className="scrollbar">
+          {filtered.length===0 && <div style={{color:'#3a3a44',fontSize:13,padding:'20px 4px'}}>No notes found.</div>}
+          {filtered.map(n=>(
+            <div key={n.id} className={`note-card card fadeUp ${noteId===n.id?'sel':''}`}
+              style={{marginBottom:8}} onClick={()=>update('ui',{...state.ui,noteId:n.id})}>
+              <div style={{display:'flex',alignItems:'center',gap:7,marginBottom:5}}>
+                <span style={{fontSize:16}}>{n.emoji||'📝'}</span>
+                <span style={{fontSize:13,fontWeight:600,color:'#f4f3ee',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{n.title||'Untitled'}</span>
+              </div>
+              <div style={{fontSize:12,color:'#9a9788',overflow:'hidden',display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical',lineHeight:1.5,marginBottom:6}}>
+                {(n.body||'').replace(/```[\s\S]*?```/g,'[code]').slice(0,120)}
+              </div>
+              {n.tags.length>0 && (
+                <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
+                  {n.tags.slice(0,3).map(t=>(
+                    <span key={t} className="tag" style={{background:`${tagColor(t)}15`,color:tagColor(t),fontSize:10}}>{t}</span>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+      {/* editor */}
+      <NoteEditor note={selectedNote} state={state} update={update}/>
+    </div>
+  );
+}
+
+/* ── TasksView ── */
+function TasksView({ state, update }) {
+  const [newTitle, setNewTitle] = useState('');
+  const [newPrio, setNewPrio] = useState('medium');
+  const [newDue, setNewDue] = useState('');
+  const [expanded, setExpanded] = useState({});
+  const [subInput, setSubInput] = useState({});
+
+  const toggleTask = id => update('tasks', state.tasks.map(t=>t.id===id?{...t,done:!t.done}:t));
+  const toggleSub = (tid,sid) => update('tasks', state.tasks.map(t=>t.id===tid?{...t,subtasks:t.subtasks.map(s=>s.id===sid?{...s,done:!s.done}:s)}:t));
+  const delTask = id => update('tasks', state.tasks.filter(t=>t.id!==id));
+  const addTask = e => {
+    e.preventDefault();
+    if(!newTitle.trim()) return;
+    update('tasks',[{id:uid(),title:newTitle,done:false,priority:newPrio,due:newDue,subtasks:[],created:Date.now()},...state.tasks]);
+    setNewTitle(''); setNewDue('');
+  };
+  const addSub = (tid) => {
+    const v = subInput[tid]||'';
+    if(!v.trim()) return;
+    update('tasks',state.tasks.map(t=>t.id===tid?{...t,subtasks:[...t.subtasks,{id:uid(),title:v,done:false}]}:t));
+    setSubInput({...subInput,[tid]:''});
+  };
+
+  const groups = [
+    { label:'Today', items: state.tasks.filter(t=>!t.done&&t.due===todayKey()) },
+    { label:'Upcoming', items: state.tasks.filter(t=>!t.done&&t.due&&t.due!==todayKey()) },
+    { label:'No date', items: state.tasks.filter(t=>!t.done&&!t.due) },
+    { label:'Done', items: state.tasks.filter(t=>t.done) },
+  ];
+
+  return (
+    <div style={{flex:1,overflow:'auto',padding:'28px 32px'}} className="scrollbar">
+      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:24}}>
+        <h1 style={{fontFamily:'Fraunces,serif',fontSize:26,fontWeight:600}}>Tasks</h1>
+      </div>
+
+      {/* add task */}
+      <form onSubmit={addTask} style={{display:'flex',gap:8,marginBottom:28,background:'#131317',border:'1px solid #1f1f24',borderRadius:10,padding:'10px 14px'}}>
+        <input className="input" value={newTitle} onChange={e=>setNewTitle(e.target.value)} placeholder="New task…" style={{flex:1,background:'transparent',border:'none',padding:0,fontSize:14}}/>
+        <select value={newPrio} onChange={e=>setNewPrio(e.target.value)} style={{background:'#17171b',border:'1px solid #2a2a31',borderRadius:6,color:PRIO[newPrio],fontSize:12,padding:'4px 8px'}}>
+          {Object.keys(PRIO).map(p=><option key={p} value={p}>{p}</option>)}
+        </select>
+        <input type="date" value={newDue} onChange={e=>setNewDue(e.target.value)} style={{background:'#17171b',border:'1px solid #2a2a31',borderRadius:6,color:'#9a9788',fontSize:12,padding:'4px 8px'}}/>
+        <button className="btn-primary" type="submit" style={{padding:'6px 14px',fontSize:13}}>Add</button>
+      </form>
+
+      {groups.map(g=>g.items.length===0?null:(
+        <div key={g.label} style={{marginBottom:28}}>
+          <div style={{fontSize:11,fontWeight:700,letterSpacing:'.08em',color:'#3a3a44',textTransform:'uppercase',marginBottom:10}}>{g.label} <span style={{color:'#818cf8'}}>({g.items.length})</span></div>
+          {g.items.map(t=>(
+            <div key={t.id} style={{marginBottom:6}}>
+              <div className="task-row" style={{display:'flex',alignItems:'center',gap:10,padding:'9px 12px',borderRadius:8,background:'#131317',border:'1px solid #1f1f24'}}>
+                <span className={`tick${t.done?' on':''}`} onClick={()=>toggleTask(t.id)}>
+                  {t.done&&<svg style={{width:10,height:10}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><polyline points="20 6 9 17 4 12"/></svg>}
+                </span>
+                <span style={{flex:1,fontSize:13.5,color:t.done?'#3a3a44':'#f4f3ee',textDecoration:t.done?'line-through':'none'}}>{t.title}</span>
+                <span style={{width:8,height:8,borderRadius:99,background:PRIO[t.priority||'none'],flexShrink:0}}/>
+                {t.due&&<span style={{fontSize:11,color:'#9a9788'}}>{t.due}</span>}
+                <button onClick={()=>setExpanded({...expanded,[t.id]:!expanded[t.id]})} style={{background:'none',border:'none',color:'#9a9788',cursor:'pointer',fontSize:11}}>
+                  {t.subtasks.length>0?`${t.subtasks.filter(s=>s.done).length}/${t.subtasks.length}`:'+sub'}
+                </button>
+                <button onClick={()=>delTask(t.id)} style={{background:'none',border:'none',color:'#3a3a44',cursor:'pointer'}}>
+                  <svg style={{width:13,height:13}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                </button>
+              </div>
+              {expanded[t.id]&&(
+                <div style={{paddingLeft:32,marginTop:4}}>
+                  {t.subtasks.map(s=>(
+                    <div key={s.id} style={{display:'flex',alignItems:'center',gap:8,padding:'5px 8px',borderRadius:6}}>
+                      <span className={`tick${s.done?' on':''}`} onClick={()=>toggleSub(t.id,s.id)} style={{width:14,height:14,borderRadius:4}}>
+                        {s.done&&<svg style={{width:8,height:8}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><polyline points="20 6 9 17 4 12"/></svg>}
+                      </span>
+                      <span style={{fontSize:12.5,color:s.done?'#3a3a44':'#c9c6b8',textDecoration:s.done?'line-through':'none'}}>{s.title}</span>
+                    </div>
+                  ))}
+                  <form onSubmit={e=>{e.preventDefault();addSub(t.id);}} style={{display:'flex',gap:6,marginTop:4}}>
+                    <input value={subInput[t.id]||''} onChange={e=>setSubInput({...subInput,[t.id]:e.target.value})}
+                      placeholder="Add subtask…" style={{background:'transparent',border:'none',borderBottom:'1px solid #2a2a31',color:'#9a9788',fontSize:12,padding:'3px 0',outline:'none',flex:1}}/>
+                    <button type="submit" style={{background:'none',border:'none',color:'#818cf8',fontSize:12,cursor:'pointer'}}>add</button>
+                  </form>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* ── CalendarView ── */
+function CalendarView({ state, update }) {
+  const [showModal, setShowModal] = useState(false);
+  const [form, setForm] = useState({ title:'', time:'09:00', duration:30, attendees:'' });
+
+  const calDate = state.ui.calDate ? parseKey(state.ui.calDate) : new Date();
+  const selDate = state.ui.calDate || todayKey();
+
+  const year = calDate.getFullYear(), month = calDate.getMonth();
+  const firstDay = new Date(year,month,1).getDay();
+  const daysInMonth = new Date(year,month+1,0).getDate();
+  const today = todayKey();
+
+  const cells = [];
+  for(let i=0;i<firstDay;i++) cells.push(null);
+  for(let d=1;d<=daysInMonth;d++) cells.push(new Date(year,month,d));
+
+  const meetingsOnDay = d => state.meetings.filter(m=>m.date===fmtKey(d));
+  const todayMeetings = state.meetings.filter(m=>m.date===selDate).sort((a,b)=>a.time.localeCompare(b.time));
+
+  const nav = dir => {
+    const d = new Date(year, month+dir, 1);
+    update('ui',{...state.ui, calDate: fmtKey(d)});
+  };
+
+  const addMeeting = e => {
+    e.preventDefault();
+    if(!form.title.trim()) return;
+    const m = { id:uid(), ...form, date:selDate, noteId:'' };
+    update('meetings',[...state.meetings, m]);
+    setShowModal(false); setForm({title:'',time:'09:00',duration:30,attendees:''});
+  };
+
+  const openMeetingNote = m => {
+    const body = `## Attendees\n${m.attendees||'—'}\n\n## Agenda\n- \n\n## Notes\n\n## Action Items\n- [ ] `;
+    const n = { id:uid(), emoji:'🗓', title:`${m.title} — ${m.date}`, body, tags:['#meeting'], links:[], created:Date.now(), updated:Date.now() };
+    update('notes',[n,...state.notes]);
+    update('meetings',state.meetings.map(x=>x.id===m.id?{...x,noteId:n.id}:x));
+    update('ui',{...state.ui,view:'notes',noteId:n.id});
+  };
+
+  const delMeeting = id => update('meetings',state.meetings.filter(m=>m.id!==id));
+
+  return (
+    <div style={{display:'flex',height:'100%',overflow:'hidden'}}>
+      {/* calendar grid */}
+      <div style={{flex:1,padding:'24px 24px',overflow:'auto'}} className="scrollbar">
+        <div style={{display:'flex',alignItems:'center',gap:16,marginBottom:20}}>
+          <button onClick={()=>nav(-1)} style={{background:'none',border:'1px solid #1f1f24',borderRadius:7,color:'#9a9788',padding:'5px 10px',cursor:'pointer',fontSize:16}}>‹</button>
+          <h2 style={{fontFamily:'Fraunces,serif',fontSize:22,fontWeight:600,flex:1}}>{MONTHS[month]} {year}</h2>
+          <button onClick={()=>nav(1)} style={{background:'none',border:'1px solid #1f1f24',borderRadius:7,color:'#9a9788',padding:'5px 10px',cursor:'pointer',fontSize:16}}>›</button>
+          <button onClick={()=>update('ui',{...state.ui,calDate:today})} style={{background:'none',border:'1px solid #1f1f24',borderRadius:7,color:'#9a9788',padding:'5px 12px',cursor:'pointer',fontSize:12}}>Today</button>
+        </div>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(7,1fr)',gap:4,marginBottom:6}}>
+          {DAY_SHORT.map(d=><div key={d} style={{fontSize:11,color:'#3a3a44',textAlign:'center',fontWeight:600,padding:'4px 0'}}>{d}</div>)}
+        </div>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(7,1fr)',gap:4}}>
+          {cells.map((d,i)=> d===null ? <div key={`e${i}`}/> : (
+            <div key={d.toISOString()} className={`cal-cell${fmtKey(d)===today?' today':''}${fmtKey(d)===selDate?' sel':''}`}
+              onClick={()=>update('ui',{...state.ui,calDate:fmtKey(d)})}>
+              <div style={{fontSize:12,fontWeight:fmtKey(d)===today?700:400,color:fmtKey(d)===today?'#818cf8':'#c9c6b8',marginBottom:3}}>{d.getDate()}</div>
+              {meetingsOnDay(d).slice(0,2).map(m=>(
+                <div key={m.id} className="cal-dot" style={{background:'#818cf8',borderRadius:3,height:4,width:'70%',marginBottom:2}}/>
+              ))}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* day panel */}
+      <div style={{width:300,borderLeft:'1px solid #1f1f24',display:'flex',flexDirection:'column',overflow:'hidden'}}>
+        <div style={{padding:'20px 16px 12px',borderBottom:'1px solid #1f1f24',flexShrink:0}}>
+          <div style={{fontFamily:'Fraunces,serif',fontSize:16,fontWeight:600,marginBottom:2}}>
+            {selDate === today ? 'Today' : parseKey(selDate).toLocaleDateString('en-GB',{weekday:'long',day:'numeric',month:'short'})}
+          </div>
+          <button className="btn-primary" onClick={()=>setShowModal(true)} style={{fontSize:12,padding:'5px 12px',marginTop:10,width:'100%'}}>+ Add meeting</button>
+        </div>
+        <div style={{flex:1,overflow:'auto',padding:'12px'}} className="scrollbar">
+          {todayMeetings.length===0 && <div style={{color:'#3a3a44',fontSize:12,padding:'8px 4px'}}>No meetings.</div>}
+          {todayMeetings.map(m=>(
+            <div key={m.id} style={{background:'#131317',border:'1px solid rgba(129,140,248,.2)',borderRadius:10,padding:'12px 14px',marginBottom:8}}>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
+                <div>
+                  <div style={{fontSize:13.5,fontWeight:600,color:'#f4f3ee',marginBottom:3}}>{m.title}</div>
+                  <div style={{fontSize:11.5,color:'#9a9788'}}>{m.time} · {m.duration} min</div>
+                  {m.attendees&&<div style={{fontSize:11,color:'#9a9788',marginTop:2}}>{m.attendees}</div>}
+                </div>
+                <button onClick={()=>delMeeting(m.id)} style={{background:'none',border:'none',color:'#3a3a44',cursor:'pointer'}}>
+                  <svg style={{width:13,height:13}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                </button>
+              </div>
+              <button onClick={()=>openMeetingNote(m)}
+                style={{marginTop:8,background:'none',border:'1px solid #2a2a31',borderRadius:6,color:'#818cf8',fontSize:11.5,padding:'4px 10px',cursor:'pointer',width:'100%'}}>
+                {m.noteId?'Open meeting note':'Create meeting note'}
+              </button>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* add meeting modal */}
+      {showModal&&(
+        <div className="modal-bg" onClick={e=>{if(e.target===e.currentTarget)setShowModal(false)}}>
+          <div className="modal fadeUp">
+            <div style={{padding:'20px 24px',borderBottom:'1px solid #1f1f24',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+              <span style={{fontFamily:'Fraunces,serif',fontSize:17,fontWeight:600}}>New meeting</span>
+              <button onClick={()=>setShowModal(false)} style={{background:'none',border:'none',color:'#9a9788',cursor:'pointer',fontSize:20}}>×</button>
+            </div>
+            <form onSubmit={addMeeting} style={{padding:'20px 24px',display:'flex',flexDirection:'column',gap:14}}>
+              <div><label style={{fontSize:12,color:'#9a9788',display:'block',marginBottom:5}}>Title</label>
+                <input className="input" value={form.title} onChange={e=>setForm({...form,title:e.target.value})} placeholder="Meeting title" autoFocus required/></div>
+              <div style={{display:'flex',gap:12}}>
+                <div style={{flex:1}}><label style={{fontSize:12,color:'#9a9788',display:'block',marginBottom:5}}>Time</label>
+                  <input type="time" className="input" value={form.time} onChange={e=>setForm({...form,time:e.target.value})}/></div>
+                <div style={{flex:1}}><label style={{fontSize:12,color:'#9a9788',display:'block',marginBottom:5}}>Duration (min)</label>
+                  <input type="number" className="input" value={form.duration} min={5} max={480} onChange={e=>setForm({...form,duration:+e.target.value})}/></div>
+              </div>
+              <div><label style={{fontSize:12,color:'#9a9788',display:'block',marginBottom:5}}>Attendees</label>
+                <input className="input" value={form.attendees} onChange={e=>setForm({...form,attendees:e.target.value})} placeholder="Names or emails"/></div>
+              <div style={{display:'flex',gap:8,justifyContent:'flex-end',paddingTop:4}}>
+                <button type="button" className="btn-ghost" onClick={()=>setShowModal(false)}>Cancel</button>
+                <button type="submit" className="btn-primary">Add meeting</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── TodayView ── */
+function TodayView({ state, update }) {
+  const hour = new Date().getHours();
+  const greeting = hour<12?'Good morning':hour<17?'Good afternoon':'Good evening';
+  const todayMeetings = state.meetings.filter(m=>m.date===todayKey()).sort((a,b)=>a.time.localeCompare(b.time));
+  const todayTasks = state.tasks.filter(t=>!t.done&&t.due===todayKey());
+  const recent = [...state.notes].sort((a,b)=>b.updated-a.updated).slice(0,4);
+
+  const toggleTask = id => update('tasks',state.tasks.map(t=>t.id===id?{...t,done:!t.done}:t));
+
+  return (
+    <div style={{flex:1,overflow:'auto',padding:'32px 36px'}} className="scrollbar">
+      <div style={{fontFamily:'Fraunces,serif',fontSize:28,fontWeight:600,marginBottom:4}}>{greeting}</div>
+      <div style={{color:'#9a9788',fontSize:13.5,marginBottom:32}}>
+        {new Date().toLocaleDateString('en-GB',{weekday:'long',day:'numeric',month:'long',year:'numeric'})}
+      </div>
+
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:20,maxWidth:820}}>
+        {/* tasks */}
+        <div className="card" style={{padding:'18px 20px'}}>
+          <div style={{fontSize:11,fontWeight:700,letterSpacing:'.08em',color:'#818cf8',textTransform:'uppercase',marginBottom:12}}>Tasks today</div>
+          {todayTasks.length===0&&<div style={{color:'#3a3a44',fontSize:13}}>All clear 🎉</div>}
+          {todayTasks.map(t=>(
+            <div key={t.id} style={{display:'flex',alignItems:'center',gap:9,padding:'6px 0',borderBottom:'1px solid #1f1f2420'}}>
+              <span className={`tick${t.done?' on':''}`} onClick={()=>toggleTask(t.id)} style={{width:15,height:15,borderRadius:4}}>
+                {t.done&&<svg style={{width:8,height:8}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><polyline points="20 6 9 17 4 12"/></svg>}
+              </span>
+              <span style={{flex:1,fontSize:13,color:t.done?'#3a3a44':'#f4f3ee'}}>{t.title}</span>
+              <span style={{width:7,height:7,borderRadius:99,background:PRIO[t.priority||'none'],flexShrink:0}}/>
+            </div>
+          ))}
+          <button onClick={()=>update('ui',{...state.ui,view:'tasks'})}
+            style={{marginTop:12,background:'none',border:'none',color:'#818cf8',fontSize:12,cursor:'pointer',padding:0}}>View all tasks →</button>
+        </div>
+
+        {/* meetings */}
+        <div className="card" style={{padding:'18px 20px'}}>
+          <div style={{fontSize:11,fontWeight:700,letterSpacing:'.08em',color:'#10b981',textTransform:'uppercase',marginBottom:12}}>Meetings today</div>
+          {todayMeetings.length===0&&<div style={{color:'#3a3a44',fontSize:13}}>No meetings today.</div>}
+          {todayMeetings.map(m=>(
+            <div key={m.id} style={{padding:'6px 0',borderBottom:'1px solid #1f1f2420'}}>
+              <div style={{fontSize:13,fontWeight:600,color:'#f4f3ee'}}>{m.time} · {m.title}</div>
+              {m.attendees&&<div style={{fontSize:11.5,color:'#9a9788'}}>{m.attendees}</div>}
+            </div>
+          ))}
+          <button onClick={()=>update('ui',{...state.ui,view:'calendar'})}
+            style={{marginTop:12,background:'none',border:'none',color:'#10b981',fontSize:12,cursor:'pointer',padding:0}}>Open calendar →</button>
+        </div>
+
+        {/* recent notes */}
+        <div className="card" style={{padding:'18px 20px',gridColumn:'1/-1'}}>
+          <div style={{fontSize:11,fontWeight:700,letterSpacing:'.08em',color:'#f59e0b',textTransform:'uppercase',marginBottom:12}}>Recent notes</div>
+          <div style={{display:'grid',gridTemplateColumns:'repeat(2,1fr)',gap:10}}>
+            {recent.map(n=>(
+              <div key={n.id} style={{background:'#17171b',border:'1px solid #1f1f24',borderRadius:9,padding:'12px 14px',cursor:'pointer',transition:'border-color 120ms'}}
+                onClick={()=>update('ui',{...state.ui,view:'notes',noteId:n.id})}
+                onMouseEnter={e=>e.currentTarget.style.borderColor='#2a2a31'}
+                onMouseLeave={e=>e.currentTarget.style.borderColor='#1f1f24'}>
+                <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:4}}>
+                  <span style={{fontSize:14}}>{n.emoji||'📝'}</span>
+                  <span style={{fontSize:13,fontWeight:600,color:'#f4f3ee',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{n.title||'Untitled'}</span>
+                </div>
+                <div style={{fontSize:11.5,color:'#9a9788',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{(n.body||'').replace(/```[\s\S]*?```/g,'[code]').slice(0,80)}</div>
+              </div>
+            ))}
+          </div>
+          <button onClick={()=>update('ui',{...state.ui,view:'notes'})}
+            style={{marginTop:12,background:'none',border:'none',color:'#f59e0b',fontSize:12,cursor:'pointer',padding:0}}>All notes →</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ── TagsView ── */
+function TagsView({ state, update }) {
+  const allTags = [...new Set(state.notes.flatMap(n=>n.tags))];
+  return (
+    <div style={{flex:1,overflow:'auto',padding:'28px 32px'}} className="scrollbar">
+      <h1 style={{fontFamily:'Fraunces,serif',fontSize:26,fontWeight:600,marginBottom:24}}>Tags</h1>
+      <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(200px,1fr))',gap:12}}>
+        {allTags.map(t=>{
+          const count = state.notes.filter(n=>n.tags.includes(t)).length;
+          return (
+            <div key={t} className="card" style={{padding:'16px 18px',cursor:'pointer',transition:'border-color 150ms'}}
+              onClick={()=>update('ui',{...state.ui,view:'notes',filterTag:t})}
+              onMouseEnter={e=>e.currentTarget.style.borderColor=tagColor(t)}
+              onMouseLeave={e=>e.currentTarget.style.borderColor='#1f1f24'}>
+              <div style={{width:10,height:10,borderRadius:99,background:tagColor(t),marginBottom:8}}/>
+              <div style={{fontSize:14,fontWeight:600,color:'#f4f3ee',marginBottom:3}}>{t}</div>
+              <div style={{fontSize:12,color:'#9a9788'}}>{count} note{count!==1?'s':''}</div>
+            </div>
+          );
+        })}
+        {allTags.length===0&&<div style={{color:'#3a3a44',fontSize:13}}>No tags yet. Add tags to your notes.</div>}
+      </div>
+    </div>
+  );
+}
+
+/* ── Sidebar ── */
+function Sidebar({ state, update }) {
+  const { view } = state.ui;
+  const recent = [...state.notes].sort((a,b)=>b.updated-a.updated).slice(0,5);
+  const nav = v => update('ui',{...state.ui,view:v});
+
+  const newNote = () => {
+    const n={id:uid(),emoji:'📝',title:'',body:'',tags:[],links:[],created:Date.now(),updated:Date.now()};
+    update('notes',[n,...state.notes]);
+    update('ui',{...state.ui,view:'notes',noteId:n.id});
+  };
+
+  return (
+    <div className="sidebar">
+      {/* logo */}
+      <div style={{padding:'18px 14px 12px',borderBottom:'1px solid #1f1f24',flexShrink:0}}>
+        <div style={{display:'flex',alignItems:'center',gap:9}}>
+          <div style={{width:30,height:30,borderRadius:8,background:'linear-gradient(135deg,#818cf8,#6366f1)',display:'flex',alignItems:'center',justifyContent:'center',boxShadow:'0 4px 12px rgba(99,102,241,.4)'}}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.5" strokeLinecap="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><polyline points="14 2 14 8 20 8"/></svg>
+          </div>
+          <span style={{fontFamily:'Fraunces,serif',fontSize:17,fontWeight:600,color:'#f4f3ee'}}>Folio</span>
+        </div>
+      </div>
+
+      {/* nav */}
+      <div style={{padding:'10px 8px',flexShrink:0}}>
+        {[
+          {id:'today',label:'Today',icon:Ic.today},
+          {id:'notes',label:'Notes',icon:Ic.notes},
+          {id:'tasks',label:'Tasks',icon:Ic.tasks},
+          {id:'calendar',label:'Calendar',icon:Ic.cal},
+          {id:'tags',label:'Tags',icon:Ic.tags},
+        ].map(({id,label,icon})=>(
+          <div key={id} className={`nav-item${view===id?' active':''}`} onClick={()=>nav(id)}>
+            <span style={{width:15,height:15,display:'flex',alignItems:'center',justifyContent:'center'}}>{icon}</span>
+            {label}
+          </div>
+        ))}
+      </div>
+
+      <div className="divider" style={{margin:'4px 8px'}}/>
+
+      {/* quick new note */}
+      <div style={{padding:'8px 8px 4px',flexShrink:0}}>
+        <button onClick={newNote} style={{width:'100%',background:'none',border:'1px dashed #2a2a31',borderRadius:8,color:'#3a3a44',padding:'7px 10px',fontSize:12.5,cursor:'pointer',display:'flex',alignItems:'center',gap:7,fontFamily:'Manrope,sans-serif',transition:'all 120ms'}}
+          onMouseEnter={e=>{e.currentTarget.style.borderColor='#818cf8';e.currentTarget.style.color='#818cf8'}}
+          onMouseLeave={e=>{e.currentTarget.style.borderColor='#2a2a31';e.currentTarget.style.color='#3a3a44'}}>
+          <svg style={{width:12,height:12}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          New note
+        </button>
+      </div>
+
+      {/* recent notes */}
+      <div style={{flex:1,overflow:'auto',padding:'8px 8px'}} className="scrollbar">
+        <div style={{fontSize:10,fontWeight:700,letterSpacing:'.08em',color:'#3a3a44',textTransform:'uppercase',padding:'4px 4px 8px'}}>Recent</div>
+        {recent.map(n=>(
+          <div key={n.id} className={`nav-item${state.ui.noteId===n.id&&view==='notes'?' active':''}`}
+            onClick={()=>update('ui',{...state.ui,view:'notes',noteId:n.id})}
+            style={{fontSize:12.5}}>
+            <span style={{fontSize:13,flexShrink:0}}>{n.emoji||'📝'}</span>
+            <span style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{n.title||'Untitled'}</span>
+          </div>
+        ))}
+      </div>
+
+      {/* tasks count badge */}
+      <div style={{padding:'10px 12px',borderTop:'1px solid #1f1f24',flexShrink:0}}>
+        {(() => { const due=state.tasks.filter(t=>!t.done&&t.due===todayKey()).length; return due>0?(
+          <div style={{fontSize:12,color:'#9a9788'}}><span style={{color:'#818cf8',fontWeight:700}}>{due}</span> task{due!==1?'s':''} due today</div>
+        ):null; })()}
+      </div>
+    </div>
+  );
+}
+
+/* ── App ── */
+function App() {
+  const [state, setStateRaw] = useState(null);
+
+  useEffect(() => {
+    const saved = load();
+    setStateRaw(saved && saved.notes ? saved : SEED());
+  }, []);
+
+  const update = useCallback((key, val) => {
+    setStateRaw(prev => {
+      const next = typeof val === 'function' ? { ...prev, [key]: val(prev[key]) } : { ...prev, [key]: val };
+      save(next);
+      return next;
+    });
+  }, []);
+
+  if (!state) return null;
+
+  const views = { today: TodayView, notes: NotesView, tasks: TasksView, calendar: CalendarView, tags: TagsView };
+  const View = views[state.ui.view] || TodayView;
+
+  return (
+    <div id="app">
+      <Sidebar state={state} update={update}/>
+      <div className="main">
+        <View state={state} update={update}/>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('app')).render(<App/>);
+</script>
+</body>
+</html>
