@@ -1,0 +1,8 @@
+name = "folio"
+compatibility_date = "2025-01-01"
+pages_build_output_dir = "."
+
+[[d1_databases]]
+binding = "DB"
+database_name = "folio-db"
+database_id = "5ed8f4a4-a7b7-420f-b891-5029c8a24617"
