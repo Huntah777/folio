@@ -58,7 +58,7 @@ input:focus,textarea:focus{outline:none}
 /* code block */
 .code-wrap{position:relative;border-radius:8px;overflow:hidden;border:1px solid #2a2a31;background:#0d0d10}
 .code-wrap pre[class*=language-]{margin:0;background:#0d0d10!important;font-size:12.5px;line-height:1.6}
-.code-wrap textarea{position:absolute;inset:0;opacity:0;resize:none;font-family:'JetBrains Mono',monospace;font-size:12.5px;line-height:1.6;padding:12px 16px;border:none;outline:none;caret-color:#f4f3ee;background:transparent;color:transparent;z-index:1;tab-size:2}
+.code-wrap textarea{position:absolute;inset:0;resize:none;font-family:'JetBrains Mono',monospace;font-size:12.5px;line-height:1.6;padding:12px 16px;border:none;outline:none;caret-color:#f4f3ee;background:transparent;color:transparent;z-index:1;tab-size:2}
 
 /* tag pill */
 .tag{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:99px;font-size:11.5px;font-weight:600;cursor:pointer}
@@ -157,16 +157,9 @@ const Cache = {
 
 /* ── seed ── */
 const SEED = () => ({
-  notes: [
-    { id:'n1', emoji:'💡', title:'Welcome to Folio', body:'This is your second brain. Write anything here.\n\nTry creating new notes, linking them with tags, and adding tasks.\n\nUse the toolbar above to format: headings, bullets, todos, quotes, code, and images.', tags:['#getting-started'], links:[], images:[], created: Date.now(), updated: Date.now() },
-  ],
-  tasks: [
-    { id:'t1', title:'Set up Folio', done:false, priority:'high', due: todayKey(), subtasks:[{id:'s1',title:'Read the welcome note',done:true},{id:'s2',title:'Create your first note',done:false}], created: Date.now() },
-    { id:'t2', title:'Explore the calendar', done:false, priority:'medium', due:'', subtasks:[], created: Date.now() },
-  ],
-  meetings: [
-    { id:'m1', title:'Team standup', date: todayKey(), time:'09:00', duration:30, attendees:'Team', noteId:'', recurrence:'weekly', recurrenceDays:[1,2,3,4,5], recurrenceEnd:'' },
-  ],
+  notes: [],
+  tasks: [],
+  meetings: [],
   tags: ['#getting-started','#work','#personal','#ideas','#meeting'],
   ui: { view:'today', noteId: null, calDate: todayKey(), filterTag:'' },
 });
@@ -191,22 +184,33 @@ const Ic = {
 
 const LANGS = ['plaintext','javascript','typescript','python','rust','go','csharp','bash','sql','json','css','jsx'];
 const TAG_COLORS = { '#getting-started':'#818cf8','#work':'#22d3ee','#personal':'#10b981','#ideas':'#f59e0b','#meeting':'#f43f5e' };
-const tagColor = t => TAG_COLORS[t] || '#818cf8';
+const tagColor = t => {
+  if (TAG_COLORS[t]) return TAG_COLORS[t];
+  let h = 0;
+  for (let i = 0; i < t.length; i++) { h = t.charCodeAt(i) + ((h << 5) - h); h |= 0; }
+  return `hsl(${Math.abs(h) % 360},65%,62%)`;
+};
 const PRIO = { high:'#f43f5e', medium:'#f59e0b', low:'#22d3ee', none:'#3a3a44' };
 
 /* ── CodeBlock ── */
 function CodeBlock({ value='', lang='javascript', onChange, onLangChange }) {
-  const taRef = useRef(null);
+  const taRef  = useRef(null);
   const preRef = useRef(null);
-  const lines = value.split('\n').length;
-  const h = Math.max(80, lines * 21 + 28);
+  const gutRef = useRef(null);
+  const lines  = value.split('\n');
+  const lineCount = Math.max(lines.length, 1);
+  const h = Math.max(80, lineCount * 21 + 28);
+  const gutW = Math.max(36, String(lineCount).length * 9 + 20);
 
   const highlighted = useMemo(() => {
     if (!window.Prism || !Prism.languages[lang]) return value.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
     return Prism.highlight(value, Prism.languages[lang], lang);
   }, [value, lang]);
 
-  const sync = () => { if(preRef.current && taRef.current) preRef.current.scrollTop = taRef.current.scrollTop; };
+  const sync = () => {
+    if (preRef.current && taRef.current) preRef.current.scrollTop = taRef.current.scrollTop;
+    if (gutRef.current  && taRef.current) gutRef.current.scrollTop  = taRef.current.scrollTop;
+  };
 
   return (
     <div style={{marginTop:4}}>
@@ -220,11 +224,16 @@ function CodeBlock({ value='', lang='javascript', onChange, onLangChange }) {
           copy
         </button>
       </div>
-      <div className="code-wrap" style={{height:h}}>
-        <pre ref={preRef} className={`language-${lang}`} style={{height:'100%',overflow:'hidden',padding:'12px 16px'}}>
-          <code className={`language-${lang}`} dangerouslySetInnerHTML={{__html: highlighted+'\n'}}/>
-        </pre>
-        <textarea ref={taRef} value={value} onChange={e=>onChange(e.target.value)} onScroll={sync} spellCheck={false}/>
+      <div className="code-wrap" style={{height:h,display:'flex'}}>
+        <div ref={gutRef} style={{width:gutW,flexShrink:0,overflowY:'hidden',padding:'12px 8px 12px 10px',textAlign:'right',fontFamily:'"JetBrains Mono",monospace',fontSize:'12.5px',lineHeight:'1.6',color:'#3a3a44',userSelect:'none',background:'#0d0d10',borderRight:'1px solid #1f1f24'}}>
+          {Array.from({length:lineCount},(_,i)=><div key={i}>{i+1}</div>)}
+        </div>
+        <div style={{flex:1,position:'relative',overflow:'hidden'}}>
+          <pre ref={preRef} className={`language-${lang}`} style={{margin:0,height:'100%',overflow:'hidden',padding:'12px 16px'}}>
+            <code className={`language-${lang}`} dangerouslySetInnerHTML={{__html:highlighted+'\n'}}/>
+          </pre>
+          <textarea ref={taRef} value={value} onChange={e=>onChange(e.target.value)} onScroll={sync} spellCheck={false}/>
+        </div>
       </div>
     </div>
   );
@@ -618,11 +627,14 @@ function TasksView({ state, update }) {
     setSubInput({...subInput,[tid]:''});
   };
 
+  const PRIO_ORDER = { high:0, medium:1, low:2, none:3 };
+  const byPrio = arr => [...arr].sort((a,b)=>(PRIO_ORDER[a.priority||'none']??3)-(PRIO_ORDER[b.priority||'none']??3));
+
   const groups = [
-    { label:'Today', items: state.tasks.filter(t=>!t.done&&t.due===todayKey()) },
-    { label:'Upcoming', items: state.tasks.filter(t=>!t.done&&t.due&&t.due!==todayKey()) },
-    { label:'No date', items: state.tasks.filter(t=>!t.done&&!t.due) },
-    { label:'Done', items: state.tasks.filter(t=>t.done) },
+    { label:'Today',    items: byPrio(state.tasks.filter(t=>!t.done&&t.due===todayKey())) },
+    { label:'Upcoming', items: byPrio(state.tasks.filter(t=>!t.done&&t.due&&t.due!==todayKey())) },
+    { label:'No date',  items: byPrio(state.tasks.filter(t=>!t.done&&!t.due)) },
+    { label:'Done',     items: state.tasks.filter(t=>t.done) },
   ];
 
   return (
@@ -784,7 +796,7 @@ function CalendarView({ state, update }) {
     <div style={{display:'flex',height:'100%',overflow:'hidden'}}>
 
       {/* ── month grid ── */}
-      <div style={{flex:1,padding:'24px',overflow:'auto'}} className="scrollbar">
+      <div style={{flex:1,padding:'24px 24px 24px 40px',overflow:'auto'}} className="scrollbar">
         <div style={{display:'flex',alignItems:'center',gap:16,marginBottom:20}}>
           <button onClick={()=>nav(-1)} style={{background:'none',border:'1px solid #1f1f24',borderRadius:7,color:'#9a9788',padding:'5px 10px',cursor:'pointer',fontSize:16}}>‹</button>
           <h2 style={{fontFamily:'Fraunces,serif',fontSize:22,fontWeight:600,flex:1}}>{MONTHS[month]} {year}</h2>
