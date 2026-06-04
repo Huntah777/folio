@@ -755,7 +755,7 @@ function CalendarView({ state, update }) {
 /* ── TodayView ── */
 function TodayView({ state, update }) {
   const hour = new Date().getHours();
-  const greeting = hour<12?'Good morning':hour<17?'Good afternoon':'Good evening';
+  const greeting = hour<12?'Good morning Abdul-Malik':hour<17?'Good afternoon Abdul-Malik':'Good evening Abdul-Malik';
   const todayMeetings = state.meetings.filter(m=>m.date===todayKey()).sort((a,b)=>a.time.localeCompare(b.time));
   const todayTasks = state.tasks.filter(t=>!t.done&&t.due===todayKey());
   const recent = [...state.notes].sort((a,b)=>b.updated-a.updated).slice(0,4);
