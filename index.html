@@ -119,10 +119,41 @@ const fmtKey = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')
 const todayKey = () => fmtKey(new Date());
 const parseKey = s => { const [y,m,d]=s.split('-').map(Number); return new Date(y,m-1,d); };
 
-/* ── storage ── */
-const STORE = 'folio_v1';
-const save = s => { try { localStorage.setItem(STORE, JSON.stringify(s)); } catch {} };
-const load = () => { try { const v=localStorage.getItem(STORE); return v?JSON.parse(v):null; } catch { return null; } };
+/* ── storage + sync ── */
+const STORE     = 'folio_v1';
+const TOKEN_KEY = 'folio_token';
+const ENDPOINT  = '/api/state';
+
+const Sync = {
+  getToken() { try { return localStorage.getItem(TOKEN_KEY); } catch { return null; } },
+  setToken(t) { try { t ? localStorage.setItem(TOKEN_KEY,t) : localStorage.removeItem(TOKEN_KEY); } catch {} },
+  configured() { return !!this.getToken(); },
+  async load() {
+    const token = this.getToken();
+    if (!token) throw new Error('NO_TOKEN');
+    const r = await fetch(ENDPOINT, { headers: { Authorization:`Bearer ${token}` } });
+    if (r.status === 401) throw new Error('UNAUTHORIZED');
+    if (!r.ok) throw new Error(`HTTP_${r.status}`);
+    return r.json();
+  },
+  async save(state) {
+    const token = this.getToken();
+    if (!token) throw new Error('NO_TOKEN');
+    const r = await fetch(ENDPOINT, {
+      method: 'PUT',
+      headers: { Authorization:`Bearer ${token}`, 'Content-Type':'application/json' },
+      body: JSON.stringify(state),
+    });
+    if (r.status === 401) throw new Error('UNAUTHORIZED');
+    if (!r.ok) throw new Error(`HTTP_${r.status}`);
+    return r.json().catch(()=>({}));
+  },
+};
+
+const Cache = {
+  read() { try { const v=localStorage.getItem(STORE); return v?JSON.parse(v):null; } catch { return null; } },
+  write(s) { try { localStorage.setItem(STORE,JSON.stringify(s)); } catch {} },
+};
 
 /* ── seed ── */
 const SEED = () => ({
@@ -206,6 +237,7 @@ function NoteEditor({ note, state, update }) {
   const [codeVal, setCodeVal] = useState('');
   const [showTagPicker, setShowTagPicker] = useState(false);
   const [tagInput, setTagInput] = useState('');
+  const [tagFocused, setTagFocused] = useState(false);
   const [showLinkSearch, setShowLinkSearch] = useState(false);
   const [linkQuery, setLinkQuery] = useState('');
   const imgInputRef = useRef(null);
@@ -311,14 +343,40 @@ function NoteEditor({ note, state, update }) {
               {t}<span onClick={()=>removeTag(t)} style={{cursor:'pointer',opacity:.7,marginLeft:2}}>×</span>
             </span>
           ))}
-          {showTagPicker ? (
-            <form onSubmit={e=>{e.preventDefault();addTag(tagInput);setTagInput('');setShowTagPicker(false)}} style={{display:'flex',gap:4}}>
-              <input autoFocus value={tagInput} onChange={e=>setTagInput(e.target.value)} placeholder="#tag"
-                style={{background:'#17171b',border:'1px solid #2a2a31',borderRadius:6,padding:'2px 8px',color:'#f4f3ee',fontSize:12,width:100,outline:'none'}}/>
-              <button type="submit" style={{background:'#818cf8',border:'none',borderRadius:6,color:'#fff',padding:'2px 8px',fontSize:12,cursor:'pointer'}}>add</button>
-              <button type="button" onClick={()=>setShowTagPicker(false)} style={{background:'none',border:'none',color:'#9a9788',cursor:'pointer',fontSize:15,lineHeight:1}}>×</button>
-            </form>
-          ) : (
+          {showTagPicker ? (() => {
+            const allTags = [...new Set(state.notes.flatMap(n=>n.tags))];
+            const suggestions = allTags.filter(t =>
+              !note.tags.includes(t) &&
+              (!tagInput || t.toLowerCase().includes(tagInput.replace(/^#/,'').toLowerCase()))
+            ).slice(0,6);
+            return (
+              <div style={{position:'relative'}}>
+                <form onSubmit={e=>{e.preventDefault();addTag(tagInput);setTagInput('');setShowTagPicker(false);setTagFocused(false);}} style={{display:'flex',gap:4}}>
+                  <input autoFocus value={tagInput}
+                    onChange={e=>setTagInput(e.target.value)}
+                    onFocus={()=>setTagFocused(true)}
+                    onBlur={()=>setTimeout(()=>setTagFocused(false),150)}
+                    placeholder="#tag"
+                    style={{background:'#17171b',border:'1px solid #2a2a31',borderRadius:6,padding:'2px 8px',color:'#f4f3ee',fontSize:12,width:110,outline:'none'}}/>
+                  <button type="submit" style={{background:'#818cf8',border:'none',borderRadius:6,color:'#fff',padding:'2px 8px',fontSize:12,cursor:'pointer'}}>add</button>
+                  <button type="button" onClick={()=>{setShowTagPicker(false);setTagInput('');}} style={{background:'none',border:'none',color:'#9a9788',cursor:'pointer',fontSize:15,lineHeight:1}}>×</button>
+                </form>
+                {tagFocused && suggestions.length>0 && (
+                  <div style={{position:'absolute',top:'100%',left:0,marginTop:4,background:'#131317',border:'1px solid #2a2a31',borderRadius:8,padding:'4px',zIndex:20,minWidth:140,boxShadow:'0 8px 24px rgba(0,0,0,.5)'}}>
+                    {suggestions.map(t=>(
+                      <div key={t} onMouseDown={()=>{addTag(t);setTagInput('');setShowTagPicker(false);}}
+                        style={{display:'flex',alignItems:'center',gap:6,padding:'5px 8px',borderRadius:5,cursor:'pointer',transition:'background 100ms'}}
+                        onMouseEnter={e=>e.currentTarget.style.background='#1f1f24'}
+                        onMouseLeave={e=>e.currentTarget.style.background='transparent'}>
+                        <span style={{width:7,height:7,borderRadius:99,background:tagColor(t),flexShrink:0,display:'inline-block'}}/>
+                        <span style={{fontSize:12,color:'#c9c6b8'}}>{t}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })() : (
             <button onClick={()=>setShowTagPicker(true)} style={{background:'none',border:'1px dashed #2a2a31',borderRadius:6,color:'#3a3a44',padding:'2px 8px',fontSize:11,cursor:'pointer',display:'flex',alignItems:'center',gap:3}}>
               <svg style={{width:9,height:9}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>tag
             </button>
@@ -853,7 +911,7 @@ function TagsView({ state, update }) {
 }
 
 /* ── Sidebar ── */
-function Sidebar({ state, update }) {
+function Sidebar({ state, update, syncStatus, onSetup }) {
   const { view } = state.ui;
   const recent = [...state.notes].sort((a,b)=>b.updated-a.updated).slice(0,5);
   const nav = v => update('ui',{...state.ui,view:v});
@@ -917,11 +975,85 @@ function Sidebar({ state, update }) {
         ))}
       </div>
 
-      {/* tasks count badge */}
-      <div style={{padding:'10px 12px',borderTop:'1px solid #1f1f24',flexShrink:0}}>
-        {(() => { const due=state.tasks.filter(t=>!t.done&&t.due===todayKey()).length; return due>0?(
-          <div style={{fontSize:12,color:'#9a9788'}}><span style={{color:'#818cf8',fontWeight:700}}>{due}</span> task{due!==1?'s':''} due today</div>
-        ):null; })()}
+      {/* footer: tasks badge + sync status */}
+      <div style={{padding:'10px 12px',borderTop:'1px solid #1f1f24',flexShrink:0,display:'flex',justifyContent:'space-between',alignItems:'center',gap:6}}>
+        <div style={{fontSize:12,color:'#9a9788',minWidth:0}}>
+          {(() => { const due=state.tasks.filter(t=>!t.done&&t.due===todayKey()).length; return due>0&&(
+            <span><span style={{color:'#818cf8',fontWeight:700}}>{due}</span> task{due!==1?'s':''} due</span>
+          ); })()}
+        </div>
+        <button onClick={onSetup} title="Sync settings"
+          style={{background:'none',border:'none',cursor:'pointer',display:'flex',alignItems:'center',gap:5,padding:'2px 4px',borderRadius:6,flexShrink:0}}
+          onMouseEnter={e=>e.currentTarget.style.background='#17171b'}
+          onMouseLeave={e=>e.currentTarget.style.background='none'}>
+          {syncStatus==='synced'   && <span style={{width:7,height:7,borderRadius:99,background:'#10b981',flexShrink:0,display:'inline-block'}}/>}
+          {syncStatus==='saving'   && <span style={{width:7,height:7,borderRadius:99,background:'#f59e0b',flexShrink:0,display:'inline-block'}}/>}
+          {syncStatus==='offline'  && <span style={{width:7,height:7,borderRadius:99,background:'#f43f5e',flexShrink:0,display:'inline-block'}}/>}
+          {syncStatus==='local'    && <span style={{width:7,height:7,borderRadius:99,background:'#3a3a44',flexShrink:0,display:'inline-block'}}/>}
+          {syncStatus==='unauth'   && <span style={{width:7,height:7,borderRadius:99,background:'#f59e0b',flexShrink:0,display:'inline-block'}}/>}
+          <span style={{fontSize:11,color:'#3a3a44'}}>
+            {syncStatus==='synced'?'synced':syncStatus==='saving'?'saving…':syncStatus==='offline'?'offline':syncStatus==='unauth'?'re-auth':'local'}
+          </span>
+          <svg style={{width:12,height:12,color:'#3a3a44'}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2"/></svg>
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ── SetupModal ── */
+function SetupModal({ onClose }) {
+  const [token, setToken] = useState(Sync.getToken() || '');
+  const [status, setStatus] = useState('');
+
+  const save = async e => {
+    e.preventDefault();
+    const t = token.trim();
+    if (!t) { Sync.setToken(null); setStatus('cleared'); return; }
+    Sync.setToken(t);
+    setStatus('testing…');
+    try {
+      await Sync.load();
+      setStatus('✓ Connected!');
+      setTimeout(onClose, 900);
+    } catch(err) {
+      setStatus(err.message === 'UNAUTHORIZED' ? '✗ Wrong token' : '✗ Could not reach API');
+    }
+  };
+
+  return (
+    <div className="modal-bg" onClick={e=>{ if(e.target===e.currentTarget) onClose(); }}>
+      <div className="modal fadeUp">
+        <div style={{padding:'20px 24px',borderBottom:'1px solid #1f1f24',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+          <div>
+            <div style={{fontFamily:'Fraunces,serif',fontSize:17,fontWeight:600}}>Sync settings</div>
+            <div style={{fontSize:12,color:'#9a9788',marginTop:2}}>Connect to Cloudflare D1 for cross-device sync</div>
+          </div>
+          <button onClick={onClose} style={{background:'none',border:'none',color:'#9a9788',cursor:'pointer',fontSize:20,lineHeight:1}}>×</button>
+        </div>
+        <form onSubmit={save} style={{padding:'20px 24px',display:'flex',flexDirection:'column',gap:14}}>
+          <div>
+            <label style={{fontSize:12,color:'#9a9788',display:'block',marginBottom:6}}>Sync token <span style={{color:'#3a3a44'}}>(set as SYNC_TOKEN in Cloudflare Pages env vars)</span></label>
+            <input className="input" type="password" value={token} onChange={e=>setToken(e.target.value)}
+              placeholder="Paste your secret token…" autoFocus/>
+          </div>
+          {status && (
+            <div style={{fontSize:12,color:status.startsWith('✓')?'#10b981':status.startsWith('✗')?'#f43f5e':'#f59e0b'}}>{status}</div>
+          )}
+          <div style={{background:'#17171b',border:'1px solid #1f1f24',borderRadius:8,padding:'12px 14px',fontSize:12,color:'#9a9788',lineHeight:1.6}}>
+            <div style={{fontWeight:700,color:'#c9c6b8',marginBottom:6}}>Setup steps</div>
+            <ol style={{paddingLeft:16,display:'flex',flexDirection:'column',gap:3}}>
+              <li>Create a D1 database in Cloudflare and run <code style={{background:'#0d0d10',padding:'1px 5px',borderRadius:3,color:'#818cf8'}}>schema.sql</code></li>
+              <li>Add D1 binding named <code style={{background:'#0d0d10',padding:'1px 5px',borderRadius:3,color:'#818cf8'}}>DB</code> in Pages → Settings → Functions</li>
+              <li>Add env var <code style={{background:'#0d0d10',padding:'1px 5px',borderRadius:3,color:'#818cf8'}}>SYNC_TOKEN</code> (any secret string you choose)</li>
+              <li>Paste that same secret token here and click Save</li>
+            </ol>
+          </div>
+          <div style={{display:'flex',gap:8,justifyContent:'flex-end'}}>
+            {token && <button type="button" className="btn-ghost" onClick={()=>{Sync.setToken(null);setToken('');setStatus('cleared');}}>Clear</button>}
+            <button type="submit" className="btn-primary">Save &amp; test</button>
+          </div>
+        </form>
       </div>
     </div>
   );
@@ -929,32 +1061,92 @@ function Sidebar({ state, update }) {
 
 /* ── App ── */
 function App() {
-  const [state, setStateRaw] = useState(null);
+  const [state, setStateRaw]   = useState(null);
+  const [syncStatus, setSyncStatus] = useState('idle'); /* idle|saving|synced|offline|unauth|local */
+  const [setupOpen, setSetupOpen]   = useState(false);
+  const saveTimer = useRef(null);
 
-  useEffect(() => {
-    const saved = load();
-    setStateRaw(saved && saved.notes ? saved : SEED());
-  }, []);
+  /* Merge new SEED keys in when DB shape evolves */
+  const hydrate = d => ({ ...SEED(), ...d, ui:{ ...SEED().ui, ...(d?.ui||{}) } });
 
+  /* ── initial load ── */
+  useEffect(() => { (async () => {
+    const cache = Cache.read();
+    if (!Sync.configured()) {
+      setStateRaw(cache?.notes ? hydrate(cache) : SEED());
+      setSyncStatus('local');
+      return;
+    }
+    try {
+      const remote = await Sync.load();
+      const remoteEmpty  = !remote?.notes || remote.notes.length === 0;
+      const cacheHasData = cache?.notes?.length > 0;
+      if (remoteEmpty && cacheHasData) {
+        await Sync.save(cache);
+        setStateRaw(hydrate(cache));
+      } else if (remoteEmpty) {
+        const seed = SEED();
+        await Sync.save(seed);
+        setStateRaw(seed);
+      } else {
+        setStateRaw(hydrate(remote));
+      }
+      setSyncStatus('synced');
+    } catch(e) {
+      if (e.message === 'UNAUTHORIZED') {
+        Sync.setToken(null);
+        setStateRaw(cache?.notes ? hydrate(cache) : SEED());
+        setSyncStatus('unauth');
+        setSetupOpen(true);
+      } else {
+        setStateRaw(cache?.notes ? hydrate(cache) : SEED());
+        setSyncStatus('offline');
+      }
+    }
+  })(); }, []);
+
+  /* ── update: write localStorage immediately, debounce D1 by 1.5s ── */
   const update = useCallback((key, val) => {
     setStateRaw(prev => {
-      const next = typeof val === 'function' ? { ...prev, [key]: val(prev[key]) } : { ...prev, [key]: val };
-      save(next);
+      const next = typeof val === 'function'
+        ? { ...prev, [key]: val(prev[key]) }
+        : { ...prev, [key]: val };
+      Cache.write(next);
+      if (Sync.configured()) {
+        setSyncStatus('saving');
+        clearTimeout(saveTimer.current);
+        saveTimer.current = setTimeout(async () => {
+          try {
+            await Sync.save(next);
+            setSyncStatus('synced');
+          } catch(e) {
+            setSyncStatus(e.message === 'UNAUTHORIZED' ? 'unauth' : 'offline');
+          }
+        }, 1500);
+      }
       return next;
     });
   }, []);
 
-  if (!state) return null;
+  if (!state) return (
+    <div style={{display:'flex',height:'100vh',alignItems:'center',justifyContent:'center',flexDirection:'column',gap:10,color:'#3a3a44'}}>
+      <div style={{width:30,height:30,borderRadius:8,background:'linear-gradient(135deg,#818cf8,#6366f1)',display:'flex',alignItems:'center',justifyContent:'center'}}>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><polyline points="14 2 14 8 20 8"/></svg>
+      </div>
+      <span style={{fontSize:13,fontFamily:'Manrope,sans-serif'}}>Loading Folio…</span>
+    </div>
+  );
 
-  const views = { today: TodayView, notes: NotesView, tasks: TasksView, calendar: CalendarView, tags: TagsView };
-  const View = views[state.ui.view] || TodayView;
+  const views = { today:TodayView, notes:NotesView, tasks:TasksView, calendar:CalendarView, tags:TagsView };
+  const View  = views[state.ui.view] || TodayView;
 
   return (
     <div id="app">
-      <Sidebar state={state} update={update}/>
+      <Sidebar state={state} update={update} syncStatus={syncStatus} onSetup={()=>setSetupOpen(true)}/>
       <div className="main">
         <View state={state} update={update}/>
       </div>
+      {setupOpen && <SetupModal onClose={()=>setSetupOpen(false)}/>}
     </div>
   );
 }
