@@ -243,6 +243,20 @@ function NoteEditor({ note, state, update }) {
   const imgInputRef = useRef(null);
   const activeTA = useRef(null); /* { el, partIdx } */
 
+  /* ── bodyParts — MUST be before any early return (Rules of Hooks) ── */
+  const bodyParts = useMemo(() => {
+    if (!note) return [{type:'text',content:''}];
+    const parts=[]; let rest=note.body||'';
+    const re=/```(\w+)?\n([\s\S]*?)```/g; let m; let last=0;
+    while((m=re.exec(rest))!==null){
+      if(m.index>last) parts.push({type:'text',content:rest.slice(last,m.index)});
+      parts.push({type:'code',lang:m[1]||'plaintext',content:m[2]});
+      last=m.index+m[0].length;
+    }
+    if(last<rest.length) parts.push({type:'text',content:rest.slice(last)});
+    return parts.length ? parts : [{type:'text',content:''}];
+  }, [note?.body]);
+
   if (!note) return (
     <div style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center',flexDirection:'column',gap:12}}>
       <div style={{fontSize:40}}>📝</div>
@@ -253,19 +267,6 @@ function NoteEditor({ note, state, update }) {
   const upNote = patch => update('notes', state.notes.map(n => n.id===note.id ? {...n,...patch,updated:Date.now()} : n));
   const removeTag = t => upNote({ tags: note.tags.filter(x=>x!==t) });
   const addTag = t => { const clean=t.startsWith('#')?t:'#'+t; if(!note.tags.includes(clean)) upNote({tags:[...note.tags,clean]}); };
-
-  /* ── bodyParts ── */
-  const bodyParts = useMemo(() => {
-    const parts=[]; let rest=note.body||'';
-    const re=/```(\w+)?\n([\s\S]*?)```/g; let m; let last=0;
-    while((m=re.exec(rest))!==null){
-      if(m.index>last) parts.push({type:'text',content:rest.slice(last,m.index)});
-      parts.push({type:'code',lang:m[1]||'plaintext',content:m[2]});
-      last=m.index+m[0].length;
-    }
-    if(last<rest.length) parts.push({type:'text',content:rest.slice(last)});
-    return parts.length ? parts : [{type:'text',content:''}];
-  }, [note.body]);
 
   const rebuildBody = np => np.map(p=>p.type==='code'?'```'+p.lang+'\n'+p.content+'\n```':p.content).join('');
 
@@ -504,7 +505,13 @@ function NoteEditor({ note, state, update }) {
       {/* ── footer ── */}
       <div style={{padding:'8px 32px',borderTop:'1px solid #1f1f24',display:'flex',justifyContent:'space-between',alignItems:'center',flexShrink:0}}>
         <span style={{fontSize:11,color:'#3a3a44'}}>Updated {new Date(note.updated).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'})}</span>
-        <button onClick={()=>{if(confirm('Delete this note?')){update('notes',state.notes.filter(n=>n.id!==note.id));update('ui',{...state.ui,noteId:null});}}}
+        <button onClick={()=>{
+            if(confirm('Delete this note?')){
+              const id = note.id;
+              update('notes', prev => (prev||state.notes).filter(n=>n.id!==id));
+              update('ui', {...state.ui, noteId:null});
+            }
+          }}
           style={{background:'none',border:'none',color:'#3a3a44',cursor:'pointer',display:'flex',alignItems:'center',gap:4,fontSize:12,transition:'color 110ms'}}
           onMouseEnter={e=>e.currentTarget.style.color='#f43f5e'}
           onMouseLeave={e=>e.currentTarget.style.color='#3a3a44'}>
