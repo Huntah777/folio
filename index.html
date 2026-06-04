@@ -165,7 +165,7 @@ const SEED = () => ({
     { id:'t2', title:'Explore the calendar', done:false, priority:'medium', due:'', subtasks:[], created: Date.now() },
   ],
   meetings: [
-    { id:'m1', title:'Team standup', date: todayKey(), time:'09:00', duration:30, attendees:'Team', noteId:'' },
+    { id:'m1', title:'Team standup', date: todayKey(), time:'09:00', duration:30, attendees:'Team', noteId:'', recurrence:'weekly', recurrenceDays:[1,2,3,4,5], recurrenceEnd:'' },
   ],
   tags: ['#getting-started','#work','#personal','#ideas','#meeting'],
   ui: { view:'today', noteId: null, calDate: todayKey(), filterTag:'' },
@@ -256,6 +256,12 @@ function NoteEditor({ note, state, update }) {
     if(last<rest.length) parts.push({type:'text',content:rest.slice(last)});
     return parts.length ? parts : [{type:'text',content:''}];
   }, [note?.body]);
+
+  if (!note) return (
+    <div style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center',flexDirection:'column',gap:12}}>
+      <div style={{fontFamily:'Fraunces,serif',fontSize:18,color:'#2a2a31'}}>Select or create a note</div>
+    </div>
+  );
 
   const upNote = patch => update('notes', state.notes.map(n => n.id===note.id ? {...n,...patch,updated:Date.now()} : n));
   const removeTag = t => upNote({ tags: note.tags.filter(x=>x!==t) });
@@ -680,9 +686,35 @@ function TasksView({ state, update }) {
 }
 
 /* ── CalendarView ── */
+const BLANK_FORM = { title:'', time:'09:00', duration:30, attendees:'', recurrence:'none', recurrenceDays:[], recurrenceEnd:'' };
+
+function occursOnDay(m, d) {
+  const key = fmtKey(d);
+  if (key < m.date) return false;                          /* before start */
+  if (m.recurrenceEnd && key > m.recurrenceEnd) return false; /* after end */
+  if (m.date === key) return true;                         /* exact start date */
+  const r = m.recurrence || 'none';
+  if (r === 'none')    return false;
+  if (r === 'daily')   return true;
+  if (r === 'weekly')  return (m.recurrenceDays||[]).includes(d.getDay());
+  if (r === 'monthly') return d.getDate() === parseKey(m.date).getDate();
+  return false;
+}
+
+function recurLabel(m) {
+  if (!m.recurrence || m.recurrence === 'none') return null;
+  if (m.recurrence === 'daily')   return 'Daily';
+  if (m.recurrence === 'monthly') return 'Monthly';
+  if (m.recurrence === 'weekly') {
+    const names = (m.recurrenceDays||[]).sort().map(i=>DAY_SHORT[i]);
+    return names.length ? names.join(', ') : 'Weekly';
+  }
+  return null;
+}
+
 function CalendarView({ state, update }) {
   const [showModal, setShowModal] = useState(false);
-  const [form, setForm] = useState({ title:'', time:'09:00', duration:30, attendees:'' });
+  const [form, setForm] = useState(BLANK_FORM);
 
   const calDate = state.ui.calDate ? parseKey(state.ui.calDate) : new Date();
   const selDate = state.ui.calDate || todayKey();
@@ -696,36 +728,63 @@ function CalendarView({ state, update }) {
   for(let i=0;i<firstDay;i++) cells.push(null);
   for(let d=1;d<=daysInMonth;d++) cells.push(new Date(year,month,d));
 
-  const meetingsOnDay = d => state.meetings.filter(m=>m.date===fmtKey(d));
-  const todayMeetings = state.meetings.filter(m=>m.date===selDate).sort((a,b)=>a.time.localeCompare(b.time));
+  const meetingsOnDay = d => state.meetings.filter(m => occursOnDay(m, d));
+  const selDayMeetings = meetingsOnDay(parseKey(selDate)).sort((a,b)=>a.time.localeCompare(b.time));
 
-  const nav = dir => {
-    const d = new Date(year, month+dir, 1);
-    update('ui',{...state.ui, calDate: fmtKey(d)});
+  const nav = dir => { const d=new Date(year,month+dir,1); update('ui',{...state.ui,calDate:fmtKey(d)}); };
+
+  const resetForm = () => {
+    /* default weekly days to the day-of-week of the selected date */
+    setForm({...BLANK_FORM, recurrenceDays:[parseKey(selDate).getDay()]});
   };
+  const openModal = () => { resetForm(); setShowModal(true); };
 
   const addMeeting = e => {
     e.preventDefault();
     if(!form.title.trim()) return;
-    const m = { id:uid(), ...form, date:selDate, noteId:'' };
+    const m = {
+      id: uid(),
+      title: form.title, time: form.time, duration: form.duration,
+      attendees: form.attendees, date: selDate, noteId: '',
+      recurrence: form.recurrence,
+      recurrenceDays: form.recurrence==='weekly' ? form.recurrenceDays : [],
+      recurrenceEnd: form.recurrence!=='none' ? form.recurrenceEnd : '',
+    };
     update('meetings',[...state.meetings, m]);
-    setShowModal(false); setForm({title:'',time:'09:00',duration:30,attendees:''});
+    setShowModal(false);
   };
 
   const openMeetingNote = m => {
-    const body = `## Attendees\n${m.attendees||'—'}\n\n## Agenda\n- \n\n## Notes\n\n## Action Items\n- [ ] `;
-    const n = { id:uid(), emoji:'🗓', title:`${m.title} — ${m.date}`, body, tags:['#meeting'], links:[], images:[], created:Date.now(), updated:Date.now() };
+    const recLine = recurLabel(m) ? `\n**Recurrence:** ${recurLabel(m)}${m.recurrenceEnd?' until '+m.recurrenceEnd:''}` : '';
+    const body = `## Attendees\n${m.attendees||'—'}\n\n## Agenda\n- \n\n## Notes\n\n## Action Items\n- [ ] ${recLine}`;
+    const n = { id:uid(), emoji:'🗓', title:`${m.title} — ${selDate}`, body, tags:['#meeting'], links:[], images:[], created:Date.now(), updated:Date.now() };
     update('notes',[n,...state.notes]);
     update('meetings',state.meetings.map(x=>x.id===m.id?{...x,noteId:n.id}:x));
     update('ui',{...state.ui,view:'notes',noteId:n.id});
   };
 
-  const delMeeting = id => update('meetings',state.meetings.filter(m=>m.id!==id));
+  const delMeeting = (m) => {
+    const isRecurring = m.recurrence && m.recurrence !== 'none';
+    const msg = isRecurring
+      ? `Delete "${m.title}" and all its recurring occurrences?`
+      : `Delete "${m.title}"?`;
+    if (confirm(msg)) update('meetings', state.meetings.filter(x=>x.id!==m.id));
+  };
+
+  /* toolbar toggle style helper */
+  const tog = active => ({
+    flex:1, padding:'6px 4px', borderRadius:6, fontSize:11.5, fontWeight:600,
+    cursor:'pointer', border:'1px solid', transition:'all 110ms',
+    background: active ? '#818cf8' : 'transparent',
+    borderColor: active ? '#818cf8' : '#1f1f24',
+    color: active ? '#fff' : '#9a9788',
+  });
 
   return (
     <div style={{display:'flex',height:'100%',overflow:'hidden'}}>
-      {/* calendar grid */}
-      <div style={{flex:1,padding:'24px 24px',overflow:'auto'}} className="scrollbar">
+
+      {/* ── month grid ── */}
+      <div style={{flex:1,padding:'24px',overflow:'auto'}} className="scrollbar">
         <div style={{display:'flex',alignItems:'center',gap:16,marginBottom:20}}>
           <button onClick={()=>nav(-1)} style={{background:'none',border:'1px solid #1f1f24',borderRadius:7,color:'#9a9788',padding:'5px 10px',cursor:'pointer',fontSize:16}}>‹</button>
           <h2 style={{fontFamily:'Fraunces,serif',fontSize:22,fontWeight:600,flex:1}}>{MONTHS[month]} {year}</h2>
@@ -740,64 +799,144 @@ function CalendarView({ state, update }) {
             <div key={d.toISOString()} className={`cal-cell${fmtKey(d)===today?' today':''}${fmtKey(d)===selDate?' sel':''}`}
               onClick={()=>update('ui',{...state.ui,calDate:fmtKey(d)})}>
               <div style={{fontSize:12,fontWeight:fmtKey(d)===today?700:400,color:fmtKey(d)===today?'#818cf8':'#c9c6b8',marginBottom:3}}>{d.getDate()}</div>
-              {meetingsOnDay(d).slice(0,2).map(m=>(
-                <div key={m.id} className="cal-dot" style={{background:'#818cf8',borderRadius:3,height:4,width:'70%',marginBottom:2}}/>
+              {meetingsOnDay(d).slice(0,3).map((m,idx)=>(
+                <div key={m.id+idx} style={{display:'flex',alignItems:'center',gap:2,marginBottom:2}}>
+                  <div style={{width:'60%',height:4,borderRadius:3,background: m.recurrence&&m.recurrence!=='none' ? '#10b981' : '#818cf8'}}/>
+                  {m.recurrence&&m.recurrence!=='none'&&<span style={{fontSize:8,color:'#10b981'}}>↻</span>}
+                </div>
               ))}
             </div>
           ))}
         </div>
       </div>
 
-      {/* day panel */}
-      <div style={{width:300,borderLeft:'1px solid #1f1f24',display:'flex',flexDirection:'column',overflow:'hidden'}}>
+      {/* ── day panel ── */}
+      <div style={{width:310,borderLeft:'1px solid #1f1f24',display:'flex',flexDirection:'column',overflow:'hidden'}}>
         <div style={{padding:'20px 16px 12px',borderBottom:'1px solid #1f1f24',flexShrink:0}}>
           <div style={{fontFamily:'Fraunces,serif',fontSize:16,fontWeight:600,marginBottom:2}}>
-            {selDate === today ? 'Today' : parseKey(selDate).toLocaleDateString('en-GB',{weekday:'long',day:'numeric',month:'short'})}
+            {selDate===today ? 'Today' : parseKey(selDate).toLocaleDateString('en-GB',{weekday:'long',day:'numeric',month:'short'})}
           </div>
-          <button className="btn-primary" onClick={()=>setShowModal(true)} style={{fontSize:12,padding:'5px 12px',marginTop:10,width:'100%'}}>+ Add meeting</button>
+          <button className="btn-primary" onClick={openModal} style={{fontSize:12,padding:'5px 12px',marginTop:10,width:'100%'}}>+ Add meeting</button>
         </div>
         <div style={{flex:1,overflow:'auto',padding:'12px'}} className="scrollbar">
-          {todayMeetings.length===0 && <div style={{color:'#3a3a44',fontSize:12,padding:'8px 4px'}}>No meetings.</div>}
-          {todayMeetings.map(m=>(
-            <div key={m.id} style={{background:'#131317',border:'1px solid rgba(129,140,248,.2)',borderRadius:10,padding:'12px 14px',marginBottom:8}}>
-              <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
-                <div>
-                  <div style={{fontSize:13.5,fontWeight:600,color:'#f4f3ee',marginBottom:3}}>{m.title}</div>
-                  <div style={{fontSize:11.5,color:'#9a9788'}}>{m.time} · {m.duration} min</div>
-                  {m.attendees&&<div style={{fontSize:11,color:'#9a9788',marginTop:2}}>{m.attendees}</div>}
+          {selDayMeetings.length===0 && <div style={{color:'#3a3a44',fontSize:12,padding:'8px 4px'}}>No meetings.</div>}
+          {selDayMeetings.map(m=>{
+            const label = recurLabel(m);
+            return (
+              <div key={m.id} style={{background:'#131317',border:`1px solid ${label?'rgba(16,185,129,.25)':'rgba(129,140,248,.2)'}`,borderRadius:10,padding:'12px 14px',marginBottom:8}}>
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
+                  <div style={{minWidth:0,flex:1}}>
+                    <div style={{fontSize:13.5,fontWeight:600,color:'#f4f3ee',marginBottom:2}}>{m.title}</div>
+                    <div style={{fontSize:11.5,color:'#9a9788'}}>{m.time} · {m.duration} min</div>
+                    {m.attendees&&<div style={{fontSize:11,color:'#9a9788',marginTop:1}}>{m.attendees}</div>}
+                    {label && (
+                      <div style={{display:'flex',alignItems:'center',gap:4,marginTop:5}}>
+                        <span style={{fontSize:10,color:'#10b981',fontWeight:700}}>↻</span>
+                        <span style={{fontSize:11,color:'#10b981'}}>
+                          {label}{m.recurrenceEnd ? ` · until ${m.recurrenceEnd}` : ''}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                  <button onClick={()=>delMeeting(m)} style={{background:'none',border:'none',color:'#3a3a44',cursor:'pointer',marginLeft:8,flexShrink:0}}
+                    onMouseEnter={e=>e.currentTarget.style.color='#f43f5e'}
+                    onMouseLeave={e=>e.currentTarget.style.color='#3a3a44'}>
+                    <svg style={{width:13,height:13}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                  </button>
                 </div>
-                <button onClick={()=>delMeeting(m.id)} style={{background:'none',border:'none',color:'#3a3a44',cursor:'pointer'}}>
-                  <svg style={{width:13,height:13}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                <button onClick={()=>openMeetingNote(m)}
+                  style={{marginTop:8,background:'none',border:'1px solid #2a2a31',borderRadius:6,color:'#818cf8',fontSize:11.5,padding:'4px 10px',cursor:'pointer',width:'100%'}}>
+                  {m.noteId?'Open meeting note':'Create meeting note'}
                 </button>
               </div>
-              <button onClick={()=>openMeetingNote(m)}
-                style={{marginTop:8,background:'none',border:'1px solid #2a2a31',borderRadius:6,color:'#818cf8',fontSize:11.5,padding:'4px 10px',cursor:'pointer',width:'100%'}}>
-                {m.noteId?'Open meeting note':'Create meeting note'}
-              </button>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </div>
 
-      {/* add meeting modal */}
+      {/* ── add meeting modal ── */}
       {showModal&&(
         <div className="modal-bg" onClick={e=>{if(e.target===e.currentTarget)setShowModal(false)}}>
-          <div className="modal fadeUp">
-            <div style={{padding:'20px 24px',borderBottom:'1px solid #1f1f24',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+          <div className="modal fadeUp" style={{maxHeight:'90vh',overflowY:'auto'}}>
+            <div style={{padding:'20px 24px',borderBottom:'1px solid #1f1f24',display:'flex',justifyContent:'space-between',alignItems:'center',position:'sticky',top:0,background:'#131317',zIndex:1}}>
               <span style={{fontFamily:'Fraunces,serif',fontSize:17,fontWeight:600}}>New meeting</span>
               <button onClick={()=>setShowModal(false)} style={{background:'none',border:'none',color:'#9a9788',cursor:'pointer',fontSize:20}}>×</button>
             </div>
-            <form onSubmit={addMeeting} style={{padding:'20px 24px',display:'flex',flexDirection:'column',gap:14}}>
-              <div><label style={{fontSize:12,color:'#9a9788',display:'block',marginBottom:5}}>Title</label>
-                <input className="input" value={form.title} onChange={e=>setForm({...form,title:e.target.value})} placeholder="Meeting title" autoFocus required/></div>
-              <div style={{display:'flex',gap:12}}>
-                <div style={{flex:1}}><label style={{fontSize:12,color:'#9a9788',display:'block',marginBottom:5}}>Time</label>
-                  <input type="time" className="input" value={form.time} onChange={e=>setForm({...form,time:e.target.value})}/></div>
-                <div style={{flex:1}}><label style={{fontSize:12,color:'#9a9788',display:'block',marginBottom:5}}>Duration (min)</label>
-                  <input type="number" className="input" value={form.duration} min={5} max={480} onChange={e=>setForm({...form,duration:+e.target.value})}/></div>
+            <form onSubmit={addMeeting} style={{padding:'20px 24px',display:'flex',flexDirection:'column',gap:16}}>
+
+              {/* title */}
+              <div>
+                <label style={{fontSize:12,color:'#9a9788',display:'block',marginBottom:5}}>Title</label>
+                <input className="input" value={form.title} onChange={e=>setForm({...form,title:e.target.value})} placeholder="Meeting title" autoFocus required/>
               </div>
-              <div><label style={{fontSize:12,color:'#9a9788',display:'block',marginBottom:5}}>Attendees</label>
-                <input className="input" value={form.attendees} onChange={e=>setForm({...form,attendees:e.target.value})} placeholder="Names or emails"/></div>
+
+              {/* time + duration */}
+              <div style={{display:'flex',gap:12}}>
+                <div style={{flex:1}}>
+                  <label style={{fontSize:12,color:'#9a9788',display:'block',marginBottom:5}}>Time</label>
+                  <input type="time" className="input" value={form.time} onChange={e=>setForm({...form,time:e.target.value})}/>
+                </div>
+                <div style={{flex:1}}>
+                  <label style={{fontSize:12,color:'#9a9788',display:'block',marginBottom:5}}>Duration (min)</label>
+                  <input type="number" className="input" value={form.duration} min={5} max={480} onChange={e=>setForm({...form,duration:+e.target.value})}/>
+                </div>
+              </div>
+
+              {/* attendees */}
+              <div>
+                <label style={{fontSize:12,color:'#9a9788',display:'block',marginBottom:5}}>Attendees</label>
+                <input className="input" value={form.attendees} onChange={e=>setForm({...form,attendees:e.target.value})} placeholder="Names or emails"/>
+              </div>
+
+              {/* recurrence type */}
+              <div>
+                <label style={{fontSize:12,color:'#9a9788',display:'block',marginBottom:8}}>Recurrence</label>
+                <div style={{display:'flex',gap:6}}>
+                  {['none','daily','weekly','monthly'].map(r=>(
+                    <button type="button" key={r} onClick={()=>{
+                      const days = r==='weekly' ? [parseKey(selDate).getDay()] : [];
+                      setForm({...form, recurrence:r, recurrenceDays:days});
+                    }} style={tog(form.recurrence===r)}>
+                      {r==='none'?'None':r[0].toUpperCase()+r.slice(1)}
+                    </button>
+                  ))}
+                </div>
+
+                {/* weekly day picker */}
+                {form.recurrence==='weekly' && (
+                  <div style={{marginTop:10}}>
+                    <div style={{fontSize:11,color:'#9a9788',marginBottom:6}}>Repeats on</div>
+                    <div style={{display:'flex',gap:5}}>
+                      {DAY_SHORT.map((day,i)=>{
+                        const on = (form.recurrenceDays||[]).includes(i);
+                        return (
+                          <button type="button" key={i} onClick={()=>{
+                            const days = on
+                              ? form.recurrenceDays.filter(d=>d!==i)
+                              : [...(form.recurrenceDays||[]),i];
+                            setForm({...form,recurrenceDays:days});
+                          }} style={{...tog(on),flex:1,padding:'5px 0',fontSize:11}}>
+                            {day[0]}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                {/* end date */}
+                {form.recurrence!=='none' && (
+                  <div style={{marginTop:12}}>
+                    <label style={{fontSize:12,color:'#9a9788',display:'block',marginBottom:5}}>
+                      End date <span style={{color:'#3a3a44'}}>(optional)</span>
+                    </label>
+                    <input type="date" className="input" value={form.recurrenceEnd}
+                      onChange={e=>setForm({...form,recurrenceEnd:e.target.value})}
+                      min={selDate}/>
+                  </div>
+                )}
+              </div>
+
               <div style={{display:'flex',gap:8,justifyContent:'flex-end',paddingTop:4}}>
                 <button type="button" className="btn-ghost" onClick={()=>setShowModal(false)}>Cancel</button>
                 <button type="submit" className="btn-primary">Add meeting</button>
@@ -814,7 +953,7 @@ function CalendarView({ state, update }) {
 function TodayView({ state, update }) {
   const hour = new Date().getHours();
   const greeting = hour<12?'Good morning Abdul-Malik':hour<17?'Good afternoon Abdul-Malik':'Good evening Abdul-Malik';
-  const todayMeetings = state.meetings.filter(m=>m.date===todayKey()).sort((a,b)=>a.time.localeCompare(b.time));
+  const todayMeetings = state.meetings.filter(m=>occursOnDay(m,new Date())).sort((a,b)=>a.time.localeCompare(b.time));
   const todayTasks = state.tasks.filter(t=>!t.done&&t.due===todayKey());
   const recent = [...state.notes].sort((a,b)=>b.updated-a.updated).slice(0,4);
 
