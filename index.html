@@ -1040,15 +1040,6 @@ function SetupModal({ onClose }) {
           {status && (
             <div style={{fontSize:12,color:status.startsWith('✓')?'#10b981':status.startsWith('✗')?'#f43f5e':'#f59e0b'}}>{status}</div>
           )}
-          <div style={{background:'#17171b',border:'1px solid #1f1f24',borderRadius:8,padding:'12px 14px',fontSize:12,color:'#9a9788',lineHeight:1.6}}>
-            <div style={{fontWeight:700,color:'#c9c6b8',marginBottom:6}}>Setup steps</div>
-            <ol style={{paddingLeft:16,display:'flex',flexDirection:'column',gap:3}}>
-              <li>Create a D1 database in Cloudflare and run <code style={{background:'#0d0d10',padding:'1px 5px',borderRadius:3,color:'#818cf8'}}>schema.sql</code></li>
-              <li>Add D1 binding named <code style={{background:'#0d0d10',padding:'1px 5px',borderRadius:3,color:'#818cf8'}}>DB</code> in Pages → Settings → Functions</li>
-              <li>Add env var <code style={{background:'#0d0d10',padding:'1px 5px',borderRadius:3,color:'#818cf8'}}>SYNC_TOKEN</code> (any secret string you choose)</li>
-              <li>Paste that same secret token here and click Save</li>
-            </ol>
-          </div>
           <div style={{display:'flex',gap:8,justifyContent:'flex-end'}}>
             {token && <button type="button" className="btn-ghost" onClick={()=>{Sync.setToken(null);setToken('');setStatus('cleared');}}>Clear</button>}
             <button type="submit" className="btn-primary">Save &amp; test</button>
