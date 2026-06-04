@@ -257,13 +257,6 @@ function NoteEditor({ note, state, update }) {
     return parts.length ? parts : [{type:'text',content:''}];
   }, [note?.body]);
 
-  if (!note) return (
-    <div style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center',flexDirection:'column',gap:12}}>
-      <div style={{fontSize:40}}>📝</div>
-      <div style={{fontFamily:'Fraunces,serif',fontSize:18,color:'#2a2a31'}}>Select or create a note</div>
-    </div>
-  );
-
   const upNote = patch => update('notes', state.notes.map(n => n.id===note.id ? {...n,...patch,updated:Date.now()} : n));
   const removeTag = t => upNote({ tags: note.tags.filter(x=>x!==t) });
   const addTag = t => { const clean=t.startsWith('#')?t:'#'+t; if(!note.tags.includes(clean)) upNote({tags:[...note.tags,clean]}); };
