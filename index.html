@@ -88,6 +88,19 @@ input:focus,textarea:focus{outline:none}
 @keyframes fadeUp{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:none}}
 .fadeUp{animation:fadeUp 220ms ease both}
 .divider{border-top:1px solid #1f1f24}
+/* resize handle */
+.resize-handle{width:5px;cursor:col-resize;flex-shrink:0;background:transparent;transition:background 150ms}
+.resize-handle:hover{background:#2a2a31}
+/* sidebar collapsed */
+.sidebar-collapsed{width:52px!important;min-width:52px!important}
+/* mobile nav */
+.mobile-nav{display:none;position:fixed;bottom:0;left:0;right:0;background:#0d0d10;border-top:1px solid #1f1f24;z-index:100;align-items:stretch}
+@media(max-width:768px){
+  .sidebar{display:none!important}
+  .mobile-nav{display:flex!important;height:calc(56px + env(safe-area-inset-bottom,0px));padding-bottom:env(safe-area-inset-bottom,0px)}
+  #app{padding-bottom:calc(56px + env(safe-area-inset-bottom,0px))}
+  .main{min-width:0;overflow:hidden}
+}
 </style>
 </head>
 <body>
@@ -531,8 +544,9 @@ function NoteEditor({ note, state, update }) {
 }
 
 /* ── NotesView ── */
-function NotesView({ state, update }) {
+function NotesView({ state, update, isMobile }) {
   const [search, setSearch] = useState('');
+  const [listWidth, setListWidth] = useState(280);
   const filterTag = state.ui.filterTag || '';
   const setFilterTag = t => update('ui',{...state.ui,filterTag:t});
   const noteId = state.ui.noteId;
@@ -553,58 +567,104 @@ function NotesView({ state, update }) {
   const selectedNote = state.notes.find(n=>n.id===noteId);
   const allTags = [...new Set(state.notes.flatMap(n=>n.tags))];
 
-  return (
-    <div style={{display:'flex',height:'100%',overflow:'hidden'}}>
-      {/* list panel */}
-      <div style={{width:280,minWidth:280,borderRight:'1px solid #1f1f24',display:'flex',flexDirection:'column',overflow:'hidden'}}>
-        <div style={{padding:'16px 14px 10px',flexShrink:0}}>
-          <div style={{display:'flex',gap:8,marginBottom:10}}>
-            <input className="input" value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search notes…" style={{flex:1}}/>
-            <button className="btn-primary" onClick={newNote} style={{padding:'8px 12px',display:'flex',alignItems:'center'}}>
-              {React.cloneElement(Ic.plus,{style:{width:15,height:15}})}
-            </button>
-          </div>
-          <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
-            <span onClick={()=>setFilterTag('')} className="tag" style={{background:filterTag===''?'#818cf830':'none',color:filterTag===''?'#818cf8':'#9a9788',border:'1px solid #1f1f24',cursor:'pointer'}}>All</span>
-            {allTags.map(t=>(
-              <span key={t} onClick={()=>setFilterTag(filterTag===t?'':t)} className="tag"
-                style={{background:filterTag===t?`${tagColor(t)}20`:'none',color:filterTag===t?tagColor(t):'#9a9788',border:'1px solid #1f1f24',cursor:'pointer'}}>
-                {t}
-              </span>
-            ))}
-          </div>
+  /* Mobile: full-screen editor with back button */
+  if (isMobile && noteId && selectedNote) {
+    return (
+      <div style={{display:'flex',flexDirection:'column',height:'100%',overflow:'hidden'}}>
+        <div style={{padding:'10px 14px',borderBottom:'1px solid #1f1f24',display:'flex',alignItems:'center',flexShrink:0}}>
+          <button onClick={()=>update('ui',{...state.ui,noteId:null})}
+            style={{background:'none',border:'none',color:'#818cf8',cursor:'pointer',fontSize:14,fontFamily:'Manrope,sans-serif',fontWeight:600,display:'flex',alignItems:'center',gap:5,padding:0}}>
+            <svg style={{width:16,height:16}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><polyline points="15 18 9 12 15 6"/></svg>
+            Notes
+          </button>
         </div>
-        <div style={{flex:1,overflow:'auto',padding:'0 10px 10px'}} className="scrollbar">
-          {filtered.length===0 && <div style={{color:'#3a3a44',fontSize:13,padding:'20px 4px'}}>No notes found.</div>}
-          {filtered.map(n=>(
-            <div key={n.id} className={`note-card card fadeUp ${noteId===n.id?'sel':''}`}
-              style={{marginBottom:8}} onClick={()=>update('ui',{...state.ui,noteId:n.id})}>
-              <div style={{display:'flex',alignItems:'center',gap:7,marginBottom:5}}>
-                <span style={{fontSize:16}}>{n.emoji||'📝'}</span>
-                <span style={{fontSize:13,fontWeight:600,color:'#f4f3ee',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{n.title||'Untitled'}</span>
-              </div>
-              <div style={{fontSize:12,color:'#9a9788',overflow:'hidden',display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical',lineHeight:1.5,marginBottom:6}}>
-                {(n.body||'').replace(/```[\s\S]*?```/g,'[code]').slice(0,120)}
-              </div>
-              {n.tags.length>0 && (
-                <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
-                  {n.tags.slice(0,3).map(t=>(
-                    <span key={t} className="tag" style={{background:`${tagColor(t)}15`,color:tagColor(t),fontSize:10}}>{t}</span>
-                  ))}
-                </div>
-              )}
-            </div>
+        <NoteEditor note={selectedNote} state={state} update={update}/>
+      </div>
+    );
+  }
+
+  const listPanel = (
+    <div style={{
+      width: isMobile ? '100%' : listWidth,
+      minWidth: isMobile ? 0 : 160,
+      borderRight: isMobile ? 'none' : '1px solid #1f1f24',
+      display:'flex', flexDirection:'column', overflow:'hidden',
+      flex: isMobile ? 1 : 'none',
+    }}>
+      <div style={{padding:'16px 14px 10px',flexShrink:0}}>
+        <div style={{display:'flex',gap:8,marginBottom:10}}>
+          <input className="input" value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search notes…" style={{flex:1}}/>
+          <button className="btn-primary" onClick={newNote} style={{padding:'8px 12px',display:'flex',alignItems:'center'}}>
+            {React.cloneElement(Ic.plus,{style:{width:15,height:15}})}
+          </button>
+        </div>
+        <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
+          <span onClick={()=>setFilterTag('')} className="tag" style={{background:filterTag===''?'#818cf830':'none',color:filterTag===''?'#818cf8':'#9a9788',border:'1px solid #1f1f24',cursor:'pointer'}}>All</span>
+          {allTags.map(t=>(
+            <span key={t} onClick={()=>setFilterTag(filterTag===t?'':t)} className="tag"
+              style={{background:filterTag===t?`${tagColor(t)}20`:'none',color:filterTag===t?tagColor(t):'#9a9788',border:'1px solid #1f1f24',cursor:'pointer'}}>
+              {t}
+            </span>
           ))}
         </div>
       </div>
-      {/* editor */}
+      <div style={{flex:1,overflow:'auto',padding:'0 10px 10px'}} className="scrollbar">
+        {filtered.length===0 && <div style={{color:'#3a3a44',fontSize:13,padding:'20px 4px'}}>No notes found.</div>}
+        {filtered.map(n=>(
+          <div key={n.id} className={`note-card card fadeUp ${noteId===n.id?'sel':''}`}
+            style={{marginBottom:8}} onClick={()=>update('ui',{...state.ui,noteId:n.id})}>
+            <div style={{display:'flex',alignItems:'center',gap:7,marginBottom:5}}>
+              <span style={{fontSize:16}}>{n.emoji||'📝'}</span>
+              <span style={{fontSize:13,fontWeight:600,color:'#f4f3ee',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{n.title||'Untitled'}</span>
+            </div>
+            <div style={{fontSize:12,color:'#9a9788',overflow:'hidden',display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical',lineHeight:1.5,marginBottom:6}}>
+              {(n.body||'').replace(/```[\s\S]*?```/g,'[code]').slice(0,120)}
+            </div>
+            {n.tags.length>0 && (
+              <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
+                {n.tags.slice(0,3).map(t=>(
+                  <span key={t} className="tag" style={{background:`${tagColor(t)}15`,color:tagColor(t),fontSize:10}}>{t}</span>
+                ))}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+
+  if (isMobile) {
+    return <div style={{display:'flex',height:'100%',overflow:'hidden'}}>{listPanel}</div>;
+  }
+
+  return (
+    <div style={{display:'flex',height:'100%',overflow:'hidden'}}>
+      {listPanel}
+      {/* drag-to-resize handle */}
+      <div className="resize-handle"
+        onMouseDown={e => {
+          const startX = e.clientX, startW = listWidth;
+          const onMove = mv => setListWidth(Math.max(160, Math.min(500, startW + mv.clientX - startX)));
+          const onUp = () => {
+            document.removeEventListener('mousemove', onMove);
+            document.removeEventListener('mouseup', onUp);
+            document.body.style.cursor = '';
+            document.body.style.userSelect = '';
+          };
+          document.body.style.cursor = 'col-resize';
+          document.body.style.userSelect = 'none';
+          document.addEventListener('mousemove', onMove);
+          document.addEventListener('mouseup', onUp);
+          e.preventDefault();
+        }}
+      />
       <NoteEditor note={selectedNote} state={state} update={update}/>
     </div>
   );
 }
 
 /* ── TasksView ── */
-function TasksView({ state, update }) {
+function TasksView({ state, update, isMobile }) {
   const [newTitle, setNewTitle] = useState('');
   const [newPrio, setNewPrio] = useState('medium');
   const [newDue, setNewDue] = useState('');
@@ -638,19 +698,21 @@ function TasksView({ state, update }) {
   ];
 
   return (
-    <div style={{flex:1,overflow:'auto',padding:'28px 32px'}} className="scrollbar">
-      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:24}}>
-        <h1 style={{fontFamily:'Fraunces,serif',fontSize:26,fontWeight:600}}>Tasks</h1>
+    <div style={{flex:1,overflow:'auto',padding:isMobile?'20px 14px':'28px 32px'}} className="scrollbar">
+      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:20}}>
+        <h1 style={{fontFamily:'Fraunces,serif',fontSize:isMobile?22:26,fontWeight:600}}>Tasks</h1>
       </div>
 
       {/* add task */}
-      <form onSubmit={addTask} style={{display:'flex',gap:8,marginBottom:28,background:'#131317',border:'1px solid #1f1f24',borderRadius:10,padding:'10px 14px'}}>
-        <input className="input" value={newTitle} onChange={e=>setNewTitle(e.target.value)} placeholder="New task…" style={{flex:1,background:'transparent',border:'none',padding:0,fontSize:14}}/>
-        <select value={newPrio} onChange={e=>setNewPrio(e.target.value)} style={{background:'#17171b',border:'1px solid #2a2a31',borderRadius:6,color:PRIO[newPrio],fontSize:12,padding:'4px 8px'}}>
-          {Object.keys(PRIO).map(p=><option key={p} value={p}>{p}</option>)}
-        </select>
-        <input type="date" value={newDue} onChange={e=>setNewDue(e.target.value)} style={{background:'#17171b',border:'1px solid #2a2a31',borderRadius:6,color:'#9a9788',fontSize:12,padding:'4px 8px'}}/>
-        <button className="btn-primary" type="submit" style={{padding:'6px 14px',fontSize:13}}>Add</button>
+      <form onSubmit={addTask} style={{display:'flex',flexWrap:'wrap',gap:8,marginBottom:24,background:'#131317',border:'1px solid #1f1f24',borderRadius:10,padding:'10px 14px'}}>
+        <input className="input" value={newTitle} onChange={e=>setNewTitle(e.target.value)} placeholder="New task…" style={{flex:'1 1 160px',background:'transparent',border:'none',padding:0,fontSize:14}}/>
+        <div style={{display:'flex',gap:8,flexShrink:0}}>
+          <select value={newPrio} onChange={e=>setNewPrio(e.target.value)} style={{background:'#17171b',border:'1px solid #2a2a31',borderRadius:6,color:PRIO[newPrio],fontSize:12,padding:'4px 8px'}}>
+            {Object.keys(PRIO).map(p=><option key={p} value={p}>{p}</option>)}
+          </select>
+          <input type="date" value={newDue} onChange={e=>setNewDue(e.target.value)} style={{background:'#17171b',border:'1px solid #2a2a31',borderRadius:6,color:'#9a9788',fontSize:12,padding:'4px 8px',maxWidth:130}}/>
+          <button className="btn-primary" type="submit" style={{padding:'6px 14px',fontSize:13,flexShrink:0}}>Add</button>
+        </div>
       </form>
 
       {groups.map(g=>g.items.length===0?null:(
@@ -724,7 +786,7 @@ function recurLabel(m) {
   return null;
 }
 
-function CalendarView({ state, update }) {
+function CalendarView({ state, update, isMobile }) {
   const [showModal, setShowModal] = useState(false);
   const [form, setForm] = useState(BLANK_FORM);
 
@@ -793,10 +855,10 @@ function CalendarView({ state, update }) {
   });
 
   return (
-    <div style={{display:'flex',height:'100%',overflow:'hidden'}}>
+    <div style={{display:'flex',height:'100%',overflow:'hidden',flexDirection:isMobile?'column':'row'}}>
 
       {/* ── month grid ── */}
-      <div style={{flex:1,padding:'24px 24px 24px 40px',overflow:'auto'}} className="scrollbar">
+      <div style={{flex:1,padding:isMobile?'16px 12px':'24px 24px 24px 40px',overflow:'auto'}} className="scrollbar">
         <div style={{display:'flex',alignItems:'center',gap:16,marginBottom:20}}>
           <button onClick={()=>nav(-1)} style={{background:'none',border:'1px solid #1f1f24',borderRadius:7,color:'#9a9788',padding:'5px 10px',cursor:'pointer',fontSize:16}}>‹</button>
           <h2 style={{fontFamily:'Fraunces,serif',fontSize:22,fontWeight:600,flex:1}}>{MONTHS[month]} {year}</h2>
@@ -823,7 +885,7 @@ function CalendarView({ state, update }) {
       </div>
 
       {/* ── day panel ── */}
-      <div style={{width:310,borderLeft:'1px solid #1f1f24',display:'flex',flexDirection:'column',overflow:'hidden'}}>
+      <div style={{width:isMobile?'100%':310,height:isMobile?220:undefined,borderLeft:isMobile?'none':'1px solid #1f1f24',borderTop:isMobile?'1px solid #1f1f24':'none',display:'flex',flexDirection:'column',overflow:'hidden',flexShrink:0}}>
         <div style={{padding:'20px 16px 12px',borderBottom:'1px solid #1f1f24',flexShrink:0}}>
           <div style={{fontFamily:'Fraunces,serif',fontSize:16,fontWeight:600,marginBottom:2}}>
             {selDate===today ? 'Today' : parseKey(selDate).toLocaleDateString('en-GB',{weekday:'long',day:'numeric',month:'short'})}
@@ -962,7 +1024,7 @@ function CalendarView({ state, update }) {
 }
 
 /* ── TodayView ── */
-function TodayView({ state, update }) {
+function TodayView({ state, update, isMobile }) {
   const hour = new Date().getHours();
   const greeting = hour<12?'Good morning Abdul-Malik':hour<17?'Good afternoon Abdul-Malik':'Good evening Abdul-Malik';
   const todayMeetings = state.meetings.filter(m=>occursOnDay(m,new Date())).sort((a,b)=>a.time.localeCompare(b.time));
@@ -972,13 +1034,13 @@ function TodayView({ state, update }) {
   const toggleTask = id => update('tasks',state.tasks.map(t=>t.id===id?{...t,done:!t.done}:t));
 
   return (
-    <div style={{flex:1,overflow:'auto',padding:'32px 36px'}} className="scrollbar">
-      <div style={{fontFamily:'Fraunces,serif',fontSize:28,fontWeight:600,marginBottom:4}}>{greeting}</div>
-      <div style={{color:'#9a9788',fontSize:13.5,marginBottom:32}}>
+    <div style={{flex:1,overflow:'auto',padding:isMobile?'20px 16px':'32px 36px'}} className="scrollbar">
+      <div style={{fontFamily:'Fraunces,serif',fontSize:isMobile?22:28,fontWeight:600,marginBottom:4}}>{greeting}</div>
+      <div style={{color:'#9a9788',fontSize:13,marginBottom:isMobile?20:32}}>
         {new Date().toLocaleDateString('en-GB',{weekday:'long',day:'numeric',month:'long',year:'numeric'})}
       </div>
 
-      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:20,maxWidth:820}}>
+      <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr':'1fr 1fr',gap:isMobile?12:20,maxWidth:820}}>
         {/* tasks */}
         <div className="card" style={{padding:'18px 20px'}}>
           <div style={{fontSize:11,fontWeight:700,letterSpacing:'.08em',color:'#818cf8',textTransform:'uppercase',marginBottom:12}}>Tasks today</div>
@@ -1013,7 +1075,7 @@ function TodayView({ state, update }) {
         {/* recent notes */}
         <div className="card" style={{padding:'18px 20px',gridColumn:'1/-1'}}>
           <div style={{fontSize:11,fontWeight:700,letterSpacing:'.08em',color:'#f59e0b',textTransform:'uppercase',marginBottom:12}}>Recent notes</div>
-          <div style={{display:'grid',gridTemplateColumns:'repeat(2,1fr)',gap:10}}>
+          <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr':'repeat(2,1fr)',gap:10}}>
             {recent.map(n=>(
               <div key={n.id} style={{background:'#17171b',border:'1px solid #1f1f24',borderRadius:9,padding:'12px 14px',cursor:'pointer',transition:'border-color 120ms'}}
                 onClick={()=>update('ui',{...state.ui,view:'notes',noteId:n.id})}
@@ -1062,7 +1124,7 @@ function TagsView({ state, update }) {
 }
 
 /* ── Sidebar ── */
-function Sidebar({ state, update, syncStatus, onSetup }) {
+function Sidebar({ state, update, syncStatus, onSetup, collapsed, onToggle }) {
   const { view } = state.ui;
   const recent = [...state.notes].sort((a,b)=>b.updated-a.updated).slice(0,5);
   const nav = v => update('ui',{...state.ui,view:v});
@@ -1073,27 +1135,85 @@ function Sidebar({ state, update, syncStatus, onSetup }) {
     update('ui',{...state.ui,view:'notes',noteId:n.id});
   };
 
+  const navItems = [
+    {id:'today',label:'Today',icon:Ic.today},
+    {id:'notes',label:'Notes',icon:Ic.notes},
+    {id:'tasks',label:'Tasks',icon:Ic.tasks},
+    {id:'calendar',label:'Calendar',icon:Ic.cal},
+    {id:'tags',label:'Tags',icon:Ic.tags},
+  ];
+
+  const SyncDot = () => (
+    <>
+      {syncStatus==='synced'  &&<span style={{width:7,height:7,borderRadius:99,background:'#10b981',flexShrink:0,display:'inline-block'}}/>}
+      {syncStatus==='saving'  &&<span style={{width:7,height:7,borderRadius:99,background:'#f59e0b',flexShrink:0,display:'inline-block'}}/>}
+      {syncStatus==='offline' &&<span style={{width:7,height:7,borderRadius:99,background:'#f43f5e',flexShrink:0,display:'inline-block'}}/>}
+      {syncStatus==='local'   &&<span style={{width:7,height:7,borderRadius:99,background:'#3a3a44',flexShrink:0,display:'inline-block'}}/>}
+      {syncStatus==='unauth'  &&<span style={{width:7,height:7,borderRadius:99,background:'#f59e0b',flexShrink:0,display:'inline-block'}}/>}
+    </>
+  );
+
+  if (collapsed) {
+    return (
+      <div className="sidebar sidebar-collapsed" style={{alignItems:'center'}}>
+        {/* logo — click to expand */}
+        <div style={{padding:'14px 0 12px',borderBottom:'1px solid #1f1f24',width:'100%',display:'flex',justifyContent:'center',flexShrink:0}}>
+          <div style={{width:28,height:28,borderRadius:7,background:'linear-gradient(135deg,#818cf8,#6366f1)',display:'flex',alignItems:'center',justifyContent:'center',boxShadow:'0 4px 12px rgba(99,102,241,.4)',cursor:'pointer'}}
+            onClick={onToggle} title="Expand sidebar">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.5" strokeLinecap="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><polyline points="14 2 14 8 20 8"/></svg>
+          </div>
+        </div>
+        {/* nav icons */}
+        <div style={{padding:'8px 0',width:'100%',display:'flex',flexDirection:'column',alignItems:'center',gap:2,flexShrink:0}}>
+          {navItems.map(({id,label,icon})=>(
+            <div key={id} className={`nav-item${view===id?' active':''}`} onClick={()=>nav(id)} title={label}
+              style={{width:'calc(100% - 12px)',justifyContent:'center',padding:'8px 0'}}>
+              <span style={{width:15,height:15,display:'flex',alignItems:'center',justifyContent:'center'}}>{icon}</span>
+            </div>
+          ))}
+        </div>
+        {/* + new note */}
+        <div style={{padding:'4px 0',width:'100%',display:'flex',justifyContent:'center',flexShrink:0}}>
+          <button onClick={newNote} title="New note"
+            style={{background:'none',border:'1px dashed #2a2a31',borderRadius:8,color:'#3a3a44',width:32,height:32,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',transition:'all 120ms'}}
+            onMouseEnter={e=>{e.currentTarget.style.borderColor='#818cf8';e.currentTarget.style.color='#818cf8'}}
+            onMouseLeave={e=>{e.currentTarget.style.borderColor='#2a2a31';e.currentTarget.style.color='#3a3a44'}}>
+            <svg style={{width:12,height:12}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          </button>
+        </div>
+        <div style={{flex:1}}/>
+        {/* footer sync dot */}
+        <div style={{padding:'10px 0',borderTop:'1px solid #1f1f24',width:'100%',display:'flex',justifyContent:'center',flexShrink:0}}>
+          <button onClick={onSetup} title="Sync settings"
+            style={{background:'none',border:'none',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',padding:'4px',borderRadius:6}}
+            onMouseEnter={e=>e.currentTarget.style.background='#17171b'}
+            onMouseLeave={e=>e.currentTarget.style.background='none'}>
+            <SyncDot/>
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="sidebar">
-      {/* logo */}
+      {/* logo + collapse toggle */}
       <div style={{padding:'18px 14px 12px',borderBottom:'1px solid #1f1f24',flexShrink:0}}>
         <div style={{display:'flex',alignItems:'center',gap:9}}>
-          <div style={{width:30,height:30,borderRadius:8,background:'linear-gradient(135deg,#818cf8,#6366f1)',display:'flex',alignItems:'center',justifyContent:'center',boxShadow:'0 4px 12px rgba(99,102,241,.4)'}}>
+          <div style={{width:30,height:30,borderRadius:8,background:'linear-gradient(135deg,#818cf8,#6366f1)',display:'flex',alignItems:'center',justifyContent:'center',boxShadow:'0 4px 12px rgba(99,102,241,.4)',flexShrink:0}}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.5" strokeLinecap="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><polyline points="14 2 14 8 20 8"/></svg>
           </div>
-          <span style={{fontFamily:'Fraunces,serif',fontSize:17,fontWeight:600,color:'#f4f3ee'}}>Folio</span>
+          <span style={{fontFamily:'Fraunces,serif',fontSize:17,fontWeight:600,color:'#f4f3ee',flex:1}}>Folio</span>
+          <button onClick={onToggle} title="Collapse sidebar"
+            style={{background:'none',border:'none',color:'#3a3a44',cursor:'pointer',padding:'2px 5px',borderRadius:5,fontSize:15,lineHeight:1,flexShrink:0,transition:'color 110ms'}}
+            onMouseEnter={e=>e.currentTarget.style.color='#f4f3ee'}
+            onMouseLeave={e=>e.currentTarget.style.color='#3a3a44'}>‹</button>
         </div>
       </div>
 
       {/* nav */}
       <div style={{padding:'10px 8px',flexShrink:0}}>
-        {[
-          {id:'today',label:'Today',icon:Ic.today},
-          {id:'notes',label:'Notes',icon:Ic.notes},
-          {id:'tasks',label:'Tasks',icon:Ic.tasks},
-          {id:'calendar',label:'Calendar',icon:Ic.cal},
-          {id:'tags',label:'Tags',icon:Ic.tags},
-        ].map(({id,label,icon})=>(
+        {navItems.map(({id,label,icon})=>(
           <div key={id} className={`nav-item${view===id?' active':''}`} onClick={()=>nav(id)}>
             <span style={{width:15,height:15,display:'flex',alignItems:'center',justifyContent:'center'}}>{icon}</span>
             {label}
@@ -1126,28 +1246,59 @@ function Sidebar({ state, update, syncStatus, onSetup }) {
         ))}
       </div>
 
-      {/* footer: tasks badge + sync status */}
+      {/* footer */}
       <div style={{padding:'10px 12px',borderTop:'1px solid #1f1f24',flexShrink:0,display:'flex',justifyContent:'space-between',alignItems:'center',gap:6}}>
         <div style={{fontSize:12,color:'#9a9788',minWidth:0}}>
-          {(() => { const due=state.tasks.filter(t=>!t.done&&t.due===todayKey()).length; return due>0&&(
+          {(()=>{const due=state.tasks.filter(t=>!t.done&&t.due===todayKey()).length;return due>0&&(
             <span><span style={{color:'#818cf8',fontWeight:700}}>{due}</span> task{due!==1?'s':''} due</span>
-          ); })()}
+          );})()}
         </div>
         <button onClick={onSetup} title="Sync settings"
           style={{background:'none',border:'none',cursor:'pointer',display:'flex',alignItems:'center',gap:5,padding:'2px 4px',borderRadius:6,flexShrink:0}}
           onMouseEnter={e=>e.currentTarget.style.background='#17171b'}
           onMouseLeave={e=>e.currentTarget.style.background='none'}>
-          {syncStatus==='synced'   && <span style={{width:7,height:7,borderRadius:99,background:'#10b981',flexShrink:0,display:'inline-block'}}/>}
-          {syncStatus==='saving'   && <span style={{width:7,height:7,borderRadius:99,background:'#f59e0b',flexShrink:0,display:'inline-block'}}/>}
-          {syncStatus==='offline'  && <span style={{width:7,height:7,borderRadius:99,background:'#f43f5e',flexShrink:0,display:'inline-block'}}/>}
-          {syncStatus==='local'    && <span style={{width:7,height:7,borderRadius:99,background:'#3a3a44',flexShrink:0,display:'inline-block'}}/>}
-          {syncStatus==='unauth'   && <span style={{width:7,height:7,borderRadius:99,background:'#f59e0b',flexShrink:0,display:'inline-block'}}/>}
+          <SyncDot/>
           <span style={{fontSize:11,color:'#3a3a44'}}>
             {syncStatus==='synced'?'synced':syncStatus==='saving'?'saving…':syncStatus==='offline'?'offline':syncStatus==='unauth'?'re-auth':'local'}
           </span>
           <svg style={{width:12,height:12,color:'#3a3a44'}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2"/></svg>
         </button>
       </div>
+    </div>
+  );
+}
+
+/* ── MobileNav ── */
+function MobileNav({ state, update }) {
+  const { view } = state.ui;
+  const nav = v => update('ui',{...state.ui,view:v});
+  const pending = state.tasks.filter(t=>!t.done&&t.due===todayKey()).length;
+  return (
+    <div className="mobile-nav">
+      {[
+        {id:'today',label:'Today',icon:Ic.today},
+        {id:'notes',label:'Notes',icon:Ic.notes},
+        {id:'tasks',label:'Tasks',icon:Ic.tasks},
+        {id:'calendar',label:'Cal',icon:Ic.cal},
+        {id:'tags',label:'Tags',icon:Ic.tags},
+      ].map(({id,label,icon})=>(
+        <button key={id} onClick={()=>nav(id)} style={{
+          flex:1,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',
+          gap:2,background:'none',border:'none',cursor:'pointer',
+          color:view===id?'#818cf8':'#3a3a44',
+          fontSize:9,fontFamily:'Manrope,sans-serif',fontWeight:700,
+          letterSpacing:'.04em',textTransform:'uppercase',
+          transition:'color 110ms',position:'relative',padding:'6px 0'
+        }}>
+          <span style={{width:20,height:20,display:'flex',alignItems:'center',justifyContent:'center'}}>{icon}</span>
+          {label}
+          {id==='tasks'&&pending>0&&(
+            <span style={{position:'absolute',top:4,right:'calc(50% - 16px)',background:'#818cf8',borderRadius:99,fontSize:8,fontWeight:700,color:'#fff',minWidth:14,height:14,display:'flex',alignItems:'center',justifyContent:'center',padding:'0 3px'}}>
+              {pending}
+            </span>
+          )}
+        </button>
+      ))}
     </div>
   );
 }
@@ -1206,7 +1357,15 @@ function App() {
   const [state, setStateRaw]   = useState(null);
   const [syncStatus, setSyncStatus] = useState('idle'); /* idle|saving|synced|offline|unauth|local */
   const [setupOpen, setSetupOpen]   = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
   const saveTimer = useRef(null);
+
+  useEffect(() => {
+    const handler = () => setIsMobile(window.innerWidth <= 768);
+    window.addEventListener('resize', handler);
+    return () => window.removeEventListener('resize', handler);
+  }, []);
 
   /* Merge new SEED keys in when DB shape evolves */
   const hydrate = d => ({ ...SEED(), ...d, ui:{ ...SEED().ui, ...(d?.ui||{}) } });
@@ -1284,10 +1443,12 @@ function App() {
 
   return (
     <div id="app">
-      <Sidebar state={state} update={update} syncStatus={syncStatus} onSetup={()=>setSetupOpen(true)}/>
+      <Sidebar state={state} update={update} syncStatus={syncStatus} onSetup={()=>setSetupOpen(true)}
+        collapsed={!sidebarOpen} onToggle={()=>setSidebarOpen(v=>!v)}/>
       <div className="main">
-        <View state={state} update={update}/>
+        <View state={state} update={update} isMobile={isMobile}/>
       </div>
+      <MobileNav state={state} update={update}/>
       {setupOpen && <SetupModal onClose={()=>setSetupOpen(false)}/>}
     </div>
   );
