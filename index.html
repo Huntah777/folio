@@ -861,7 +861,7 @@ function CalendarView({ state, update, isMobile }) {
     <div style={{display:'flex',flex:1,overflow:'hidden',flexDirection:isMobile?'column':'row'}}>
 
       {/* ── month grid ── */}
-      <div style={{flex:1,padding:isMobile?'10px 6px':'24px 24px 24px 40px',overflow:'auto',minWidth:0}} className="scrollbar">
+      <div style={{flex:1,padding:isMobile?'10px 6px':'24px 24px 24px 40px',overflow:isMobile?'visible':'auto',minWidth:0}} className={isMobile?undefined:'scrollbar'}>
         <div style={{display:'flex',alignItems:'center',gap:isMobile?6:16,marginBottom:isMobile?10:20}}>
           <button onClick={()=>nav(-1)} style={{background:'none',border:'1px solid #1f1f24',borderRadius:7,color:'#9a9788',padding:'5px 10px',cursor:'pointer',fontSize:16,flexShrink:0}}>‹</button>
           <h2 style={{fontFamily:'Fraunces,serif',fontSize:isMobile?16:22,fontWeight:600,flex:1,minWidth:0}}>{MONTHS[month]} {year}</h2>
@@ -1455,15 +1455,15 @@ function App() {
   const View  = views[state.ui.view] || TodayView;
 
   return (
-    <div id="app">
+    <>
       <Sidebar state={state} update={update} syncStatus={syncStatus} onSetup={()=>setSetupOpen(true)}
         collapsed={!sidebarOpen} onToggle={()=>setSidebarOpen(v=>!v)}/>
       <div className="main">
         <View state={state} update={update} isMobile={isMobile}/>
       </div>
-      <MobileNav state={state} update={update}/>
+      <MobileNav state={state} update={update} syncStatus={syncStatus} onSetup={()=>setSetupOpen(true)}/>
       {setupOpen && <SetupModal onClose={()=>setSetupOpen(false)}/>}
-    </div>
+    </>
   );
 }
 
