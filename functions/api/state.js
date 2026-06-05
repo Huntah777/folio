@@ -31,7 +31,7 @@ const json = (data, status = 200) =>
 const tokenOk = (request, env) => {
   const header = request.headers.get('Authorization') || '';
   const given  = header.replace(/^Bearer\s+/i, '').trim();
-  const expect = (env.SYNC_TOKEN || '').trim();
+  const expect = env.SYNC_TOKEN || '';
   if (!given || !expect || given.length !== expect.length) return false;
   let diff = 0;
   for (let i = 0; i < given.length; i++) diff |= given.charCodeAt(i) ^ expect.charCodeAt(i);
