@@ -183,8 +183,8 @@ const TOKEN_KEY = 'folio_token';
 const ENDPOINT  = '/api/state';
 
 const Sync = {
-  getToken() { try { return localStorage.getItem(TOKEN_KEY); } catch { return null; } },
-  setToken(t) { try { t ? localStorage.setItem(TOKEN_KEY,t) : localStorage.removeItem(TOKEN_KEY); } catch {} },
+  getToken() { try { const t = localStorage.getItem(TOKEN_KEY); return t ? t.trim() : null; } catch { return null; } },
+  setToken(t) { try { const v = t ? String(t).trim() : ''; v ? localStorage.setItem(TOKEN_KEY,v) : localStorage.removeItem(TOKEN_KEY); } catch {} },
   configured() { return !!this.getToken(); },
   async load() {
     const token = this.getToken();
@@ -2415,7 +2415,18 @@ function SetupModal({ onClose }) {
       setStatus('✓ Connected!');
       setTimeout(onClose, 900);
     } catch(err) {
-      setStatus(err.message === 'UNAUTHORIZED' ? '✗ Wrong token' : '✗ Could not reach API');
+      if (err.message === 'UNAUTHORIZED') {
+        const health = await fetch('/api/health').then(r => r.json()).catch(() => ({}));
+        setStatus(!health.sync_configured
+          ? '✗ Server SYNC_TOKEN not set — add it in Cloudflare Pages → Settings → Environment variables (Production)'
+          : '✗ Wrong token — must match SYNC_TOKEN exactly');
+      } else if (err.message === 'HTTP_413') {
+        setStatus('✗ Data too large to sync (over 5 MB)');
+      } else if (err.message.startsWith('HTTP_5')) {
+        setStatus('✗ Server error — check D1 binding in Cloudflare Pages');
+      } else {
+        setStatus('✗ Could not reach API');
+      }
     }
   };
 

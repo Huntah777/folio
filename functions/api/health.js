@@ -1,7 +1,7 @@
-/* GET /api/health — liveness check (no binding details exposed) */
-export async function onRequest() {
+/* GET /api/health — liveness check (no secrets exposed) */
+export async function onRequest({ env }) {
   return new Response(
-    JSON.stringify({ ok: true }),
+    JSON.stringify({ ok: true, sync_configured: !!(env.SYNC_TOKEN || '').trim() }),
     {
       headers: {
         'Content-Type': 'application/json',
