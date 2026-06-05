@@ -202,6 +202,12 @@ const SEED = () => ({
   tasks: [],
   meetings: [],
   folders: [],
+  kanbanCols: [
+    {id:'todo',      name:'To Do',       color:'#818cf8'},
+    {id:'inprogress',name:'In Progress', color:'#f59e0b'},
+    {id:'blocked',   name:'Blocked',     color:'#f43f5e'},
+    {id:'done',      name:'Done',        color:'#10b981'},
+  ],
   tags: ['#getting-started','#work','#personal','#ideas','#meeting'],
   ui: { view:'today', noteId: null, calDate: todayKey(), filterTag:'', folderId: null },
 });
@@ -219,6 +225,7 @@ const Ic = {
   check:   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>,
   chevD:   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polyline points="6 9 12 15 18 9"/></svg>,
   link:    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>,
+  kanban:  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"><rect x="3" y="3" width="5" height="18" rx="1"/><rect x="10" y="3" width="5" height="12" rx="1"/><rect x="17" y="3" width="5" height="15" rx="1"/></svg>,
   code:    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>,
   img:     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>,
   copy:    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>,
@@ -781,7 +788,7 @@ function NoteEditor({ note, state, update }) {
               onMouseLeave={e=>e.currentTarget.style.borderColor='#1f1f24'}>
               <span style={{fontSize:12}}>{n.emoji||'📝'}</span>
               <span style={{color:'#c9c6b8'}}>{n.title||'Untitled'}</span>
-              <span onClick={e=>{e.stopPropagation();removeLink(n.id);}} style={{color:'#3a3a44',marginLeft:2,fontSize:13,lineHeight:1}}>×</span>
+              <span onClick={e=>{e.stopPropagation();removeLink(n.id);}} className="del-btn" style={{marginLeft:2,padding:'0 2px',fontSize:13,lineHeight:1}}>×</span>
             </span>
           ))}
         </div>
@@ -1047,7 +1054,7 @@ function TasksView({ state, update, isMobile }) {
   const addTask = e => {
     e.preventDefault();
     if(!newTitle.trim()) return;
-    update('tasks',[{id:uid(),title:newTitle,done:false,priority:newPrio,due:newDue,subtasks:[],created:Date.now()},...state.tasks]);
+    update('tasks',[{id:uid(),title:newTitle,done:false,priority:newPrio,due:newDue,subtasks:[],kanbanCol:'todo',created:Date.now()},...state.tasks]);
     setNewTitle(''); setNewDue(''); setNewPrio('medium');
   };
   const cancelAdd = () => { setNewTitle(''); setNewDue(''); setNewPrio('medium'); };
@@ -1620,6 +1627,324 @@ function SyncIconBtn({ onClick, syncStatus }) {
   );
 }
 
+/* ── KanbanView ── */
+const KANBAN_COLORS = ['#818cf8','#6366f1','#f59e0b','#f43f5e','#10b981','#3b82f6','#a855f7','#ec4899','#14b8a6','#6b7280'];
+const PRIO_CLR = {high:'#f43f5e',medium:'#f59e0b',low:'#10b981',none:'#3a3a44'};
+
+function KanbanNotePicker({ notes, onPick }) {
+  const [q, setQ] = useState('');
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  useEffect(() => {
+    const h = e => { if (!ref.current?.contains(e.target)) setOpen(false); };
+    document.addEventListener('mousedown', h);
+    return () => document.removeEventListener('mousedown', h);
+  }, []);
+  const matches = notes.filter(n => !q || n.title.toLowerCase().includes(q.toLowerCase())).slice(0, 8);
+  return (
+    <div ref={ref} style={{position:'relative'}}>
+      <input value={q} onChange={e=>setQ(e.target.value)} onFocus={()=>setOpen(true)}
+        placeholder="Search notes to link…"
+        style={{width:'100%',background:'#17171b',border:'1px solid #2a2a31',borderRadius:6,color:'#c9c6b8',fontSize:12,padding:'5px 8px',outline:'none',fontFamily:'Manrope,sans-serif',boxSizing:'border-box'}}/>
+      {open && matches.length > 0 && (
+        <div style={{position:'absolute',top:'calc(100% + 3px)',left:0,right:0,background:'#17171b',border:'1px solid #2a2a31',borderRadius:8,zIndex:50,maxHeight:160,overflowY:'auto',boxShadow:'0 8px 24px rgba(0,0,0,.6)'}}>
+          {matches.map(n => (
+            <div key={n.id} onMouseDown={()=>{onPick(n.id);setQ('');setOpen(false);}}
+              style={{display:'flex',alignItems:'center',gap:6,padding:'6px 8px',cursor:'pointer',transition:'background 80ms'}}
+              onMouseEnter={e=>e.currentTarget.style.background='#2a2a31'}
+              onMouseLeave={e=>e.currentTarget.style.background='transparent'}>
+              <span style={{fontSize:13}}>{n.emoji||'📝'}</span>
+              <span style={{fontSize:12,color:'#c9c6b8',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{n.title||'Untitled'}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function KanbanView({ state, update, isMobile }) {
+  const cols = (state.kanbanCols && state.kanbanCols.length)
+    ? state.kanbanCols
+    : [{id:'todo',name:'To Do',color:'#818cf8'},{id:'inprogress',name:'In Progress',color:'#f59e0b'},{id:'blocked',name:'Blocked',color:'#f43f5e'},{id:'done',name:'Done',color:'#10b981'}];
+
+  const [collapsedCols, setCollapsedCols] = useState(new Set());
+  const [expandedCard, setExpandedCard]   = useState(null);
+  const [addingCol,    setAddingCol]      = useState(false);
+  const [newColName,   setNewColName]     = useState('');
+  const [newColColor,  setNewColColor]    = useState('#818cf8');
+  const [quickAdd,     setQuickAdd]       = useState({});
+  const [renamingCol,  setRenamingCol]    = useState(null);
+  const [renameColVal, setRenameColVal]   = useState('');
+
+  /* ── drag state ── */
+  const dragId   = useRef(null);        // task id being dragged
+  const [draggingId,  setDraggingId]  = useState(null);  // for card opacity
+  const [dragOverCol, setDragOverCol] = useState(null);  // column highlight
+
+  const moveTask   = (id, colId) => update('tasks', state.tasks.map(t=>t.id===id?{...t,kanbanCol:colId}:t));
+  const updateTask = (id, patch) => update('tasks', state.tasks.map(t=>t.id===id?{...t,...patch}:t));
+  const deleteTask = id           => { update('tasks', state.tasks.filter(t=>t.id!==id)); if(expandedCard===id) setExpandedCard(null); };
+
+  const addKanbanTask = colId => {
+    const title = (quickAdd[colId]||'').trim();
+    if (!title) return;
+    update('tasks', [{id:uid(),title,done:false,priority:'medium',due:'',subtasks:[],created:Date.now(),kanbanCol:colId},...state.tasks]);
+    setQuickAdd({...quickAdd,[colId]:''});
+  };
+
+  const addCol = e => {
+    e.preventDefault();
+    if (!newColName.trim()) return;
+    update('kanbanCols', [...cols,{id:uid(),name:newColName.trim(),color:newColColor}]);
+    setNewColName(''); setAddingCol(false);
+  };
+  const deleteCol = id => {
+    update('kanbanCols', cols.filter(c=>c.id!==id));
+    update('tasks', state.tasks.map(t=>t.kanbanCol===id?{...t,kanbanCol:'todo'}:t));
+  };
+  const saveRenameCol = e => {
+    e.preventDefault();
+    if (!renameColVal.trim()) return;
+    update('kanbanCols', cols.map(c=>c.id===renamingCol?{...c,name:renameColVal.trim()}:c));
+    setRenamingCol(null);
+  };
+  const toggleCollapse = id => setCollapsedCols(prev=>{const s=new Set(prev);s.has(id)?s.delete(id):s.add(id);return s;});
+
+  /* ── drag helpers ── */
+  const onCardDragStart = (e, taskId) => {
+    dragId.current = taskId;
+    setDraggingId(taskId);
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', taskId);
+  };
+  const onCardDragEnd = () => {
+    dragId.current = null;
+    setDraggingId(null);
+    setDragOverCol(null);
+  };
+  const onColDragOver = (e, colId) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    if (dragOverCol !== colId) setDragOverCol(colId);
+  };
+  const onColDragLeave = (e) => {
+    if (!e.currentTarget.contains(e.relatedTarget)) setDragOverCol(null);
+  };
+  const onColDrop = (e, colId) => {
+    e.preventDefault();
+    const id = dragId.current || e.dataTransfer.getData('text/plain');
+    if (id) { moveTask(id, colId); }
+    dragId.current = null;
+    setDraggingId(null);
+    setDragOverCol(null);
+  };
+
+  /* grip icon */
+  const Grip = () => (
+    <div style={{display:'flex',flexDirection:'column',gap:2.5,padding:'2px 5px 2px 2px',flexShrink:0,opacity:.35,cursor:'grab'}}>
+      {[0,1,2].map(i=>(
+        <div key={i} style={{display:'flex',gap:2.5}}>
+          <div style={{width:3,height:3,borderRadius:99,background:'#9a9788'}}/>
+          <div style={{width:3,height:3,borderRadius:99,background:'#9a9788'}}/>
+        </div>
+      ))}
+    </div>
+  );
+
+  return (
+    <div style={{flex:1,display:'flex',flexDirection:'column',overflow:'hidden'}}>
+      <div style={{padding:`${isMobile?16:28}px ${isMobile?14:32}px 12px`,flexShrink:0}}>
+        <h1 style={{fontFamily:'Fraunces,serif',fontSize:isMobile?22:26,fontWeight:600,color:'#f4f3ee',margin:0}}>Kanban</h1>
+      </div>
+
+      <div style={{flex:1,display:'flex',gap:14,overflowX:'auto',overflowY:'hidden',padding:`0 ${isMobile?14:32}px 24px`,alignItems:'flex-start'}} className="scrollbar">
+        {cols.map(col => {
+          const tasks = state.tasks.filter(t=>(t.kanbanCol||'todo')===col.id);
+          const collapsed = collapsedCols.has(col.id);
+          const isOver = dragOverCol === col.id;
+          const dropHandlers = {
+            onDragOver: e => onColDragOver(e, col.id),
+            onDragLeave: onColDragLeave,
+            onDrop: e => onColDrop(e, col.id),
+          };
+          return (
+            <div key={col.id} style={{flexShrink:0,width:collapsed?46:272,display:'flex',flexDirection:'column',maxHeight:'100%',transition:'width 180ms'}}>
+              {/* header */}
+              {renamingCol===col.id ? (
+                <form onSubmit={saveRenameCol} style={{display:'flex',gap:4,marginBottom:2}}>
+                  <input autoFocus value={renameColVal} onChange={e=>setRenameColVal(e.target.value)}
+                    style={{flex:1,background:'#17171b',border:`1px solid ${col.color}`,borderRadius:6,color:'#f4f3ee',fontSize:12,padding:'4px 8px',outline:'none',fontFamily:'Manrope,sans-serif',minWidth:0}}/>
+                  <button type="submit" style={{background:col.color,border:'none',borderRadius:6,color:'#fff',fontSize:12,padding:'4px 8px',cursor:'pointer'}}>✓</button>
+                  <button type="button" onClick={()=>setRenamingCol(null)} className="btn-ghost" style={{fontSize:12,padding:'4px 8px'}}>×</button>
+                </form>
+              ) : collapsed ? (
+                /* collapsed — still droppable */
+                <div {...dropHandlers} onClick={()=>toggleCollapse(col.id)}
+                  style={{background: isOver?`${col.color}15`:'#131317',border:`1px solid ${isOver?col.color:'#1f1f24'}`,borderRadius:8,padding:'10px 0',cursor:'pointer',display:'flex',flexDirection:'column',alignItems:'center',gap:6,marginBottom:2,transition:'all 120ms'}}>
+                  <div style={{width:8,height:8,borderRadius:99,background:col.color}}/>
+                  <span style={{fontSize:10,fontWeight:700,color:'#9a9788',writingMode:'vertical-rl',letterSpacing:'.06em'}}>{col.name}</span>
+                  <span style={{fontSize:10,color:'#818cf8',fontWeight:700}}>{tasks.length}</span>
+                </div>
+              ) : (
+                <div style={{background:'#131317',border:`1px solid ${isOver?col.color:'#1f1f24'}`,borderRadius:'10px 10px 0 0',padding:'8px 10px',display:'flex',alignItems:'center',gap:6,flexShrink:0,transition:'border-color 120ms'}}>
+                  <div style={{width:8,height:8,borderRadius:99,background:col.color,flexShrink:0}}/>
+                  <span style={{flex:1,fontSize:12.5,fontWeight:700,color:'#f4f3ee',letterSpacing:'.02em'}}>{col.name}</span>
+                  <span style={{fontSize:11,fontWeight:700,color:'#818cf8'}}>{tasks.length}</span>
+                  <button onClick={()=>{setRenamingCol(col.id);setRenameColVal(col.name);}} style={{background:'none',border:'none',color:'#3a3a44',cursor:'pointer',fontSize:12,padding:'1px 3px',borderRadius:4,lineHeight:1,transition:'color 100ms'}} onMouseEnter={e=>e.currentTarget.style.color='#f4f3ee'} onMouseLeave={e=>e.currentTarget.style.color='#3a3a44'} title="Rename">✎</button>
+                  <button onClick={()=>toggleCollapse(col.id)} style={{background:'none',border:'none',color:'#3a3a44',cursor:'pointer',fontSize:14,padding:'1px 3px',borderRadius:4,lineHeight:1,transition:'color 100ms'}} onMouseEnter={e=>e.currentTarget.style.color='#f4f3ee'} onMouseLeave={e=>e.currentTarget.style.color='#3a3a44'} title="Collapse">‹</button>
+                  {!['todo','inprogress','blocked','done'].includes(col.id) && tasks.length===0 && (
+                    <button onClick={()=>deleteCol(col.id)} className="del-btn" style={{padding:'1px 3px'}} title="Delete column">
+                      <svg style={{width:10,height:10}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {/* cards drop zone */}
+              {!collapsed && (
+                <div {...dropHandlers}
+                  style={{flex:1,overflowY:'auto',background:isOver?`${col.color}06`:'#0e0e12',border:`1px solid ${isOver?col.color:'#1f1f24'}`,borderTop:'none',padding:'6px',display:'flex',flexDirection:'column',gap:5,minHeight:80,transition:'background 120ms,border-color 120ms'}} className="scrollbar">
+                  {tasks.length===0 && (
+                    <div style={{color: isOver?col.color:'#3a3a44',fontSize:12,padding:'20px 4px',textAlign:'center',transition:'color 120ms',border: isOver?`1px dashed ${col.color}40`:'1px dashed transparent',borderRadius:8}}>
+                      {isOver ? 'Drop here' : 'No tasks'}
+                    </div>
+                  )}
+                  {tasks.map(t=>{
+                    const open = expandedCard===t.id;
+                    const linkedNote = t.linkedNoteId ? state.notes.find(n=>n.id===t.linkedNoteId) : null;
+                    const isBeingDragged = draggingId === t.id;
+                    return (
+                      <div key={t.id}
+                        draggable={!open}
+                        onDragStart={e=>onCardDragStart(e, t.id)}
+                        onDragEnd={onCardDragEnd}
+                        style={{background:'#131317',border:`1px solid ${t.blocker?.active?'rgba(244,63,94,.45)':'#1f1f24'}`,borderRadius:8,overflow:'hidden',transition:'opacity 120ms,border-color 120ms',opacity:isBeingDragged?0.35:1,cursor:open?'default':'grab'}}>
+                        {/* card face */}
+                        <div style={{padding:'8px 8px 8px 4px',display:'flex',alignItems:'flex-start',gap:4}}>
+                          <Grip/>
+                          <div style={{width:7,height:7,borderRadius:99,background:PRIO_CLR[t.priority||'none'],flexShrink:0,marginTop:6}}/>
+                          <span style={{flex:1,fontSize:12.5,color:t.done?'#3a3a44':'#f4f3ee',textDecoration:t.done?'line-through':'none',lineHeight:1.45,cursor:'pointer'}}
+                            onClick={()=>setExpandedCard(open?null:t.id)}>{t.title}</span>
+                          {t.blocker?.active && <span style={{fontSize:9,fontWeight:700,color:'#f43f5e',background:'rgba(244,63,94,.12)',border:'1px solid rgba(244,63,94,.3)',borderRadius:4,padding:'2px 5px',flexShrink:0,letterSpacing:'.04em'}}>BLOCKED</span>}
+                        </div>
+                        {/* card meta */}
+                        <div style={{padding:'0 10px 7px',display:'flex',gap:5,alignItems:'center',flexWrap:'wrap'}}>
+                          {t.due && <span style={{fontSize:10,color:'#9a9788'}}>{t.due}</span>}
+                          {linkedNote && (
+                            <span style={{fontSize:10,color:'#818cf8',display:'flex',alignItems:'center',gap:2,cursor:'pointer'}}
+                              onClick={e=>{e.stopPropagation();update('ui',{...state.ui,view:'notes',noteId:linkedNote.id});}}>
+                              {linkedNote.emoji||'📝'} {linkedNote.title||'Untitled'}
+                            </span>
+                          )}
+                          {t.taskNotes && <span style={{fontSize:10,color:'#9a9788'}}>💬</span>}
+                          <div style={{flex:1}}/>
+                          <select value={t.kanbanCol||'todo'} onClick={e=>e.stopPropagation()} onChange={e=>moveTask(t.id,e.target.value)}
+                            style={{background:'#17171b',border:'1px solid #2a2a31',borderRadius:5,color:'#9a9788',fontSize:10,padding:'2px 4px',cursor:'pointer',maxWidth:88}}>
+                            {cols.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
+                          </select>
+                        </div>
+                        {/* expanded detail */}
+                        {open && (
+                          <div style={{borderTop:'1px solid #1f1f24',padding:'10px 10px 12px',display:'flex',flexDirection:'column',gap:10}}>
+                            <div>
+                              <label style={{display:'flex',alignItems:'center',gap:6,cursor:'pointer',marginBottom:t.blocker?.active?6:0}}>
+                                <input type="checkbox" checked={!!(t.blocker?.active)}
+                                  onChange={e=>updateTask(t.id,{blocker:{...(t.blocker||{}),active:e.target.checked}})}
+                                  style={{accentColor:'#f43f5e',width:13,height:13,cursor:'pointer'}}/>
+                                <span style={{fontSize:12,color:'#f43f5e',fontWeight:600}}>Blocked</span>
+                              </label>
+                              {t.blocker?.active && (
+                                <input value={t.blocker?.reason||''} onChange={e=>updateTask(t.id,{blocker:{...t.blocker,reason:e.target.value}})}
+                                  placeholder="What is blocking this?"
+                                  style={{width:'100%',background:'rgba(244,63,94,.06)',border:'1px solid rgba(244,63,94,.25)',borderRadius:6,color:'#f4f3ee',fontSize:12,padding:'5px 8px',outline:'none',fontFamily:'Manrope,sans-serif',boxSizing:'border-box'}}/>
+                              )}
+                            </div>
+                            <div>
+                              <div style={{fontSize:10,fontWeight:700,color:'#3a3a44',textTransform:'uppercase',letterSpacing:'.07em',marginBottom:5}}>Notes</div>
+                              <textarea value={t.taskNotes||''} onChange={e=>updateTask(t.id,{taskNotes:e.target.value})}
+                                placeholder="Context, details, links…" rows={3}
+                                style={{width:'100%',background:'#17171b',border:'1px solid #2a2a31',borderRadius:6,color:'#c9c6b8',fontSize:12,padding:'6px 8px',outline:'none',resize:'vertical',fontFamily:'Manrope,sans-serif',lineHeight:1.5,boxSizing:'border-box'}}/>
+                            </div>
+                            <div>
+                              <div style={{fontSize:10,fontWeight:700,color:'#3a3a44',textTransform:'uppercase',letterSpacing:'.07em',marginBottom:5}}>Linked Note</div>
+                              {linkedNote ? (
+                                <div style={{display:'flex',alignItems:'center',gap:6,background:'#17171b',border:'1px solid #818cf830',borderRadius:6,padding:'5px 8px'}}>
+                                  <span style={{fontSize:13}}>{linkedNote.emoji||'📝'}</span>
+                                  <span style={{flex:1,fontSize:12,color:'#818cf8',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',cursor:'pointer'}}
+                                    onClick={()=>update('ui',{...state.ui,view:'notes',noteId:linkedNote.id})}>
+                                    {linkedNote.title||'Untitled'}
+                                  </span>
+                                  <button onClick={()=>updateTask(t.id,{linkedNoteId:null})} className="del-btn" style={{padding:'1px 4px'}}>×</button>
+                                </div>
+                              ) : (
+                                <KanbanNotePicker notes={state.notes} onPick={nid=>updateTask(t.id,{linkedNoteId:nid})}/>
+                              )}
+                            </div>
+                            <div style={{display:'flex',alignItems:'center',gap:8}}>
+                              <label style={{display:'flex',alignItems:'center',gap:5,cursor:'pointer',flex:1}}>
+                                <input type="checkbox" checked={!!t.done} onChange={e=>updateTask(t.id,{done:e.target.checked})}
+                                  style={{accentColor:'#818cf8',width:13,height:13,cursor:'pointer'}}/>
+                                <span style={{fontSize:12,color:'#9a9788'}}>Mark done</span>
+                              </label>
+                              <button onClick={()=>deleteTask(t.id)} className="del-btn" style={{fontSize:11,gap:4}}>
+                                <svg style={{width:11,height:11}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
+                                Delete
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* quick-add */}
+              {!collapsed && (
+                <form onSubmit={e=>{e.preventDefault();addKanbanTask(col.id);}}
+                  style={{background:'#131317',border:`1px solid ${isOver?col.color:'#1f1f24'}`,borderTop:'none',borderRadius:'0 0 10px 10px',padding:'6px 8px',flexShrink:0,transition:'border-color 120ms'}}>
+                  <input value={quickAdd[col.id]||''} onChange={e=>setQuickAdd({...quickAdd,[col.id]:e.target.value})}
+                    placeholder="+ Add task…"
+                    style={{width:'100%',background:'transparent',border:'none',color:'#9a9788',fontSize:12.5,outline:'none',fontFamily:'Manrope,sans-serif',boxSizing:'border-box'}}
+                    onFocus={e=>e.target.style.color='#f4f3ee'} onBlur={e=>e.target.style.color='#9a9788'}/>
+                </form>
+              )}
+            </div>
+          );
+        })}
+
+        {/* add section */}
+        <div style={{flexShrink:0,width:220}}>
+          {addingCol ? (
+            <form onSubmit={addCol} style={{background:'#131317',border:'1px solid #1f1f24',borderRadius:10,padding:'12px',display:'flex',flexDirection:'column',gap:8}}>
+              <input autoFocus value={newColName} onChange={e=>setNewColName(e.target.value)} placeholder="Section name…"
+                style={{background:'#17171b',border:'1px solid #2a2a31',borderRadius:6,color:'#f4f3ee',fontSize:13,padding:'6px 10px',outline:'none',fontFamily:'Manrope,sans-serif'}}/>
+              <div style={{display:'flex',gap:5,flexWrap:'wrap'}}>
+                {KANBAN_COLORS.map(c=>(
+                  <div key={c} onClick={()=>setNewColColor(c)} style={{width:18,height:18,borderRadius:99,background:c,cursor:'pointer',border:c===newColColor?'2px solid #fff':'2px solid transparent',transition:'border 100ms'}}/>
+                ))}
+              </div>
+              <div style={{display:'flex',gap:6}}>
+                <button type="submit" className="btn-primary" style={{flex:1,fontSize:12,padding:'5px 0'}}>Add</button>
+                <button type="button" onClick={()=>setAddingCol(false)} className="btn-ghost" style={{fontSize:12,padding:'5px 10px'}}>Cancel</button>
+              </div>
+            </form>
+          ) : (
+            <button onClick={()=>setAddingCol(true)}
+              style={{width:'100%',background:'none',border:'1px dashed #2a2a31',borderRadius:10,color:'#3a3a44',padding:'14px',fontSize:12.5,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',gap:7,fontFamily:'Manrope,sans-serif',transition:'all 120ms'}}
+              onMouseEnter={e=>{e.currentTarget.style.borderColor='#818cf8';e.currentTarget.style.color='#818cf8';}}
+              onMouseLeave={e=>{e.currentTarget.style.borderColor='#2a2a31';e.currentTarget.style.color='#3a3a44';}}>
+              <svg style={{width:13,height:13}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+              Add section
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ── Sidebar ── */
 function Sidebar({ state, update, syncStatus, onSetup, collapsed, onToggle }) {
   const { view } = state.ui;
@@ -1659,11 +1984,12 @@ function Sidebar({ state, update, syncStatus, onSetup, collapsed, onToggle }) {
   };
 
   const navItems = [
-    {id:'today',label:'Today',icon:Ic.today},
-    {id:'notes',label:'Notes',icon:Ic.notes},
-    {id:'tasks',label:'Tasks',icon:Ic.tasks},
-    {id:'calendar',label:'Calendar',icon:Ic.cal},
-    {id:'tags',label:'Tags',icon:Ic.tags},
+    {id:'today',    label:'Today',    icon:Ic.today},
+    {id:'notes',    label:'Notes',    icon:Ic.notes},
+    {id:'tasks',    label:'Tasks',    icon:Ic.tasks},
+    {id:'kanban',   label:'Kanban',   icon:Ic.kanban},
+    {id:'calendar', label:'Calendar', icon:Ic.cal},
+    {id:'tags',     label:'Tags',     icon:Ic.tags},
   ];
 
   const FolderIcon = ({open}) => (
@@ -1834,11 +2160,11 @@ function MobileNav({ state, update }) {
   return (
     <div className="mobile-nav">
       {[
-        {id:'today',label:'Today',icon:Ic.today},
-        {id:'notes',label:'Notes',icon:Ic.notes},
-        {id:'tasks',label:'Tasks',icon:Ic.tasks},
-        {id:'calendar',label:'Cal',icon:Ic.cal},
-        {id:'tags',label:'Tags',icon:Ic.tags},
+        {id:'today',   label:'Today',  icon:Ic.today},
+        {id:'notes',   label:'Notes',  icon:Ic.notes},
+        {id:'tasks',   label:'Tasks',  icon:Ic.tasks},
+        {id:'kanban',  label:'Kanban', icon:Ic.kanban},
+        {id:'calendar',label:'Cal',    icon:Ic.cal},
       ].map(({id,label,icon})=>(
         <button key={id} onClick={()=>nav(id)} style={{
           flex:1,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',
@@ -1996,7 +2322,7 @@ function App() {
     </div>
   );
 
-  const views = { today:TodayView, notes:NotesView, tasks:TasksView, calendar:CalendarView, tags:TagsView };
+  const views = { today:TodayView, notes:NotesView, tasks:TasksView, kanban:KanbanView, calendar:CalendarView, tags:TagsView };
   const View  = views[state.ui.view] || TodayView;
 
   return (
