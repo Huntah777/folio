@@ -2596,6 +2596,23 @@ function SetupModal({ onClose, onConnected }) {
     }
   };
 
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [confirmClear, setConfirmClear] = useState(null); /* 'data' | 'cache' | null */
+
+  const clearLocalData = () => {
+    localStorage.removeItem('folio_v1');
+    window.location.reload();
+  };
+  const clearCacheAndReload = async () => {
+    if (navigator.serviceWorker) {
+      const regs = await navigator.serviceWorker.getRegistrations().catch(() => []);
+      await Promise.all(regs.map(r => r.unregister()));
+    }
+    const keys = await caches.keys().catch(() => []);
+    await Promise.all(keys.map(k => caches.delete(k)));
+    window.location.reload();
+  };
+
   return (
     <div className="modal-bg" onClick={e=>{ if(e.target===e.currentTarget) onClose(); }}>
       <div className="modal fadeUp">
@@ -2616,10 +2633,62 @@ function SetupModal({ onClose, onConnected }) {
             <div style={{fontSize:12,color:status.startsWith('✓')?'#10b981':status.startsWith('✗')?'#f43f5e':'#f59e0b'}}>{status}</div>
           )}
           <div style={{display:'flex',gap:8,justifyContent:'flex-end'}}>
-            {token && <button type="button" className="btn-ghost" onClick={()=>{Sync.setToken(null);setToken('');setStatus('cleared');}}>Clear</button>}
+            {token && <button type="button" className="btn-ghost" onClick={()=>{Sync.setToken(null);setToken('');setStatus('cleared');}}>Disconnect</button>}
             <button type="submit" className="btn-primary">Save &amp; test</button>
           </div>
         </form>
+
+        {/* Advanced / PWA reset */}
+        <div style={{borderTop:'1px solid #1f1f24'}}>
+          <button type="button" onClick={()=>{setShowAdvanced(v=>!v);setConfirmClear(null);}}
+            style={{width:'100%',background:'none',border:'none',cursor:'pointer',padding:'10px 24px',display:'flex',alignItems:'center',justifyContent:'space-between',color:'#3a3a44',fontSize:12,fontFamily:'Manrope,sans-serif',fontWeight:700,letterSpacing:'.04em',textTransform:'uppercase',transition:'color 120ms'}}
+            onMouseEnter={e=>e.currentTarget.style.color='#9a9788'}
+            onMouseLeave={e=>e.currentTarget.style.color='#3a3a44'}>
+            Advanced
+            <svg style={{width:11,height:11,transform:showAdvanced?'rotate(180deg)':'none',transition:'transform 150ms'}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><polyline points="6 9 12 15 18 9"/></svg>
+          </button>
+          {showAdvanced && (
+            <div style={{padding:'0 24px 20px',display:'flex',flexDirection:'column',gap:8}}>
+              <div style={{fontSize:11,color:'#3a3a44',marginBottom:2}}>Use these if the PWA is showing stale data or won't load correctly.</div>
+
+              {/* Clear local data */}
+              {confirmClear === 'data' ? (
+                <div style={{display:'flex',gap:6,alignItems:'center'}}>
+                  <span style={{fontSize:11,color:'#f59e0b',flex:1}}>This will delete local data and reload — sync will pull it back if connected.</span>
+                  <button type="button" onClick={()=>setConfirmClear(null)} className="btn-ghost" style={{fontSize:11,padding:'4px 10px'}}>Cancel</button>
+                  <button type="button" onClick={clearLocalData}
+                    style={{background:'#f59e0b',border:'none',borderRadius:6,color:'#0a0a0b',fontSize:11,fontWeight:700,padding:'4px 10px',cursor:'pointer',fontFamily:'Manrope,sans-serif'}}>Confirm</button>
+                </div>
+              ) : (
+                <button type="button" onClick={()=>setConfirmClear('data')}
+                  style={{background:'none',border:'1px solid #2a2a31',borderRadius:7,color:'#9a9788',fontSize:12,padding:'7px 12px',cursor:'pointer',textAlign:'left',fontFamily:'Manrope,sans-serif',transition:'all 120ms'}}
+                  onMouseEnter={e=>{e.currentTarget.style.borderColor='#f59e0b';e.currentTarget.style.color='#f59e0b'}}
+                  onMouseLeave={e=>{e.currentTarget.style.borderColor='#2a2a31';e.currentTarget.style.color='#9a9788'}}>
+                  Clear local data &amp; reload
+                  <span style={{display:'block',fontSize:10,color:'#3a3a44',marginTop:1}}>Removes cached app state — re-pulled from D1 on next open</span>
+                </button>
+              )}
+
+              {/* Clear SW cache */}
+              {confirmClear === 'cache' ? (
+                <div style={{display:'flex',gap:6,alignItems:'center'}}>
+                  <span style={{fontSize:11,color:'#f43f5e',flex:1}}>This unregisters the service worker and clears all caches. App will reload fresh.</span>
+                  <button type="button" onClick={()=>setConfirmClear(null)} className="btn-ghost" style={{fontSize:11,padding:'4px 10px'}}>Cancel</button>
+                  <button type="button" onClick={clearCacheAndReload}
+                    style={{background:'#f43f5e',border:'none',borderRadius:6,color:'#fff',fontSize:11,fontWeight:700,padding:'4px 10px',cursor:'pointer',fontFamily:'Manrope,sans-serif'}}>Confirm</button>
+                </div>
+              ) : (
+                <button type="button" onClick={()=>setConfirmClear('cache')}
+                  style={{background:'none',border:'1px solid #2a2a31',borderRadius:7,color:'#9a9788',fontSize:12,padding:'7px 12px',cursor:'pointer',textAlign:'left',fontFamily:'Manrope,sans-serif',transition:'all 120ms'}}
+                  onMouseEnter={e=>{e.currentTarget.style.borderColor='#f43f5e';e.currentTarget.style.color='#f43f5e'}}
+                  onMouseLeave={e=>{e.currentTarget.style.borderColor='#2a2a31';e.currentTarget.style.color='#9a9788'}}>
+                  Clear PWA cache &amp; reload
+                  <span style={{display:'block',fontSize:10,color:'#3a3a44',marginTop:1}}>Unregisters service worker and wipes all cached assets — fixes stale PWA installs</span>
+                </button>
+              )}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
