@@ -15,10 +15,16 @@
      Authorization: Bearer <SYNC_TOKEN>
    ============================================================ */
 
+const MAX_BODY_BYTES = 5 * 1024 * 1024; /* 5 MB — notes with embedded images */
+
 const json = (data, status = 200) =>
   new Response(JSON.stringify(data), {
     status,
-    headers: { 'Content-Type': 'application/json; charset=utf-8' },
+    headers: {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Cache-Control': 'no-store',
+      'X-Content-Type-Options': 'nosniff',
+    },
   });
 
 /* Constant-time token comparison — prevents timing-based leaks */
@@ -46,8 +52,21 @@ export async function onRequest({ request, env }) {
     }
 
     if (request.method === 'PUT') {
-      const body = await request.json();
-      const now  = Date.now();
+      const cl = request.headers.get('Content-Length');
+      if (cl && Number(cl) > MAX_BODY_BYTES) return json({ error: 'Payload too large' }, 413);
+
+      const raw = await request.text();
+      if (raw.length > MAX_BODY_BYTES) return json({ error: 'Payload too large' }, 413);
+
+      let body;
+      try { body = JSON.parse(raw); }
+      catch { return json({ error: 'Invalid JSON' }, 400); }
+
+      if (!body || typeof body !== 'object' || Array.isArray(body)) {
+        return json({ error: 'Invalid JSON' }, 400);
+      }
+
+      const now = Date.now();
       await env.DB.prepare(
         `INSERT INTO state (id, data, updated_at) VALUES (1, ?, ?)
          ON CONFLICT(id) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at`
@@ -56,7 +75,7 @@ export async function onRequest({ request, env }) {
     }
 
     return json({ error: 'Method not allowed' }, 405);
-  } catch (err) {
-    return json({ error: String(err?.message || err) }, 500);
+  } catch {
+    return json({ error: 'Internal server error' }, 500);
   }
 }

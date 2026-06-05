@@ -1,10 +1,13 @@
-/* GET /api/health — returns binding status (no auth needed) */
-export async function onRequest({ env }) {
+/* GET /api/health — liveness check (no binding details exposed) */
+export async function onRequest() {
   return new Response(
-    JSON.stringify({
-      db_bound:    !!env.DB,
-      token_bound: !!env.SYNC_TOKEN,
-    }),
-    { headers: { 'Content-Type': 'application/json' } }
+    JSON.stringify({ ok: true }),
+    {
+      headers: {
+        'Content-Type': 'application/json',
+        'Cache-Control': 'no-store',
+        'X-Content-Type-Options': 'nosniff',
+      },
+    }
   );
 }
