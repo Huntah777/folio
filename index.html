@@ -4,6 +4,7 @@
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>Folio · Second Brain</title>
+<link rel="icon" href="/folio-icon.svg" type="image/svg+xml"/>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600&family=Manrope:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet"/>
@@ -855,13 +856,13 @@ function NoteEditor({ note, state, update }) {
               </div>;
               })()
             : <textarea key={i} className="editor-body" value={part.content}
-                rows={Math.max(4,(part.content.match(/\n/g)||[]).length+2)}
+                rows={Math.max(5,(part.content.match(/\n/g)||[]).length+2)}
                 onFocus={e=>{ activeTA.current={el:e.target,partIdx:i,pos:e.target.selectionStart}; }}
                 onBlur={e=>{ if(activeTA.current?.el===e.target) activeTA.current.pos=e.target.selectionStart; }}
                 onSelect={e=>{ if(activeTA.current?.el===e.target) activeTA.current.pos=e.target.selectionStart; }}
                 onChange={e=>handleBodyChange(e,i)}
                 onKeyDown={e=>handleBodyKeyDown(e,i)}
-                placeholder={i===0?'Start writing… (click toolbar buttons to format)':''}/>
+                placeholder={i===0?'Start writing… (click toolbar buttons to format)':part.content===''?'Continue writing…':''}/>
         )}
 
         {/* code insert panel */}
@@ -2250,9 +2251,14 @@ function Sidebar({ state, update, syncStatus, onSetup, collapsed, onToggle }) {
       {/* logo + collapse */}
       <div style={{padding:'18px 14px 12px',borderBottom:'1px solid #1f1f24',flexShrink:0}}>
         <div style={{display:'flex',alignItems:'center',gap:9}}>
-          <div style={{width:30,height:30,borderRadius:8,background:'linear-gradient(135deg,#818cf8,#6366f1)',display:'flex',alignItems:'center',justifyContent:'center',boxShadow:'0 4px 12px rgba(99,102,241,.4)',flexShrink:0}}>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.5" strokeLinecap="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><polyline points="14 2 14 8 20 8"/></svg>
-          </div>
+          <svg width="30" height="30" viewBox="0 0 512 512" style={{borderRadius:7,flexShrink:0}} xmlns="http://www.w3.org/2000/svg">
+            <rect width="512" height="512" rx="112" fill="#16213e"/>
+            <rect width="512" height="512" rx="112" fill="none" stroke="#1e2d52" strokeWidth="3"/>
+            <rect x="172" y="136" width="60" height="240" rx="10" fill="#a78bfa"/>
+            <rect x="172" y="136" width="192" height="60" rx="10" fill="#a78bfa"/>
+            <rect x="172" y="226" width="140" height="52" rx="10" fill="#a78bfa" opacity="0.72"/>
+            <rect x="332" y="332" width="32" height="32" rx="8" fill="#7c3aed" opacity="0.7"/>
+          </svg>
           <span style={{fontFamily:'Fraunces,serif',fontSize:17,fontWeight:600,color:'#f4f3ee',flex:1}}>Folio</span>
           <button onClick={onToggle} title="Collapse sidebar"
             style={{background:'none',border:'none',color:'#3a3a44',cursor:'pointer',padding:'2px 5px',borderRadius:5,fontSize:15,lineHeight:1,flexShrink:0,transition:'color 110ms'}}

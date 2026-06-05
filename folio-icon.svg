@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img">
+  <title>Folio</title>
+  <desc>Geometric F lettermark in purple on a deep navy rounded square background</desc>
+
+  <!-- Background -->
+  <rect width="512" height="512" rx="112" fill="#16213e"/>
+  <rect width="512" height="512" rx="112" fill="none" stroke="#1e2d52" stroke-width="3"/>
+
+  <!-- Vertical stem -->
+  <rect x="172" y="136" width="60" height="240" rx="10" fill="#a78bfa"/>
+
+  <!-- Top horizontal bar -->
+  <rect x="172" y="136" width="192" height="60" rx="10" fill="#a78bfa"/>
+
+  <!-- Mid horizontal bar (shorter) -->
+  <rect x="172" y="226" width="140" height="52" rx="10" fill="#a78bfa" opacity="0.72"/>
+
+  <!-- Geometric accent dot — bottom right -->
+  <rect x="332" y="332" width="32" height="32" rx="8" fill="#7c3aed" opacity="0.7"/>
+</svg>
