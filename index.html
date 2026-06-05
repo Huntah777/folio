@@ -1943,6 +1943,9 @@ function KanbanView({ state, update, isMobile }) {
                             </span>
                           )}
                           {t.taskNotes && <span style={{fontSize:10,color:'#9a9788'}}>💬</span>}
+                          {(t.tags||[]).map(tg=>(
+                            <span key={tg} className="tag" style={{background:`${tagColor(tg)}18`,color:tagColor(tg),fontSize:10,padding:'1px 5px'}}>{tg}</span>
+                          ))}
                           <div style={{flex:1}}/>
                           <select value={t.kanbanCol||'todo'} onClick={e=>e.stopPropagation()} onChange={e=>moveTask(t.id,e.target.value)}
                             style={{background:'#17171b',border:'1px solid #2a2a31',borderRadius:5,color:'#9a9788',fontSize:10,padding:'2px 4px',cursor:'pointer',maxWidth:88}}>
@@ -1970,6 +1973,21 @@ function KanbanView({ state, update, isMobile }) {
                               <textarea value={t.taskNotes||''} onChange={e=>updateTask(t.id,{taskNotes:e.target.value})}
                                 placeholder="Context, details, links…" rows={3}
                                 style={{width:'100%',background:'#17171b',border:'1px solid #2a2a31',borderRadius:6,color:'#c9c6b8',fontSize:12,padding:'6px 8px',outline:'none',resize:'vertical',fontFamily:'Manrope,sans-serif',lineHeight:1.5,boxSizing:'border-box'}}/>
+                            </div>
+                            <div>
+                              <div style={{fontSize:10,fontWeight:700,color:'#3a3a44',textTransform:'uppercase',letterSpacing:'.07em',marginBottom:5}}>Tags</div>
+                              <div style={{display:'flex',flexWrap:'wrap',gap:5,alignItems:'center'}}>
+                                {(t.tags||[]).map(tg=>(
+                                  <span key={tg} className="tag" style={{background:`${tagColor(tg)}18`,color:tagColor(tg),fontSize:11,padding:'2px 7px',display:'flex',alignItems:'center',gap:3}}>
+                                    {tg}<span onClick={()=>updateTask(t.id,{tags:(t.tags||[]).filter(x=>x!==tg)})} style={{cursor:'pointer',opacity:.7,lineHeight:1}}>×</span>
+                                  </span>
+                                ))}
+                                <select onChange={e=>{const tg=e.target.value;if(tg)updateTask(t.id,{tags:[...(t.tags||[]),tg]});e.target.value='';}}
+                                  style={{background:'#17171b',border:'1px solid #2a2a31',borderRadius:5,color:'#9a9788',fontSize:11,padding:'2px 6px',cursor:'pointer'}}>
+                                  <option value=''>+ tag</option>
+                                  {(state.tags||[]).filter(tg=>!(t.tags||[]).includes(tg)).map(tg=><option key={tg} value={tg}>{tg}</option>)}
+                                </select>
+                              </div>
                             </div>
                             <div>
                               <div style={{fontSize:10,fontWeight:700,color:'#3a3a44',textTransform:'uppercase',letterSpacing:'.07em',marginBottom:5}}>Linked Note</div>
