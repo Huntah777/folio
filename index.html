@@ -208,16 +208,15 @@ function scheduleCalendarNotifications(meetings) {
   if (!('Notification' in window) || Notification.permission !== 'granted') return;
   if (!navigator.serviceWorker?.controller) return;
   const now = Date.now();
-  const horizon = now + 12 * 60 * 60 * 1000;
   const notifications = [];
-  const checkDays = [new Date(), new Date(now + 86400000)];
+  const checkDays = Array.from({ length: 14 }, (_, i) => new Date(now + i * 86400000));
   for (const m of meetings) {
     const [h, min] = (m.time || '00:00').split(':').map(Number);
     for (const day of checkDays) {
       if (!occursOnDay(m, day)) continue;
       const dt = new Date(day); dt.setHours(h, min, 0, 0);
       const fireAt = dt.getTime() - 15 * 60 * 1000;
-      if (fireAt > now && fireAt <= horizon) {
+      if (fireAt > now) {
         notifications.push({
           id: `meeting-${m.id}-${fmtKey(day)}`,
           title: m.title,
@@ -2605,7 +2604,8 @@ function App() {
   const [setupOpen, setSetupOpen]   = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
-  const saveTimer = useRef(null);
+  const saveTimer    = useRef(null);
+  const pendingFlush = useRef(null); /* latest unsaved state, cleared on successful D1 write */
   const [installBanner, setInstallBanner] = useState(!!window._installPrompt);
 
   useEffect(() => {
@@ -2662,7 +2662,16 @@ function App() {
         await Sync.save(seed);
         setStateRaw(seed);
       } else {
-        setStateRaw(hydrate(remote));
+        // Remote wins for conflicts, but preserve local-only items not yet synced to D1
+        const merged = hydrate(remote);
+        let hasExtras = false;
+        ['notes','tasks','meetings','folders'].forEach(key => {
+          const remoteIds = new Set((remote[key]||[]).map(x => x.id));
+          const extras = (cache?.[key]||[]).filter(x => !remoteIds.has(x.id));
+          if (extras.length) { merged[key] = [...merged[key], ...extras]; hasExtras = true; }
+        });
+        if (hasExtras) Sync.save(merged).catch(() => {});
+        setStateRaw(merged);
       }
       setSyncStatus('synced');
     } catch(e) {
@@ -2687,7 +2696,15 @@ function App() {
       await Sync.save(cache);
       setStateRaw(hydrate(cache));
     } else if (!remoteEmpty) {
-      setStateRaw(hydrate(remote));
+      const merged = hydrate(remote);
+      let hasExtras = false;
+      ['notes','tasks','meetings','folders'].forEach(key => {
+        const remoteIds = new Set((remote[key]||[]).map(x => x.id));
+        const extras = (cache?.[key]||[]).filter(x => !remoteIds.has(x.id));
+        if (extras.length) { merged[key] = [...merged[key], ...extras]; hasExtras = true; }
+      });
+      if (hasExtras) await Sync.save(merged);
+      setStateRaw(merged);
     }
     setSyncStatus('synced');
   }, []);
@@ -2697,6 +2714,32 @@ function App() {
     if (state?.meetings) scheduleCalendarNotifications(state.meetings);
   }, [state?.meetings]);
 
+  /* ── reschedule notifications when app comes back to foreground ── */
+  useEffect(() => {
+    if (!state?.meetings) return;
+    const meetings = state.meetings;
+    const onVisible = () => { if (document.visibilityState === 'visible') scheduleCalendarNotifications(meetings); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, [state?.meetings]);
+
+  /* ── flush pending D1 write before the page is hidden/unloaded ── */
+  useEffect(() => {
+    const flush = () => {
+      if (!pendingFlush.current) return;
+      clearTimeout(saveTimer.current);
+      Sync.save(pendingFlush.current).catch(() => {});
+      pendingFlush.current = null;
+    };
+    const onVisibility = () => { if (document.visibilityState === 'hidden') flush(); };
+    document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('pagehide', flush);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('pagehide', flush);
+    };
+  }, []);
+
   /* ── update: write localStorage immediately, debounce D1 by 1.5s ── */
   const update = useCallback((key, val) => {
     setStateRaw(prev => {
@@ -2705,11 +2748,13 @@ function App() {
         : { ...prev, [key]: val };
       Cache.write(next);
       if (Sync.configured()) {
+        pendingFlush.current = next;
         setSyncStatus('saving');
         clearTimeout(saveTimer.current);
         saveTimer.current = setTimeout(async () => {
           try {
             await Sync.save(next);
+            pendingFlush.current = null;
             setSyncStatus('synced');
           } catch(e) {
             setSyncStatus(e.message === 'UNAUTHORIZED' ? 'unauth' : 'offline');

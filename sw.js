@@ -90,7 +90,7 @@ self.addEventListener('message', (event) => {
   const now = Date.now();
   (event.data.notifications || []).forEach(({ id, title, body, fireAt }) => {
     const delay = fireAt - now;
-    if (delay <= 0 || delay > 12 * 60 * 60 * 1000) return;
+    if (delay <= 0 || delay > 7 * 24 * 60 * 60 * 1000) return;
     const timer = setTimeout(() => {
       self.registration.showNotification(title, {
         body,
