@@ -431,6 +431,9 @@ function NoteEditor({ note, state, update }) {
   const [showLinkSearch, setShowLinkSearch] = useState(false);
   const [linkQuery, setLinkQuery] = useState('');
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
+  const [showWebLink, setShowWebLink] = useState(false);
+  const [wlUrl,   setWlUrl]   = useState('');
+  const [wlTitle, setWlTitle] = useState('');
   const imgInputRef = useRef(null);
   const activeTA = useRef(null); /* { el, partIdx } */
 
@@ -578,6 +581,16 @@ function NoteEditor({ note, state, update }) {
   };
 
   /* ── linked notes ── */
+  const addWebLink = e => {
+    e.preventDefault();
+    if (!wlUrl.trim()) return;
+    const url = /^https?:\/\//i.test(wlUrl) ? wlUrl.trim() : 'https://'+wlUrl.trim();
+    const title = wlTitle.trim() || (() => { try { return new URL(url).hostname; } catch { return url; } })();
+    upNote({webLinks:[...(note.webLinks||[]),{id:uid(),url,title}]});
+    setWlUrl(''); setWlTitle(''); setShowWebLink(false);
+  };
+  const removeWebLink = id => upNote({webLinks:(note.webLinks||[]).filter(l=>l.id!==id)});
+
   const addLink = id => { if(!(note.links||[]).includes(id)) upNote({links:[...(note.links||[]),id]}); setShowLinkSearch(false); setLinkQuery(''); };
   const removeLink = id => upNote({links:(note.links||[]).filter(x=>x!==id)});
   const linkedNotes = (note.links||[]).map(id=>state.notes.find(n=>n.id===id)).filter(Boolean);
@@ -699,8 +712,15 @@ function NoteEditor({ note, state, update }) {
           onMouseLeave={e=>{e.currentTarget.style.background='none';e.currentTarget.style.color='#9a9788';}}>
           <svg style={{width:10,height:10}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>code
         </button>
+        {/* web url */}
+        <button onClick={()=>{setShowWebLink(v=>!v);setShowLinkSearch(false);}} title="Add web link"
+          style={{...tbBtn,display:'flex',alignItems:'center',gap:3,color:showWebLink?'#818cf8':'#9a9788',borderColor:showWebLink?'#818cf8':'#1f1f24'}}
+          onMouseEnter={e=>{e.currentTarget.style.background='#17171b';}}
+          onMouseLeave={e=>{e.currentTarget.style.background='none';}}>
+          <svg style={{width:10,height:10}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>url
+        </button>
         {/* link note */}
-        <button onClick={()=>setShowLinkSearch(v=>!v)} title="Link a note" style={{...tbBtn,display:'flex',alignItems:'center',gap:3,color:showLinkSearch?'#818cf8':'#9a9788',borderColor:showLinkSearch?'#818cf8':'#1f1f24'}}
+        <button onClick={()=>{setShowLinkSearch(v=>!v);setShowWebLink(false);}} title="Link a note" style={{...tbBtn,display:'flex',alignItems:'center',gap:3,color:showLinkSearch?'#818cf8':'#9a9788',borderColor:showLinkSearch?'#818cf8':'#1f1f24'}}
           onMouseEnter={e=>{e.currentTarget.style.background='#17171b';}}
           onMouseLeave={e=>{e.currentTarget.style.background='none';}}>
           <svg style={{width:10,height:10}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>link
@@ -709,6 +729,21 @@ function NoteEditor({ note, state, update }) {
 
       {/* ── body ── */}
       <div style={{flex:1,overflow:'auto',padding:'14px 32px 32px'}} className="scrollbar">
+
+        {/* web link panel */}
+        {showWebLink && (
+          <form onSubmit={addWebLink} style={{background:'#17171b',border:'1px solid #2a2a31',borderRadius:10,padding:'10px 12px',marginBottom:14,display:'flex',flexDirection:'column',gap:8}}>
+            <div style={{fontSize:11,color:'#9a9788'}}>Add a web link:</div>
+            <input autoFocus value={wlUrl} onChange={e=>setWlUrl(e.target.value)} placeholder="https://example.com"
+              style={{background:'#0d0d10',border:'1px solid #2a2a31',borderRadius:6,padding:'6px 10px',color:'#f4f3ee',fontSize:13,outline:'none',fontFamily:'Manrope,sans-serif'}}/>
+            <input value={wlTitle} onChange={e=>setWlTitle(e.target.value)} placeholder="Label (optional)"
+              style={{background:'#0d0d10',border:'1px solid #2a2a31',borderRadius:6,padding:'6px 10px',color:'#f4f3ee',fontSize:13,outline:'none',fontFamily:'Manrope,sans-serif'}}/>
+            <div style={{display:'flex',gap:8}}>
+              <button type="submit" className="btn-primary" style={{fontSize:12,padding:'5px 14px'}}>Add link</button>
+              <button type="button" className="btn-ghost" onClick={()=>{setShowWebLink(false);setWlUrl('');setWlTitle('');}} style={{fontSize:12,padding:'5px 12px'}}>Cancel</button>
+            </div>
+          </form>
+        )}
 
         {/* link search dropdown */}
         {showLinkSearch && (
@@ -753,6 +788,34 @@ function NoteEditor({ note, state, update }) {
             <div style={{display:'flex',gap:8,marginTop:10}}>
               <button className="btn-primary" onClick={insertCode} style={{fontSize:12,padding:'5px 12px'}}>Insert</button>
               <button className="btn-ghost" onClick={()=>setShowCode(false)} style={{fontSize:12,padding:'5px 12px'}}>Cancel</button>
+            </div>
+          </div>
+        )}
+
+        {/* web links */}
+        {(note.webLinks||[]).length>0 && (
+          <div style={{marginTop:20}}>
+            <div style={{fontSize:11,color:'#3a3a44',marginBottom:8,fontWeight:700,letterSpacing:'.06em',textTransform:'uppercase'}}>Links</div>
+            <div style={{display:'flex',flexDirection:'column',gap:6}}>
+              {(note.webLinks||[]).map(l=>(
+                <div key={l.id} style={{display:'flex',alignItems:'center',gap:8,background:'#17171b',border:'1px solid #1f1f24',borderRadius:8,padding:'7px 10px',transition:'border-color 120ms'}}
+                  onMouseEnter={e=>e.currentTarget.style.borderColor='#2a2a31'}
+                  onMouseLeave={e=>e.currentTarget.style.borderColor='#1f1f24'}>
+                  <svg style={{width:12,height:12,color:'#818cf8',flexShrink:0}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+                  <a href={l.url} target="_blank" rel="noopener noreferrer"
+                    style={{flex:1,color:'#818cf8',fontSize:13,textDecoration:'none',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',fontFamily:'Manrope,sans-serif'}}
+                    onMouseEnter={e=>e.currentTarget.style.textDecoration='underline'}
+                    onMouseLeave={e=>e.currentTarget.style.textDecoration='none'}>
+                    {l.title}
+                  </a>
+                  <span style={{fontSize:11,color:'#3a3a44',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',maxWidth:160,flexShrink:0}}>
+                    {(() => { try { return new URL(l.url).hostname; } catch { return ''; } })()}
+                  </span>
+                  <button onClick={()=>removeWebLink(l.id)} className="del-btn" style={{padding:'2px 4px',flexShrink:0}} title="Remove link">
+                    <svg style={{width:11,height:11}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                  </button>
+                </div>
+              ))}
             </div>
           </div>
         )}
@@ -1045,16 +1108,20 @@ function TasksView({ state, update, isMobile }) {
   const [editingSub, setEditingSub] = useState(null);
   const [selectedTaskIds, setSelectedTaskIds] = useState(new Set());
   const [ctxMenu, setCtxMenu] = useState(null);
+  const [tagFilter, setTagFilter] = useState('');
 
   const toggleTask = id => update('tasks', state.tasks.map(t=>t.id===id?{...t,done:!t.done}:t));
   const toggleSub = (tid,sid) => update('tasks', state.tasks.map(t=>t.id===tid?{...t,subtasks:t.subtasks.map(s=>s.id===sid?{...s,done:!s.done}:s)}:t));
   const delTask = id => { update('tasks', state.tasks.filter(t=>t.id!==id)); setSelectedTaskIds(p=>{const s=new Set(p);s.delete(id);return s;}); };
   const toggleTaskSel = (e,id) => { e.stopPropagation(); setSelectedTaskIds(p=>{const s=new Set(p);s.has(id)?s.delete(id):s.add(id);return s;}); };
   const deleteSelectedTasks = () => { update('tasks',state.tasks.filter(t=>!selectedTaskIds.has(t.id))); setSelectedTaskIds(new Set()); };
+  const addTaskTag = (id, tag) => { const c=tag.startsWith('#')?tag:'#'+tag; update('tasks',state.tasks.map(t=>t.id===id&&!(t.tags||[]).includes(c)?{...t,tags:[...(t.tags||[]),c]}:t)); };
+  const removeTaskTag = (id, tag) => update('tasks',state.tasks.map(t=>t.id===id?{...t,tags:(t.tags||[]).filter(tg=>tg!==tag)}:t));
+
   const addTask = e => {
     e.preventDefault();
     if(!newTitle.trim()) return;
-    update('tasks',[{id:uid(),title:newTitle,done:false,priority:newPrio,due:newDue,subtasks:[],kanbanCol:'todo',created:Date.now()},...state.tasks]);
+    update('tasks',[{id:uid(),title:newTitle,done:false,priority:newPrio,due:newDue,tags:[],subtasks:[],kanbanCol:'todo',created:Date.now()},...state.tasks]);
     setNewTitle(''); setNewDue(''); setNewPrio('medium');
   };
   const cancelAdd = () => { setNewTitle(''); setNewDue(''); setNewPrio('medium'); };
@@ -1064,11 +1131,11 @@ function TasksView({ state, update, isMobile }) {
     update('tasks',state.tasks.map(t=>t.id===tid?{...t,subtasks:[...t.subtasks,{id:uid(),title:v,done:false}]}:t));
     setSubInput({...subInput,[tid]:''});
   };
-  const startEdit = t => setEditing({ id:t.id, title:t.title, priority:t.priority||'medium', due:t.due||'' });
+  const startEdit = t => setEditing({ id:t.id, title:t.title, priority:t.priority||'medium', due:t.due||'', tags:t.tags||[] });
   const saveEdit = e => {
     e.preventDefault();
     if(!editing.title.trim()) return;
-    update('tasks', state.tasks.map(t=>t.id===editing.id?{...t,title:editing.title,priority:editing.priority,due:editing.due}:t));
+    update('tasks', state.tasks.map(t=>t.id===editing.id?{...t,title:editing.title,priority:editing.priority,due:editing.due,tags:editing.tags||[]}:t));
     setEditing(null);
   };
   const startEditSub = (tid,s) => setEditingSub({ tid, sid:s.id, title:s.title });
@@ -1082,19 +1149,32 @@ function TasksView({ state, update, isMobile }) {
 
   const PRIO_ORDER = { high:0, medium:1, low:2, none:3 };
   const byPrio = arr => [...arr].sort((a,b)=>(PRIO_ORDER[a.priority||'none']??3)-(PRIO_ORDER[b.priority||'none']??3));
+  const taskFilter = t => !tagFilter || (t.tags||[]).includes(tagFilter);
+  const allTaskTags = [...new Set(state.tasks.flatMap(t=>t.tags||[]))];
 
   const groups = [
-    { label:'Today',    items: byPrio(state.tasks.filter(t=>!t.done&&t.due===todayKey())) },
-    { label:'Upcoming', items: byPrio(state.tasks.filter(t=>!t.done&&t.due&&t.due!==todayKey())) },
-    { label:'No date',  items: byPrio(state.tasks.filter(t=>!t.done&&!t.due)) },
-    { label:'Done',     items: state.tasks.filter(t=>t.done) },
+    { label:'Today',    items: byPrio(state.tasks.filter(t=>!t.done&&t.due===todayKey()&&taskFilter(t))) },
+    { label:'Upcoming', items: byPrio(state.tasks.filter(t=>!t.done&&t.due&&t.due!==todayKey()&&taskFilter(t))) },
+    { label:'No date',  items: byPrio(state.tasks.filter(t=>!t.done&&!t.due&&taskFilter(t))) },
+    { label:'Done',     items: state.tasks.filter(t=>t.done&&taskFilter(t)) },
   ];
 
   return (
     <div style={{flex:1,overflow:'auto',padding:isMobile?'20px 14px':'28px 32px'}} className="scrollbar">
-      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:20}}>
+      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:allTaskTags.length?10:20}}>
         <h1 style={{fontFamily:'Fraunces,serif',fontSize:isMobile?22:26,fontWeight:600}}>Tasks</h1>
       </div>
+      {allTaskTags.length>0&&(
+        <div style={{display:'flex',gap:4,flexWrap:'wrap',marginBottom:18}}>
+          <span onClick={()=>setTagFilter('')} className="tag" style={{background:tagFilter===''?'#818cf830':'none',color:tagFilter===''?'#818cf8':'#9a9788',border:'1px solid #1f1f24',cursor:'pointer',fontSize:11}}>All</span>
+          {allTaskTags.map(tg=>(
+            <span key={tg} onClick={()=>setTagFilter(tagFilter===tg?'':tg)} className="tag"
+              style={{background:tagFilter===tg?`${tagColor(tg)}20`:'none',color:tagFilter===tg?tagColor(tg):'#9a9788',border:'1px solid #1f1f24',cursor:'pointer',fontSize:11}}>
+              {tg}
+            </span>
+          ))}
+        </div>
+      )}
 
       {/* add task */}
       <form onSubmit={addTask} style={{display:'flex',flexWrap:'wrap',gap:8,marginBottom:24,background:'#131317',border:'1px solid #1f1f24',borderRadius:10,padding:'10px 14px'}}>
@@ -1128,12 +1208,23 @@ function TasksView({ state, update, isMobile }) {
                     </select>
                     <input type="date" value={editing.due} onChange={e=>setEditing({...editing,due:e.target.value})}
                       style={{background:'#17171b',border:'1px solid #2a2a31',borderRadius:6,color:'#9a9788',fontSize:12,padding:'3px 7px',maxWidth:130}}/>
+                    {/* tag management in edit */}
+                    {(editing.tags||[]).map(tg=>(
+                      <span key={tg} className="tag" style={{background:`${tagColor(tg)}18`,color:tagColor(tg),fontSize:11,padding:'2px 7px'}}>
+                        {tg}<span onClick={()=>setEditing({...editing,tags:(editing.tags||[]).filter(x=>x!==tg)})} style={{cursor:'pointer',marginLeft:3,opacity:.7}}>×</span>
+                      </span>
+                    ))}
+                    <select onChange={e=>{const tg=e.target.value;if(tg&&!(editing.tags||[]).includes(tg))setEditing({...editing,tags:[...(editing.tags||[]),tg]});e.target.value='';}}
+                      style={{background:'#17171b',border:'1px solid #2a2a31',borderRadius:6,color:'#9a9788',fontSize:11,padding:'3px 6px'}}>
+                      <option value=''>+tag</option>
+                      {state.tags.filter(tg=>!(editing.tags||[]).includes(tg)).map(tg=><option key={tg} value={tg}>{tg}</option>)}
+                    </select>
                     <button className="btn-primary" type="submit" style={{padding:'4px 12px',fontSize:12}}>Save</button>
                     <button type="button" onClick={()=>setEditing(null)} style={{padding:'4px 10px',fontSize:12,background:'none',border:'1px solid #2a2a31',borderRadius:6,color:'#9a9788',cursor:'pointer'}}>Cancel</button>
                   </div>
                 </form>
               ) : (
-                <div className="task-row" style={{display:'flex',alignItems:'center',gap:10,padding:'9px 12px',borderRadius:8,background: selectedTaskIds.has(t.id)?'#1a1a26':'#131317',border:`1px solid ${selectedTaskIds.has(t.id)?'#818cf840':'#1f1f24'}`}}>
+                <div className="task-row" style={{display:'flex',alignItems:'center',gap:8,padding:'9px 12px',borderRadius:8,background: selectedTaskIds.has(t.id)?'#1a1a26':'#131317',border:`1px solid ${selectedTaskIds.has(t.id)?'#818cf840':'#1f1f24'}`,flexWrap:'wrap'}}>
                   {/* select checkbox */}
                   <span className={`tick${selectedTaskIds.has(t.id)?' on':''}`}
                     onClick={e=>toggleTaskSel(e,t.id)}
@@ -1144,7 +1235,21 @@ function TasksView({ state, update, isMobile }) {
                   <span className={`tick${t.done?' on':''}`} onClick={()=>toggleTask(t.id)}>
                     {t.done&&<svg style={{width:10,height:10}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><polyline points="20 6 9 17 4 12"/></svg>}
                   </span>
-                  <span style={{flex:1,fontSize:13.5,color:t.done?'#3a3a44':'#f4f3ee',textDecoration:t.done?'line-through':'none'}}>{t.title}</span>
+                  <span style={{fontSize:13.5,color:t.done?'#3a3a44':'#f4f3ee',textDecoration:t.done?'line-through':'none'}}>{t.title}</span>
+                  {/* task tags */}
+                  {(t.tags||[]).map(tg=>(
+                    <span key={tg} className="tag" style={{background:`${tagColor(tg)}18`,color:tagColor(tg),fontSize:10,padding:'1px 6px',cursor:'pointer'}}
+                      onClick={e=>{e.stopPropagation();removeTaskTag(t.id,tg);}} title="Click to remove tag">{tg}</span>
+                  ))}
+                  {/* quick add tag */}
+                  {!t.done&&(
+                    <select onChange={e=>{const tg=e.target.value;if(tg)addTaskTag(t.id,tg);e.target.value='';}}
+                      style={{background:'none',border:'none',color:'#3a3a44',fontSize:11,cursor:'pointer',padding:0,outline:'none'}}>
+                      <option value=''>#</option>
+                      {state.tags.filter(tg=>!(t.tags||[]).includes(tg)).map(tg=><option key={tg} value={tg}>{tg}</option>)}
+                    </select>
+                  )}
+                  <div style={{flex:1}}/>
                   <span style={{width:8,height:8,borderRadius:99,background:PRIO[t.priority||'none'],flexShrink:0}}/>
                   {t.due&&<span style={{fontSize:11,color:'#9a9788'}}>{t.due}</span>}
                   <button onClick={()=>setExpanded({...expanded,[t.id]:!expanded[t.id]})} style={{background:'none',border:'none',color:expanded[t.id]?'#818cf8':'#3a3a44',cursor:'pointer',padding:0,display:'flex',alignItems:'center',gap:4}} title={t.subtasks.length>0?`${t.subtasks.filter(s=>s.done).length}/${t.subtasks.length} subtasks`:'Add subtasks'}>
