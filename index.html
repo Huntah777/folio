@@ -69,6 +69,7 @@ input:focus,textarea:focus{outline:none}
 
 /* cal */
 .cal-cell{border-radius:7px;padding:5px;min-height:72px;cursor:pointer;transition:background 110ms;font-size:12px}
+@media(max-width:768px){.cal-cell{min-height:44px;padding:3px;font-size:11px}}
 .cal-cell:hover{background:#17171b}
 .cal-cell.today{background:#17171b}
 .cal-cell.sel{outline:1.5px solid #818cf8}
@@ -858,7 +859,7 @@ function CalendarView({ state, update, isMobile }) {
     <div style={{display:'flex',height:'100%',overflow:'hidden',flexDirection:isMobile?'column':'row'}}>
 
       {/* ── month grid ── */}
-      <div style={{flex:1,padding:isMobile?'16px 12px':'24px 24px 24px 40px',overflow:'auto'}} className="scrollbar">
+      <div style={{flex:1,padding:isMobile?'12px 6px':'24px 24px 24px 40px',overflow:'auto'}} className="scrollbar">
         <div style={{display:'flex',alignItems:'center',gap:16,marginBottom:20}}>
           <button onClick={()=>nav(-1)} style={{background:'none',border:'1px solid #1f1f24',borderRadius:7,color:'#9a9788',padding:'5px 10px',cursor:'pointer',fontSize:16}}>‹</button>
           <h2 style={{fontFamily:'Fraunces,serif',fontSize:22,fontWeight:600,flex:1}}>{MONTHS[month]} {year}</h2>
@@ -1123,6 +1124,27 @@ function TagsView({ state, update }) {
   );
 }
 
+/* ── SyncIconBtn ── */
+function SyncIconBtn({ onClick, syncStatus }) {
+  const dotColor =
+    syncStatus==='synced'  ? '#10b981' :
+    syncStatus==='saving'  ? '#f59e0b' :
+    syncStatus==='offline' ? '#f43f5e' :
+    syncStatus==='unauth'  ? '#f59e0b' : null;
+  return (
+    <button onClick={onClick}
+      title={`Sync — ${syncStatus==='synced'?'synced':syncStatus==='saving'?'saving…':syncStatus==='offline'?'offline':syncStatus==='unauth'?'re-auth':'local'}`}
+      style={{background:'linear-gradient(135deg,#818cf8,#6366f1)',border:'none',borderRadius:7,cursor:'pointer',width:28,height:28,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,position:'relative',boxShadow:'0 4px 10px rgba(99,102,241,.35)',transition:'box-shadow 120ms'}}
+      onMouseEnter={e=>e.currentTarget.style.boxShadow='0 4px 16px rgba(99,102,241,.6)'}
+      onMouseLeave={e=>e.currentTarget.style.boxShadow='0 4px 10px rgba(99,102,241,.35)'}>
+      <svg style={{width:13,height:13}} viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round">
+        <circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2"/>
+      </svg>
+      {dotColor && <span style={{position:'absolute',top:-3,right:-3,width:8,height:8,borderRadius:99,background:dotColor,border:'2px solid #0d0d10'}}/>}
+    </button>
+  );
+}
+
 /* ── Sidebar ── */
 function Sidebar({ state, update, syncStatus, onSetup, collapsed, onToggle }) {
   const { view } = state.ui;
@@ -1142,16 +1164,6 @@ function Sidebar({ state, update, syncStatus, onSetup, collapsed, onToggle }) {
     {id:'calendar',label:'Calendar',icon:Ic.cal},
     {id:'tags',label:'Tags',icon:Ic.tags},
   ];
-
-  const SyncDot = () => (
-    <>
-      {syncStatus==='synced'  &&<span style={{width:7,height:7,borderRadius:99,background:'#10b981',flexShrink:0,display:'inline-block'}}/>}
-      {syncStatus==='saving'  &&<span style={{width:7,height:7,borderRadius:99,background:'#f59e0b',flexShrink:0,display:'inline-block'}}/>}
-      {syncStatus==='offline' &&<span style={{width:7,height:7,borderRadius:99,background:'#f43f5e',flexShrink:0,display:'inline-block'}}/>}
-      {syncStatus==='local'   &&<span style={{width:7,height:7,borderRadius:99,background:'#3a3a44',flexShrink:0,display:'inline-block'}}/>}
-      {syncStatus==='unauth'  &&<span style={{width:7,height:7,borderRadius:99,background:'#f59e0b',flexShrink:0,display:'inline-block'}}/>}
-    </>
-  );
 
   if (collapsed) {
     return (
@@ -1182,14 +1194,9 @@ function Sidebar({ state, update, syncStatus, onSetup, collapsed, onToggle }) {
           </button>
         </div>
         <div style={{flex:1}}/>
-        {/* footer sync dot */}
+        {/* footer sync icon */}
         <div style={{padding:'10px 0',borderTop:'1px solid #1f1f24',width:'100%',display:'flex',justifyContent:'center',flexShrink:0}}>
-          <button onClick={onSetup} title="Sync settings"
-            style={{background:'none',border:'none',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',padding:'4px',borderRadius:6}}
-            onMouseEnter={e=>e.currentTarget.style.background='#17171b'}
-            onMouseLeave={e=>e.currentTarget.style.background='none'}>
-            <SyncDot/>
-          </button>
+          <SyncIconBtn onClick={onSetup} syncStatus={syncStatus}/>
         </div>
       </div>
     );
@@ -1248,21 +1255,12 @@ function Sidebar({ state, update, syncStatus, onSetup, collapsed, onToggle }) {
 
       {/* footer */}
       <div style={{padding:'10px 12px',borderTop:'1px solid #1f1f24',flexShrink:0,display:'flex',justifyContent:'space-between',alignItems:'center',gap:6}}>
-        <div style={{fontSize:12,color:'#9a9788',minWidth:0}}>
+        <div style={{fontSize:12,color:'#9a9788',minWidth:0,flex:1}}>
           {(()=>{const due=state.tasks.filter(t=>!t.done&&t.due===todayKey()).length;return due>0&&(
             <span><span style={{color:'#818cf8',fontWeight:700}}>{due}</span> task{due!==1?'s':''} due</span>
           );})()}
         </div>
-        <button onClick={onSetup} title="Sync settings"
-          style={{background:'none',border:'none',cursor:'pointer',display:'flex',alignItems:'center',gap:5,padding:'2px 4px',borderRadius:6,flexShrink:0}}
-          onMouseEnter={e=>e.currentTarget.style.background='#17171b'}
-          onMouseLeave={e=>e.currentTarget.style.background='none'}>
-          <SyncDot/>
-          <span style={{fontSize:11,color:'#3a3a44'}}>
-            {syncStatus==='synced'?'synced':syncStatus==='saving'?'saving…':syncStatus==='offline'?'offline':syncStatus==='unauth'?'re-auth':'local'}
-          </span>
-          <svg style={{width:12,height:12,color:'#3a3a44'}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2"/></svg>
-        </button>
+        <SyncIconBtn onClick={onSetup} syncStatus={syncStatus}/>
       </div>
     </div>
   );
