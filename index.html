@@ -259,7 +259,7 @@ function NoteEditor({ note, state, update }) {
     const re=/```(\w+)?\n([\s\S]*?)```/g; let m; let last=0;
     while((m=re.exec(rest))!==null){
       if(m.index>last) parts.push({type:'text',content:rest.slice(last,m.index)});
-      parts.push({type:'code',lang:m[1]||'plaintext',content:m[2]});
+      parts.push({type:'code',lang:m[1]||'plaintext',content:m[2].replace(/\n$/,'')});
       last=m.index+m[0].length;
     }
     if(last<rest.length) parts.push({type:'text',content:rest.slice(last)});
