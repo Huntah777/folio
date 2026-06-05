@@ -5,6 +5,30 @@
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>Folio · Second Brain</title>
 <link rel="icon" href="/folio-icon.svg" type="image/svg+xml"/>
+
+<!-- PWA -->
+<link rel="manifest" href="/manifest.json"/>
+<meta name="theme-color" content="#0a0a0b"/>
+<meta name="format-detection" content="telephone=no"/>
+<script>
+  window._installPrompt = null;
+  window.addEventListener('beforeinstallprompt', function(e) {
+    e.preventDefault();
+    window._installPrompt = e;
+    window.dispatchEvent(new Event('installpromptready'));
+  });
+  window.addEventListener('appinstalled', function() {
+    window._installPrompt = null;
+    window.dispatchEvent(new Event('appinstalled_done'));
+  });
+</script>
+
+<!-- iOS home screen -->
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<meta name="apple-mobile-web-app-title" content="Folio"/>
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png"/>
+
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600&family=Manrope:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet"/>
@@ -130,6 +154,7 @@ input:focus,textarea:focus{outline:none}
   .main{min-width:0;overflow:hidden}
 }
 html,body{overflow-x:hidden}
+body.pwa-install-banner #app{padding-top:52px}
 </style>
 </head>
 <body>
@@ -2158,6 +2183,52 @@ function KanbanView({ state, update, isMobile }) {
   );
 }
 
+/* ── InstallBanner ── */
+function InstallBanner() {
+  const [prompt, setPrompt] = useState(window._installPrompt || null);
+
+  useEffect(() => {
+    const onReady = () => setPrompt(window._installPrompt);
+    const onDone  = () => setPrompt(null);
+    window.addEventListener('installpromptready', onReady);
+    window.addEventListener('appinstalled_done', onDone);
+    return () => {
+      window.removeEventListener('installpromptready', onReady);
+      window.removeEventListener('appinstalled_done', onDone);
+    };
+  }, []);
+
+  if (!prompt) return null;
+
+  const install = async () => {
+    prompt.prompt();
+    const { outcome } = await prompt.userChoice;
+    if (outcome === 'accepted') setPrompt(null);
+  };
+
+  return (
+    <div style={{
+      position:'fixed',top:0,left:0,right:0,zIndex:110,
+      background:'#0d0d10',borderBottom:'1px solid #1f1f24',
+      padding:'10px 16px',
+      display:'flex',alignItems:'center',justifyContent:'space-between',gap:12,
+      boxShadow:'0 8px 32px rgba(0,0,0,.5)',
+    }}>
+      <div style={{display:'flex',alignItems:'center',gap:10,minWidth:0}}>
+        <img src="/folio-icon.svg" alt="" style={{width:28,height:28,borderRadius:7,flexShrink:0}}/>
+        <div style={{minWidth:0}}>
+          <div style={{fontSize:12,fontWeight:600,color:'#f4f3ee'}}>Add to Home Screen</div>
+          <div style={{fontSize:10,color:'#9a9788'}}>Install Folio for offline access</div>
+        </div>
+      </div>
+      <div style={{display:'flex',alignItems:'center',gap:8,flexShrink:0}}>
+        <button onClick={()=>setPrompt(null)} className="btn-ghost" style={{fontSize:10,padding:'5px 10px'}}>Not now</button>
+        <button onClick={install} className="btn-primary" style={{fontSize:11,padding:'6px 14px'}}>Install</button>
+      </div>
+    </div>
+  );
+}
+
 /* ── Sidebar ── */
 function Sidebar({ state, update, syncStatus, onSetup, collapsed, onToggle }) {
   const { view } = state.ui;
@@ -2473,6 +2544,7 @@ function App() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
   const saveTimer = useRef(null);
+  const [installBanner, setInstallBanner] = useState(!!window._installPrompt);
 
   useEffect(() => {
     const handler = () => setIsMobile(window.innerWidth <= 768);
@@ -2480,8 +2552,33 @@ function App() {
     return () => window.removeEventListener('resize', handler);
   }, []);
 
+  useEffect(() => {
+    const onReady = () => setInstallBanner(true);
+    const onDone  = () => setInstallBanner(false);
+    window.addEventListener('installpromptready', onReady);
+    window.addEventListener('appinstalled_done', onDone);
+    return () => {
+      window.removeEventListener('installpromptready', onReady);
+      window.removeEventListener('appinstalled_done', onDone);
+    };
+  }, []);
+
+  useEffect(() => {
+    document.body.classList.toggle('pwa-install-banner', installBanner);
+    return () => document.body.classList.remove('pwa-install-banner');
+  }, [installBanner]);
+
+  /* Respect ?view= from manifest shortcuts */
+  const VALID_VIEWS = ['today','notes','tasks','kanban','calendar','tags'];
+  const urlView = new URLSearchParams(location.search).get('view');
+  const startView = VALID_VIEWS.includes(urlView) ? urlView : null;
+
   /* Merge new SEED keys in when DB shape evolves */
-  const hydrate = d => ({ ...SEED(), ...d, ui:{ ...SEED().ui, ...(d?.ui||{}) } });
+  const hydrate = d => {
+    const merged = { ...SEED(), ...d, ui:{ ...SEED().ui, ...(d?.ui||{}) } };
+    if (startView) merged.ui = { ...merged.ui, view: startView };
+    return merged;
+  };
 
   /* ── initial load ── */
   useEffect(() => { (async () => {
@@ -2563,11 +2660,22 @@ function App() {
       </div>
       <MobileNav state={state} update={update} syncStatus={syncStatus} onSetup={()=>setSetupOpen(true)}/>
       {setupOpen && <SetupModal onClose={()=>setSetupOpen(false)}/>}
+      {installBanner && <InstallBanner/>}
     </>
   );
 }
 
 ReactDOM.createRoot(document.getElementById('app')).render(<App/>);
+</script>
+
+<script>
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', function() {
+      navigator.serviceWorker.register('/sw.js').catch(function(err) {
+        console.warn('SW registration failed:', err);
+      });
+    });
+  }
 </script>
 </body>
 </html>
