@@ -44,9 +44,35 @@ html,body{height:100%;background:#0a0a0b;color:#f4f3ee;font-family:'Manrope',sys
 
 /* cards */
 .card{background:linear-gradient(160deg,#141418,#101012);border:1px solid #1f1f24;border-radius:12px}
-.note-card{padding:14px;cursor:pointer;transition:all 150ms}
+.note-card{padding:14px;cursor:pointer;transition:all 150ms;position:relative}
 .note-card:hover{border-color:#2a2a31;transform:translateY(-1px);box-shadow:0 6px 20px -8px #000}
 .note-card.sel{border-color:#818cf8;box-shadow:0 0 0 1px rgba(129,140,248,.18)}
+.note-card.checked{border-color:#818cf840}
+/* delete / action buttons */
+.del-btn{background:none;border:none;cursor:pointer;padding:3px 4px;border-radius:5px;color:#3a3a44;display:flex;align-items:center;transition:color 120ms,background 120ms}
+.del-btn:hover{color:#f43f5e;background:rgba(244,63,94,.1)}
+/* note card trash button */
+.note-del{position:absolute;top:10px;right:10px;opacity:0;background:#131317;border:1px solid #2a2a31;border-radius:7px;padding:5px 7px;cursor:pointer;color:#9a9788;display:flex;align-items:center;transition:color 120ms,opacity 120ms,border-color 120ms}
+.note-card:hover .note-del{opacity:1}
+.note-del:hover{color:#f43f5e;border-color:rgba(244,63,94,.35)}
+/* note card select checkbox */
+.note-cb{opacity:0;transition:opacity 120ms;flex-shrink:0}
+.note-card:hover .note-cb,.note-card.checked .note-cb{opacity:1}
+/* context menu */
+.ctx-menu{background:#17171b;border:1px solid #2a2a31;border-radius:10px;padding:4px;min-width:170px;box-shadow:0 8px 32px rgba(0,0,0,.75);z-index:9999;position:fixed}
+.ctx-item{display:flex;align-items:center;gap:9px;padding:7px 12px;border-radius:7px;font-size:13px;cursor:pointer;color:#c9c6b8;transition:all 100ms;user-select:none;font-family:'Manrope',sans-serif;font-weight:500}
+.ctx-item:hover{background:#2a2a31;color:#f4f3ee}
+.ctx-item.danger{color:#9a9788}
+.ctx-item.danger:hover{background:rgba(244,63,94,.12);color:#f43f5e}
+.ctx-sep{height:1px;background:#2a2a31;margin:3px 6px}
+/* bulk action bar */
+.bulk-bar{position:sticky;bottom:8px;background:#1c1c24;border:1px solid #818cf840;border-radius:10px;padding:8px 12px;display:flex;align-items:center;gap:8px;margin-top:8px;backdrop-filter:blur(8px);box-shadow:0 4px 20px rgba(0,0,0,.6)}
+/* folder action buttons */
+.folder-action{background:none;border:1px solid transparent;cursor:pointer;padding:3px 6px;border-radius:5px;font-size:12px;line-height:1;font-family:'Manrope',sans-serif;font-weight:600;transition:all 110ms}
+.folder-action.rename{color:#9a9788}
+.folder-action.rename:hover{background:#2a2a31;border-color:#2a2a31;color:#f4f3ee}
+.folder-action.del{color:#9a9788}
+.folder-action.del:hover{background:rgba(244,63,94,.12);border-color:rgba(244,63,94,.3);color:#f43f5e}
 
 /* editor */
 .editor-title{background:transparent;border:none;outline:none;font-family:'Fraunces',serif;font-size:30px;font-weight:600;color:#f4f3ee;width:100%;resize:none;line-height:1.25}
@@ -175,8 +201,9 @@ const SEED = () => ({
   notes: [],
   tasks: [],
   meetings: [],
+  folders: [],
   tags: ['#getting-started','#work','#personal','#ideas','#meeting'],
-  ui: { view:'today', noteId: null, calDate: todayKey(), filterTag:'' },
+  ui: { view:'today', noteId: null, calDate: todayKey(), filterTag:'', folderId: null },
 });
 
 /* ── icons ── */
@@ -254,6 +281,138 @@ function CodeBlock({ value='', lang='javascript', onChange, onLangChange }) {
   );
 }
 
+/* ── ContextMenu ── */
+function ContextMenu({ x, y, items, onClose }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    const onDown = e => { if (!ref.current?.contains(e.target)) onClose(); };
+    const onKey  = e => { if (e.key === 'Escape') onClose(); };
+    setTimeout(() => {
+      document.addEventListener('mousedown', onDown);
+      document.addEventListener('contextmenu', onDown);
+      document.addEventListener('keydown', onKey);
+    }, 0);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('contextmenu', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, []);
+  // Keep menu inside viewport
+  const vpW = window.innerWidth, vpH = window.innerHeight;
+  const menuW = 180, menuH = items.length * 36 + 12;
+  const left = x + menuW > vpW ? vpW - menuW - 8 : x;
+  const top  = y + menuH > vpH ? vpH - menuH - 8 : y;
+  return ReactDOM.createPortal(
+    <div ref={ref} className="ctx-menu" style={{left,top}}>
+      {items.map((item,i) => item === 'sep'
+        ? <div key={i} className="ctx-sep"/>
+        : <div key={item.label} className={`ctx-item${item.danger?' danger':''}`}
+            onClick={()=>{ item.fn(); onClose(); }}>
+            {item.icon&&<span style={{width:14,display:'flex',alignItems:'center',flexShrink:0}}>{item.icon}</span>}
+            {item.label}
+          </div>
+      )}
+    </div>,
+    document.body
+  );
+}
+
+/* ── EmojiPicker ── */
+const EMOJI_CATS = [
+  { label:'★ Quick',   emojis:'📝💡🔬📚🎯🔧🗓⭐🚀🧠🔐📌🗺🎨🛠📊📋✅🔖💼🏆🌟💬🔔📎🖊️📐🧩🪄🗒️'.split('') },
+  { label:'😀 Faces',  emojis:'😀😁😂🥹😊😇🥰😍🤩😘😋😎🤔🤭😴🥱😪🤤🥴😵🤯🥳😅😆🤣🙂🙃😉😌😛😝😜🤗🫡😶😐😑😏😒🙄😬🤥😌😔😪😮😦😧😨😰😥😢😭😱😖😣😞😓😩😫🥺😢' },
+  { label:'👋 People', emojis:'👋🤚🖐✋👌🤌🤏✌️🤞🫰🤟🤘🤙👈👉👆👇☝️👍👎✊👊🤛🤜🫳🤝🫶🙌👏🙏💪🦾🖊✍️💅🤳' },
+  { label:'🐶 Animals',emojis:'🐶🐱🐭🐹🐰🦊🐻🐼🐨🐯🦁🐮🐷🐸🐵🙈🙉🙊🐔🐧🐦🦆🦅🦉🐺🐗🦋🐌🐛🦎🐍🐢🦕🦖🐙🦑🦐🐟🐬🐳🐘🦏🦛🦒🦓🐃🐄🐎🐖🐏🐑🦙🐐🦌🐕🐈🐓🦃🕊🐇🦔🐾🐉🌾🌵🌴🌳🌲🍀🌿🍃🌱🌺🌸🌼🌻🌹🌷🍄🌰' },
+  { label:'🍎 Food',   emojis:'🍎🍊🍋🍌🍍🥭🍓🍇🍉🍑🍒🫐🥝🍅🫒🥥🥑🍆🥔🥕🌽🥜🧅🧄☕🍵🧋🍺🍻🥂🍷🥃🍹🧃🥤🧊🍕🍔🌮🌯🥙🧆🍜🍱🍣🍛🥘🫕🍲🥗🍿🧁🎂🍰🍩🍪🍫🍬🍭🍮🍯' },
+  { label:'⚽ Sport',  emojis:'⚽🏀🏈⚾🎾🏐🏉🎱🏓🏸🏒🥊🥋🎿⛸🛹🛷🥌🎯🎳🎮🕹🎲🎰🧩🎭🎬🎥🎞🎤🎧🎼🎵🎶🎸🥁🎹🎺🎻🪘🪗🎻🎨🖌🖍✏️' },
+  { label:'🌍 Places', emojis:'✈️🚀🛸🚁🛺🚂🚢🚤🛳🚗🚕🚙🛻🚌🚎🚑🚒🛴🛵🏍🚲🛺🏠🏡🏢🏛🏗🏘🏚🏰🏯🗼🗽⛩🕌🕍⛪🗺🌋⛰🏔🏕🏖🏝🌅🌄🌠🎇🎆🌇🌆🌃🌌🌉🌁⛅🌦🌧⛈🌩🌨❄️☃️⛄🌊🌬💨' },
+  { label:'💡 Objects',emojis:'💡🔦🕯📱💻⌨️🖥🖨🖱📷📸📹🎥📞☎️📟📠📺📻🔋🔌💿📀💾📦📫📬📭📮🗃🗄🗑🔒🔓🔑🗝🔨⛏🔧🔩⚙️🛠🪛🪚🔗📏📐✂️🗂📁📂🗒🗓📊📈📉📰📜📋🔖🏷📌📍🖊✒️' },
+  { label:'💜 Symbols',emojis:'❤️🧡💛💚💙💜🖤🤍🤎❤️‍🔥💕💞💓💗💖💘💝💟✅❌⭕❓❗💯🔴🟠🟡🟢🔵🟣⚫⚪🔶🔷🔸🔹🔺🔻⬆️⬇️⬅️➡️↗️↘️↙️↖️↕️↔️🔄🔃▶️⏩⏪⏫⏬🔔🔕♻️🔅🔆📶🔱⚜️🔰🆕🆓🆙🆒🆕' },
+];
+
+function EmojiPicker({ onSelect, onClose }) {
+  const ref  = useRef(null);
+  const [tab, setTab] = useState(0);
+  useEffect(() => {
+    const h = e => { if (!ref.current?.contains(e.target)) onClose(); };
+    setTimeout(() => document.addEventListener('mousedown', h), 0);
+    return () => document.removeEventListener('mousedown', h);
+  }, []);
+  const emojis = [...EMOJI_CATS[tab].emojis]; // handle both string and array
+  return (
+    <div ref={ref} style={{position:'absolute',top:'calc(100% + 6px)',left:0,zIndex:200,background:'#17171b',border:'1px solid #2a2a31',borderRadius:12,padding:'10px',width:290,boxShadow:'0 12px 40px rgba(0,0,0,.8)'}}>
+      <div style={{display:'flex',gap:2,marginBottom:8,overflowX:'auto',paddingBottom:2,scrollbarWidth:'none'}}>
+        {EMOJI_CATS.map((g,i)=>(
+          <button key={g.label} onClick={()=>setTab(i)}
+            style={{background:i===tab?'#2a2a31':'none',border:'none',borderRadius:6,color:i===tab?'#f4f3ee':'#9a9788',fontSize:10.5,padding:'3px 7px',cursor:'pointer',flexShrink:0,fontFamily:'Manrope,sans-serif',whiteSpace:'nowrap',transition:'all 100ms'}}>
+            {g.label}
+          </button>
+        ))}
+      </div>
+      <div style={{display:'flex',flexWrap:'wrap',maxHeight:190,overflowY:'auto',gap:1}}>
+        {emojis.map((em,i)=>(
+          <button key={i} onClick={()=>{onSelect(em);onClose();}}
+            title={em}
+            style={{background:'none',border:'none',fontSize:21,cursor:'pointer',padding:'4px 5px',borderRadius:6,lineHeight:1,transition:'background 80ms'}}
+            onMouseEnter={e=>e.currentTarget.style.background='#2a2a31'}
+            onMouseLeave={e=>e.currentTarget.style.background='none'}>
+            {em}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ── MiniCalendar (for notes date filter) ── */
+const MCAL_MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+const MCAL_DAYS   = ['S','M','T','W','T','F','S'];
+
+function MiniCalendar({ value, onChange, onClose }) {
+  const ref = useRef(null);
+  const init = value ? parseKey(value) : new Date();
+  const [view, setView] = useState(new Date(init.getFullYear(), init.getMonth(), 1));
+  useEffect(() => {
+    const h = e => { if (!ref.current?.contains(e.target)) onClose(); };
+    setTimeout(() => document.addEventListener('mousedown', h), 0);
+    return () => document.removeEventListener('mousedown', h);
+  }, []);
+  const yr = view.getFullYear(), mo = view.getMonth();
+  const firstDow = new Date(yr, mo, 1).getDay();
+  const days     = new Date(yr, mo + 1, 0).getDate();
+  const cells    = Array(firstDow).fill(null).concat(Array.from({length:days},(_,i)=>i+1));
+  return (
+    <div ref={ref} style={{position:'absolute',top:'calc(100% + 4px)',right:0,zIndex:200,background:'#17171b',border:'1px solid #2a2a31',borderRadius:12,padding:'12px 12px 10px',width:224,boxShadow:'0 12px 40px rgba(0,0,0,.8)'}}>
+      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:8}}>
+        <button onClick={()=>setView(new Date(yr,mo-1,1))} style={{background:'none',border:'none',color:'#9a9788',fontSize:17,cursor:'pointer',lineHeight:1,padding:'0 6px',borderRadius:5}} onMouseEnter={e=>e.currentTarget.style.color='#f4f3ee'} onMouseLeave={e=>e.currentTarget.style.color='#9a9788'}>‹</button>
+        <span style={{fontSize:12,fontWeight:700,color:'#f4f3ee'}}>{MCAL_MONTHS[mo]} {yr}</span>
+        <button onClick={()=>setView(new Date(yr,mo+1,1))} style={{background:'none',border:'none',color:'#9a9788',fontSize:17,cursor:'pointer',lineHeight:1,padding:'0 6px',borderRadius:5}} onMouseEnter={e=>e.currentTarget.style.color='#f4f3ee'} onMouseLeave={e=>e.currentTarget.style.color='#9a9788'}>›</button>
+      </div>
+      <div style={{display:'grid',gridTemplateColumns:'repeat(7,1fr)',gap:2,marginBottom:3}}>
+        {MCAL_DAYS.map((d,i)=><div key={i} style={{textAlign:'center',fontSize:10,color:'#3a3a44',fontWeight:700,padding:'2px 0'}}>{d}</div>)}
+      </div>
+      <div style={{display:'grid',gridTemplateColumns:'repeat(7,1fr)',gap:2}}>
+        {cells.map((d,i)=>{
+          if (!d) return <div key={i}/>;
+          const key = fmtKey(new Date(yr,mo,d));
+          const sel = key === value;
+          const isToday = key === todayKey();
+          return (
+            <button key={i} onClick={()=>{ onChange(sel ? null : key); if (!sel) onClose(); }}
+              style={{background:sel?'#818cf8':isToday&&!sel?'#17171b':'none',border:isToday&&!sel?'1px solid #818cf840':'1px solid transparent',borderRadius:6,color:sel?'#fff':isToday?'#818cf8':'#c9c6b8',fontSize:11,padding:'4px 0',cursor:'pointer',transition:'all 80ms',textAlign:'center',lineHeight:1.4}}
+              onMouseEnter={e=>{ if(!sel) e.currentTarget.style.background='#2a2a31'; }}
+              onMouseLeave={e=>{ if(!sel) e.currentTarget.style.background=isToday?'#17171b':'none'; }}>
+              {d}
+            </button>
+          );
+        })}
+      </div>
+      {value&&<button onClick={()=>onChange(null)} style={{marginTop:8,width:'100%',background:'none',border:'1px solid #2a2a31',borderRadius:6,color:'#9a9788',fontSize:11,padding:'5px',cursor:'pointer',fontFamily:'Manrope,sans-serif',transition:'all 110ms'}} onMouseEnter={e=>{e.currentTarget.style.borderColor='#818cf8';e.currentTarget.style.color='#818cf8';}} onMouseLeave={e=>{e.currentTarget.style.borderColor='#2a2a31';e.currentTarget.style.color='#9a9788';}}>Clear date filter</button>}
+    </div>
+  );
+}
+
 /* ── NoteEditor ── */
 function NoteEditor({ note, state, update }) {
   const [showCode, setShowCode] = useState(false);
@@ -264,6 +423,7 @@ function NoteEditor({ note, state, update }) {
   const [tagFocused, setTagFocused] = useState(false);
   const [showLinkSearch, setShowLinkSearch] = useState(false);
   const [linkQuery, setLinkQuery] = useState('');
+  const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const imgInputRef = useRef(null);
   const activeTA = useRef(null); /* { el, partIdx } */
 
@@ -316,6 +476,49 @@ function NoteEditor({ note, state, update }) {
     {label:'—',  title:'Divider', fn:()=>insertLinePrefix('---\n')},
   ];
 
+  /* ── @Today auto-replace ── */
+  const todayStamp = () => {
+    const now = new Date();
+    return now.toLocaleDateString('en-US',{month:'long',day:'numeric',year:'numeric'}) +
+           ' ' + now.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
+  };
+
+  const handleTitleChange = e => {
+    let val = e.target.value;
+    const pos = e.target.selectionStart;
+    e.target.style.height = 'auto';
+    e.target.style.height = e.target.scrollHeight + 'px';
+    const match = val.slice(0, pos).match(/@[Tt]oday$/);
+    if (match) {
+      const stamp  = todayStamp();
+      const before = val.slice(0, pos - match[0].length);
+      const after  = val.slice(pos);
+      val = before + stamp + after;
+      upNote({title: val});
+      setTimeout(()=>{ e.target.selectionStart = e.target.selectionEnd = before.length + stamp.length; }, 0);
+      return;
+    }
+    upNote({title: val});
+  };
+
+  const handleBodyChange = (e, partIdx) => {
+    let content = e.target.value;
+    const pos = e.target.selectionStart;
+    const match = content.slice(0, pos).match(/@[Tt]oday$/);
+    if (match) {
+      const stamp  = todayStamp();
+      const before = content.slice(0, pos - match[0].length);
+      const after  = content.slice(pos);
+      content = before + stamp + after;
+      const np=[...bodyParts]; np[partIdx]={...np[partIdx],content};
+      upNote({body:rebuildBody(np)});
+      setTimeout(()=>{ e.target.selectionStart=e.target.selectionEnd=before.length+stamp.length; },0);
+      return;
+    }
+    const np=[...bodyParts]; np[partIdx]={...np[partIdx],content};
+    upNote({body:rebuildBody(np)});
+  };
+
   /* ── Tab indentation for bullet lines ── */
   const handleBodyKeyDown = (e, partIdx) => {
     if (e.key !== 'Tab') return;
@@ -330,19 +533,19 @@ function NoteEditor({ note, state, update }) {
     const isBullet = /^\s*-\s/.test(line);
 
     let newVal, newPos;
-    if (isBullet) {
-      if (e.shiftKey) {
-        // unindent: strip up to 2 leading spaces
-        const stripped = line.replace(/^ {1,2}/, '');
-        const removed = line.length - stripped.length;
-        if (removed === 0) return;
-        newVal = val.slice(0, lineStart) + stripped + val.slice(lineEndPos);
-        newPos = Math.max(lineStart, pos - removed);
-      } else {
-        // indent: prepend 2 spaces
-        newVal = val.slice(0, lineStart) + '  ' + val.slice(lineStart);
-        newPos = pos + 2;
-      }
+    if (isBullet && e.shiftKey) {
+      // unindent: strip up to 2 leading spaces
+      const stripped = line.replace(/^ {1,2}/, '');
+      const removed = line.length - stripped.length;
+      if (removed === 0) return;
+      newVal = val.slice(0, lineStart) + stripped + val.slice(lineEndPos);
+      newPos = Math.max(lineStart, pos - removed);
+    } else if (isBullet) {
+      // leave current line untouched, insert a new indented bullet below it
+      const currentIndent = (line.match(/^(\s*)/)[1]) + '  ';
+      const subPrefix = currentIndent + '- ';
+      newVal = val.slice(0, lineEndPos) + '\n' + subPrefix + val.slice(lineEndPos);
+      newPos = lineEndPos + 1 + subPrefix.length;
     } else {
       // not a bullet — insert 2 spaces at cursor
       newVal = val.slice(0, pos) + '  ' + val.slice(pos);
@@ -389,12 +592,18 @@ function NoteEditor({ note, state, update }) {
       {/* ── title + emoji ── */}
       <div style={{padding:'24px 32px 0',flexShrink:0}}>
         <div style={{display:'flex',alignItems:'flex-start',gap:10,marginBottom:14}}>
-          <span style={{fontSize:28,cursor:'pointer',lineHeight:1.3,flexShrink:0}} title="Click to shuffle emoji"
-            onClick={()=>{const e=['📝','💡','🔬','📚','🎯','🔧','🗓','⭐','🚀','🧠','🔐','📌','🗺','🎨','🛠'];upNote({emoji:e[Math.floor(Math.random()*e.length)]})}}>
-            {note.emoji||'📝'}
-          </span>
+          <div style={{position:'relative',flexShrink:0}}>
+            <span style={{fontSize:28,cursor:'pointer',lineHeight:1.3,display:'block',borderRadius:8,padding:'0 2px',transition:'background 120ms'}}
+              title="Click to pick emoji"
+              onClick={()=>setShowEmojiPicker(v=>!v)}
+              onMouseEnter={e=>e.currentTarget.style.background='#17171b'}
+              onMouseLeave={e=>e.currentTarget.style.background='none'}>
+              {note.emoji||'📝'}
+            </span>
+            {showEmojiPicker&&<EmojiPicker onSelect={em=>upNote({emoji:em})} onClose={()=>setShowEmojiPicker(false)}/>}
+          </div>
           <textarea className="editor-title" rows={1} value={note.title}
-            onChange={e=>{e.target.style.height='auto';e.target.style.height=e.target.scrollHeight+'px';upNote({title:e.target.value})}}
+            onChange={handleTitleChange}
             placeholder="Untitled" style={{height:'auto'}}/>
         </div>
 
@@ -443,6 +652,20 @@ function NoteEditor({ note, state, update }) {
               <svg style={{width:9,height:9}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>tag
             </button>
           )}
+          {/* folder picker */}
+          {(()=>{
+            const folders = state.folders||[];
+            const cur = folders.find(f=>f.id===note.folderId);
+            return (
+              <div style={{marginLeft:'auto',flexShrink:0}}>
+                <select value={note.folderId||''} onChange={e=>upNote({folderId:e.target.value||null})}
+                  style={{background:'#17171b',border:'1px solid #2a2a31',borderRadius:6,color:cur?'#818cf8':'#3a3a44',fontSize:11,padding:'2px 7px',cursor:'pointer',outline:'none'}}>
+                  <option value=''>📁 No folder</option>
+                  {folders.map(f=><option key={f.id} value={f.id}>📁 {f.name}</option>)}
+                </select>
+              </div>
+            );
+          })()}
         </div>
       </div>
 
@@ -510,7 +733,7 @@ function NoteEditor({ note, state, update }) {
             : <textarea key={i} className="editor-body" value={part.content}
                 rows={Math.max(4,(part.content.match(/\n/g)||[]).length+2)}
                 onFocus={e=>{ activeTA.current={el:e.target,partIdx:i}; }}
-                onChange={e=>{const np=[...bodyParts];np[i]={...np[i],content:e.target.value};upNote({body:rebuildBody(np)});}}
+                onChange={e=>handleBodyChange(e,i)}
                 onKeyDown={e=>handleBodyKeyDown(e,i)}
                 placeholder={i===0?'Start writing… (click toolbar buttons to format)':''}/>
         )}
@@ -566,7 +789,10 @@ function NoteEditor({ note, state, update }) {
 
       {/* ── footer ── */}
       <div style={{padding:'8px 32px',borderTop:'1px solid #1f1f24',display:'flex',justifyContent:'space-between',alignItems:'center',flexShrink:0}}>
-        <span style={{fontSize:11,color:'#3a3a44'}}>Updated {new Date(note.updated).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'})}</span>
+        <span style={{fontSize:11,color:'#3a3a44',display:'flex',flexDirection:'column',gap:1}}>
+          {note.created&&<span>Created <span style={{color:'#9a9788'}}>{new Date(note.created).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'})}</span></span>}
+          <span>Updated <span style={{color:'#9a9788'}}>{new Date(note.updated).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'})}</span></span>
+        </span>
         <button onClick={()=>{
             if(confirm('Delete this note?')){
               const id = note.id;
@@ -574,10 +800,8 @@ function NoteEditor({ note, state, update }) {
               update('ui', {...state.ui, noteId:null});
             }
           }}
-          style={{background:'none',border:'none',color:'#3a3a44',cursor:'pointer',display:'flex',alignItems:'center',gap:4,fontSize:12,transition:'color 110ms'}}
-          onMouseEnter={e=>e.currentTarget.style.color='#f43f5e'}
-          onMouseLeave={e=>e.currentTarget.style.color='#3a3a44'}>
-          <svg style={{width:12,height:12}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg> delete
+          className="del-btn" style={{fontSize:12,gap:5}}>
+          <svg style={{width:13,height:13}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg> Delete note
         </button>
       </div>
     </div>
@@ -588,22 +812,61 @@ function NoteEditor({ note, state, update }) {
 function NotesView({ state, update, isMobile }) {
   const [search, setSearch] = useState('');
   const [listWidth, setListWidth] = useState(280);
+  const [selectedIds, setSelectedIds] = useState(new Set());
+  const [ctxMenu, setCtxMenu] = useState(null);
+  const [dateFilter, setDateFilter] = useState(null); // 'YYYY-MM-DD' or null
+  const [showCal, setShowCal] = useState(false);
   const filterTag = state.ui.filterTag || '';
+  const filterFolder = state.ui.folderId || null;
   const setFilterTag = t => update('ui',{...state.ui,filterTag:t});
   const noteId = state.ui.noteId;
 
   const filtered = useMemo(() => state.notes.filter(n => {
     const q = search.toLowerCase();
-    const matchQ = !q || n.title.toLowerCase().includes(q) || (n.body||'').toLowerCase().includes(q);
+    const dateStr = n.created ? new Date(n.created).toLocaleDateString('en-US',{month:'long',day:'numeric',year:'numeric'}).toLowerCase() : '';
+    const matchQ = !q || n.title.toLowerCase().includes(q) || (n.body||'').toLowerCase().includes(q) || dateStr.includes(q);
     const matchT = !filterTag || n.tags.includes(filterTag);
-    return matchQ && matchT;
-  }), [state.notes, search, filterTag]);
+    const matchF = !filterFolder || n.folderId === filterFolder;
+    const matchD = !dateFilter || (n.created && fmtKey(new Date(n.created)) === dateFilter);
+    return matchQ && matchT && matchF && matchD;
+  }), [state.notes, search, filterTag, filterFolder, dateFilter]);
+
+  const grouped = useMemo(() => {
+    const today = todayKey();
+    const yesterday = fmtKey(new Date(Date.now() - 86400000));
+    const byKey = {};
+    [...filtered].sort((a,b)=>(b.created||0)-(a.created||0)).forEach(n => {
+      const key = n.created ? fmtKey(new Date(n.created)) : '0000-00-00';
+      const label = key === today ? 'Today' : key === yesterday ? 'Yesterday' :
+        (n.created ? new Date(n.created).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}) : 'Unknown');
+      if (!byKey[key]) byKey[key] = { label, items:[] };
+      byKey[key].items.push(n);
+    });
+    return Object.entries(byKey).sort(([a],[b])=>b.localeCompare(a)).map(([,v])=>v);
+  }, [filtered]);
 
   const newNote = () => {
-    const n = { id:uid(), emoji:'📝', title:'', body:'', tags:[], links:[], images:[], created:Date.now(), updated:Date.now() };
+    const n = { id:uid(), emoji:'📝', title:'', body:'', tags:[], links:[], images:[], folderId: filterFolder||null, created:Date.now(), updated:Date.now() };
     update('notes', [n, ...state.notes]);
     update('ui', {...state.ui, noteId:n.id});
   };
+
+  const deleteNote = id => {
+    update('notes', state.notes.filter(n=>n.id!==id));
+    if (noteId===id) update('ui',{...state.ui,noteId:null});
+    setSelectedIds(prev=>{ const s=new Set(prev); s.delete(id); return s; });
+  };
+  const toggleSelect = (e, id) => {
+    e.stopPropagation();
+    setSelectedIds(prev=>{ const s=new Set(prev); s.has(id)?s.delete(id):s.add(id); return s; });
+  };
+  const deleteSelected = () => {
+    update('notes', state.notes.filter(n=>!selectedIds.has(n.id)));
+    if (selectedIds.has(noteId)) update('ui',{...state.ui,noteId:null});
+    setSelectedIds(new Set());
+  };
+  const selectAll = () => setSelectedIds(new Set(filtered.map(n=>n.id)));
+  const clearSel  = () => setSelectedIds(new Set());
 
   const selectedNote = state.notes.find(n=>n.id===noteId);
   const allTags = [...new Set(state.notes.flatMap(n=>n.tags))];
@@ -633,12 +896,29 @@ function NotesView({ state, update, isMobile }) {
       flex: isMobile ? 1 : 'none',
     }}>
       <div style={{padding:'16px 14px 10px',flexShrink:0}}>
-        <div style={{display:'flex',gap:8,marginBottom:10}}>
+        <div style={{display:'flex',gap:8,marginBottom:dateFilter?6:10}}>
           <input className="input" value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search notes…" style={{flex:1}}/>
+          {/* calendar date-filter button */}
+          <div style={{position:'relative',flexShrink:0}}>
+            <button onClick={()=>setShowCal(v=>!v)} title="Filter by date"
+              style={{background:showCal||dateFilter?'#818cf8':'#17171b',border:`1px solid ${showCal||dateFilter?'#818cf8':'#1f1f24'}`,borderRadius:8,padding:'8px 10px',cursor:'pointer',display:'flex',alignItems:'center',transition:'all 120ms'}}>
+              <svg style={{width:15,height:15,color:showCal||dateFilter?'#fff':'#9a9788'}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+            </button>
+            {showCal&&<MiniCalendar value={dateFilter} onChange={d=>{setDateFilter(d);setShowCal(false);}} onClose={()=>setShowCal(false)}/>}
+          </div>
           <button className="btn-primary" onClick={newNote} style={{padding:'8px 12px',display:'flex',alignItems:'center'}}>
             {React.cloneElement(Ic.plus,{style:{width:15,height:15}})}
           </button>
         </div>
+        {dateFilter&&(
+          <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:8,padding:'5px 8px',background:'#818cf815',border:'1px solid #818cf830',borderRadius:7}}>
+            <svg style={{width:11,height:11,color:'#818cf8',flexShrink:0}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+            <span style={{fontSize:11,color:'#818cf8',flex:1}}>
+              {dateFilter===todayKey()?'Today':new Date(dateFilter+'T12:00').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})}
+            </span>
+            <button onClick={()=>setDateFilter(null)} style={{background:'none',border:'none',color:'#818cf8',cursor:'pointer',fontSize:14,lineHeight:1,padding:'0 2px'}}>×</button>
+          </div>
+        )}
         <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
           <span onClick={()=>setFilterTag('')} className="tag" style={{background:filterTag===''?'#818cf830':'none',color:filterTag===''?'#818cf8':'#9a9788',border:'1px solid #1f1f24',cursor:'pointer'}}>All</span>
           {allTags.map(t=>(
@@ -651,25 +931,68 @@ function NotesView({ state, update, isMobile }) {
       </div>
       <div style={{flex:1,overflow:'auto',padding:'0 10px 10px'}} className="scrollbar">
         {filtered.length===0 && <div style={{color:'#3a3a44',fontSize:13,padding:'20px 4px'}}>No notes found.</div>}
-        {filtered.map(n=>(
-          <div key={n.id} className={`note-card card fadeUp ${noteId===n.id?'sel':''}`}
-            style={{marginBottom:8}} onClick={()=>update('ui',{...state.ui,noteId:n.id})}>
-            <div style={{display:'flex',alignItems:'center',gap:7,marginBottom:5}}>
-              <span style={{fontSize:16}}>{n.emoji||'📝'}</span>
-              <span style={{fontSize:13,fontWeight:600,color:'#f4f3ee',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{n.title||'Untitled'}</span>
-            </div>
-            <div style={{fontSize:12,color:'#9a9788',overflow:'hidden',display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical',lineHeight:1.5,marginBottom:6}}>
-              {(n.body||'').replace(/```[\s\S]*?```/g,'[code]').slice(0,120)}
-            </div>
-            {n.tags.length>0 && (
-              <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
-                {n.tags.slice(0,3).map(t=>(
-                  <span key={t} className="tag" style={{background:`${tagColor(t)}15`,color:tagColor(t),fontSize:10}}>{t}</span>
-                ))}
-              </div>
-            )}
+        {grouped.map(g=>(
+          <div key={g.label}>
+            <div style={{fontSize:10,fontWeight:700,letterSpacing:'.07em',color:'#3a3a44',textTransform:'uppercase',padding:'10px 4px 6px'}}>{g.label}</div>
+            {g.items.map(n=>{
+              const folder = (state.folders||[]).find(f=>f.id===n.folderId);
+              const checked = selectedIds.has(n.id);
+              return (
+                <div key={n.id}
+                  className={`note-card card fadeUp ${noteId===n.id&&!checked?'sel':''} ${checked?'checked':''}`}
+                  style={{marginBottom:8}}
+                  onClick={()=>{ if(checked){toggleSelect({stopPropagation:()=>{}},n.id);}else{update('ui',{...state.ui,noteId:n.id});} }}
+                  onContextMenu={e=>{e.preventDefault();setCtxMenu({x:e.clientX,y:e.clientY,id:n.id});}}>
+                  {/* trash button — visible on hover */}
+                  <button className="note-del" onClick={e=>{e.stopPropagation();deleteNote(n.id);}} title="Delete note">
+                    <svg style={{width:12,height:12}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+                  </button>
+                  <div style={{display:'flex',alignItems:'center',gap:7,marginBottom:5,paddingRight:28}}>
+                    {/* select checkbox */}
+                    <span className={`note-cb tick${checked?' on':''}`} onClick={e=>toggleSelect(e,n.id)} style={{width:15,height:15,borderRadius:4,flexShrink:0}}>
+                      {checked&&<svg style={{width:8,height:8}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><polyline points="20 6 9 17 4 12"/></svg>}
+                    </span>
+                    <span style={{fontSize:16,flexShrink:0}}>{n.emoji||'📝'}</span>
+                    <span style={{fontSize:13,fontWeight:600,color:'#f4f3ee',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',flex:1}}>{n.title||'Untitled'}</span>
+                    {folder&&!filterFolder&&<span style={{fontSize:10,color:'#818cf8',flexShrink:0,maxWidth:54,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>📁{folder.name}</span>}
+                  </div>
+                  <div style={{fontSize:12,color:'#9a9788',overflow:'hidden',display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical',lineHeight:1.5,marginBottom:6}}>
+                    {(n.body||'').replace(/```[\s\S]*?```/g,'[code]').slice(0,120)}
+                  </div>
+                  {n.tags.length>0&&(
+                    <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
+                      {n.tags.slice(0,3).map(t=>(
+                        <span key={t} className="tag" style={{background:`${tagColor(t)}15`,color:tagColor(t),fontSize:10}}>{t}</span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
         ))}
+        {/* bulk action bar */}
+        {selectedIds.size>0&&(
+          <div className="bulk-bar">
+            <span style={{fontSize:12,color:'#9a9788',flex:1}}>{selectedIds.size} selected</span>
+            <button onClick={selectAll} style={{background:'none',border:'1px solid #2a2a31',borderRadius:6,color:'#9a9788',fontSize:12,padding:'4px 10px',cursor:'pointer',fontFamily:'Manrope,sans-serif'}}>All</button>
+            <button onClick={clearSel}  style={{background:'none',border:'1px solid #2a2a31',borderRadius:6,color:'#9a9788',fontSize:12,padding:'4px 10px',cursor:'pointer',fontFamily:'Manrope,sans-serif'}}>Clear</button>
+            <button onClick={deleteSelected} className="del-btn" style={{border:'1px solid rgba(244,63,94,.3)',borderRadius:6,padding:'4px 12px',fontSize:12,gap:5,fontFamily:'Manrope,sans-serif',fontWeight:600,color:'#f43f5e',background:'rgba(244,63,94,.08)'}}>
+              <svg style={{width:13,height:13}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
+              Delete {selectedIds.size}
+            </button>
+          </div>
+        )}
+        {/* right-click context menu */}
+        {ctxMenu&&(
+          <ContextMenu x={ctxMenu.x} y={ctxMenu.y} onClose={()=>setCtxMenu(null)} items={[
+            {label:'Select', icon:<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{width:13,height:13}}><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>,
+              fn:()=>setSelectedIds(prev=>{const s=new Set(prev);s.add(ctxMenu.id);return s;})},
+            'sep',
+            {label:'Delete note', danger:true, icon:<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{width:13,height:13}}><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>,
+              fn:()=>deleteNote(ctxMenu.id)},
+          ]}/>
+        )}
       </div>
     </div>
   );
@@ -711,12 +1034,16 @@ function TasksView({ state, update, isMobile }) {
   const [newDue, setNewDue] = useState('');
   const [expanded, setExpanded] = useState({});
   const [subInput, setSubInput] = useState({});
-  const [editing, setEditing] = useState(null); // { id, title, priority, due }
-  const [editingSub, setEditingSub] = useState(null); // { tid, sid, title }
+  const [editing, setEditing] = useState(null);
+  const [editingSub, setEditingSub] = useState(null);
+  const [selectedTaskIds, setSelectedTaskIds] = useState(new Set());
+  const [ctxMenu, setCtxMenu] = useState(null);
 
   const toggleTask = id => update('tasks', state.tasks.map(t=>t.id===id?{...t,done:!t.done}:t));
   const toggleSub = (tid,sid) => update('tasks', state.tasks.map(t=>t.id===tid?{...t,subtasks:t.subtasks.map(s=>s.id===sid?{...s,done:!s.done}:s)}:t));
-  const delTask = id => update('tasks', state.tasks.filter(t=>t.id!==id));
+  const delTask = id => { update('tasks', state.tasks.filter(t=>t.id!==id)); setSelectedTaskIds(p=>{const s=new Set(p);s.delete(id);return s;}); };
+  const toggleTaskSel = (e,id) => { e.stopPropagation(); setSelectedTaskIds(p=>{const s=new Set(p);s.has(id)?s.delete(id):s.add(id);return s;}); };
+  const deleteSelectedTasks = () => { update('tasks',state.tasks.filter(t=>!selectedTaskIds.has(t.id))); setSelectedTaskIds(new Set()); };
   const addTask = e => {
     e.preventDefault();
     if(!newTitle.trim()) return;
@@ -781,7 +1108,8 @@ function TasksView({ state, update, isMobile }) {
         <div key={g.label} style={{marginBottom:28}}>
           <div style={{fontSize:11,fontWeight:700,letterSpacing:'.08em',color:'#3a3a44',textTransform:'uppercase',marginBottom:10}}>{g.label} <span style={{color:'#818cf8'}}>({g.items.length})</span></div>
           {g.items.map(t=>(
-            <div key={t.id} style={{marginBottom:6}}>
+            <div key={t.id} style={{marginBottom:6}}
+              onContextMenu={e=>{e.preventDefault();setCtxMenu({x:e.clientX,y:e.clientY,id:t.id});}}>
               {editing&&editing.id===t.id ? (
                 <form onSubmit={saveEdit} style={{display:'flex',flexWrap:'wrap',alignItems:'center',gap:8,padding:'8px 12px',borderRadius:8,background:'#131317',border:'1px solid #818cf8'}}>
                   <input className="input" autoFocus value={editing.title} onChange={e=>setEditing({...editing,title:e.target.value})}
@@ -798,23 +1126,31 @@ function TasksView({ state, update, isMobile }) {
                   </div>
                 </form>
               ) : (
-                <div className="task-row" style={{display:'flex',alignItems:'center',gap:10,padding:'9px 12px',borderRadius:8,background:'#131317',border:'1px solid #1f1f24'}}>
+                <div className="task-row" style={{display:'flex',alignItems:'center',gap:10,padding:'9px 12px',borderRadius:8,background: selectedTaskIds.has(t.id)?'#1a1a26':'#131317',border:`1px solid ${selectedTaskIds.has(t.id)?'#818cf840':'#1f1f24'}`}}>
+                  {/* select checkbox */}
+                  <span className={`tick${selectedTaskIds.has(t.id)?' on':''}`}
+                    onClick={e=>toggleTaskSel(e,t.id)}
+                    style={{width:15,height:15,borderRadius:4,flexShrink:0,opacity: selectedTaskIds.has(t.id)?1:undefined}}
+                    title="Select">
+                    {selectedTaskIds.has(t.id)&&<svg style={{width:8,height:8}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><polyline points="20 6 9 17 4 12"/></svg>}
+                  </span>
                   <span className={`tick${t.done?' on':''}`} onClick={()=>toggleTask(t.id)}>
                     {t.done&&<svg style={{width:10,height:10}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><polyline points="20 6 9 17 4 12"/></svg>}
                   </span>
                   <span style={{flex:1,fontSize:13.5,color:t.done?'#3a3a44':'#f4f3ee',textDecoration:t.done?'line-through':'none'}}>{t.title}</span>
                   <span style={{width:8,height:8,borderRadius:99,background:PRIO[t.priority||'none'],flexShrink:0}}/>
                   {t.due&&<span style={{fontSize:11,color:'#9a9788'}}>{t.due}</span>}
-                  <button onClick={()=>setExpanded({...expanded,[t.id]:!expanded[t.id]})} style={{background:'none',border:'none',color:'#9a9788',cursor:'pointer',fontSize:11}}>
-                    {t.subtasks.length>0?`${t.subtasks.filter(s=>s.done).length}/${t.subtasks.length}`:'+sub'}
+                  <button onClick={()=>setExpanded({...expanded,[t.id]:!expanded[t.id]})} style={{background:'none',border:'none',color:expanded[t.id]?'#818cf8':'#3a3a44',cursor:'pointer',padding:0,display:'flex',alignItems:'center',gap:4}} title={t.subtasks.length>0?`${t.subtasks.filter(s=>s.done).length}/${t.subtasks.length} subtasks`:'Add subtasks'}>
+                    <svg style={{width:13,height:13}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="9" y1="6" x2="20" y2="6"/><line x1="9" y1="12" x2="20" y2="12"/><line x1="9" y1="18" x2="20" y2="18"/><circle cx="4" cy="6" r="1.5" fill="currentColor" stroke="none"/><circle cx="4" cy="12" r="1.5" fill="currentColor" stroke="none"/><circle cx="4" cy="18" r="1.5" fill="currentColor" stroke="none"/></svg>
+                    {t.subtasks.length>0&&<span style={{fontSize:10,color:expanded[t.id]?'#818cf8':'#3a3a44'}}>{t.subtasks.filter(s=>s.done).length}/{t.subtasks.length}</span>}
                   </button>
                   {!t.done&&(
-                    <button onClick={()=>startEdit(t)} style={{background:'none',border:'none',color:'#3a3a44',cursor:'pointer'}} title="Edit task">
+                    <button onClick={()=>startEdit(t)} className="del-btn" style={{color:'#3a3a44'}} title="Edit task">
                       <svg style={{width:13,height:13}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
                     </button>
                   )}
-                  <button onClick={()=>delTask(t.id)} style={{background:'none',border:'none',color:'#3a3a44',cursor:'pointer'}}>
-                    <svg style={{width:13,height:13}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                  <button onClick={()=>delTask(t.id)} className="del-btn" title="Delete task">
+                    <svg style={{width:13,height:13}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
                   </button>
                 </div>
               )}
@@ -836,12 +1172,12 @@ function TasksView({ state, update, isMobile }) {
                           </span>
                           <span style={{flex:1,fontSize:12.5,color:s.done?'#3a3a44':'#c9c6b8',textDecoration:s.done?'line-through':'none'}}>{s.title}</span>
                           {!s.done&&(
-                            <button onClick={()=>startEditSub(t.id,s)} style={{background:'none',border:'none',color:'#3a3a44',cursor:'pointer',padding:0}} title="Edit subtask">
+                            <button onClick={()=>startEditSub(t.id,s)} className="del-btn" style={{color:'#3a3a44',padding:'2px 3px'}} title="Edit subtask">
                               <svg style={{width:11,height:11}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
                             </button>
                           )}
-                          <button onClick={()=>delSub(t.id,s.id)} style={{background:'none',border:'none',color:'#3a3a44',cursor:'pointer',padding:0}} title="Delete subtask">
-                            <svg style={{width:11,height:11}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                          <button onClick={()=>delSub(t.id,s.id)} className="del-btn" style={{padding:'2px 3px'}} title="Delete subtask">
+                            <svg style={{width:11,height:11}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
                           </button>
                         </div>
                       )}
@@ -858,6 +1194,29 @@ function TasksView({ state, update, isMobile }) {
           ))}
         </div>
       ))}
+
+      {/* bulk action bar */}
+      {selectedTaskIds.size>0&&(
+        <div className="bulk-bar" style={{margin:'0 0 16px'}}>
+          <span style={{fontSize:12,color:'#9a9788',flex:1}}>{selectedTaskIds.size} selected</span>
+          <button onClick={()=>setSelectedTaskIds(new Set())} style={{background:'none',border:'1px solid #2a2a31',borderRadius:6,color:'#9a9788',fontSize:12,padding:'4px 10px',cursor:'pointer',fontFamily:'Manrope,sans-serif'}}>Clear</button>
+          <button onClick={deleteSelectedTasks} className="del-btn" style={{border:'1px solid rgba(244,63,94,.3)',borderRadius:6,padding:'4px 12px',fontSize:12,gap:5,fontFamily:'Manrope,sans-serif',fontWeight:600,color:'#f43f5e',background:'rgba(244,63,94,.08)'}}>
+            <svg style={{width:13,height:13}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
+            Delete {selectedTaskIds.size}
+          </button>
+        </div>
+      )}
+
+      {/* right-click context menu */}
+      {ctxMenu&&(
+        <ContextMenu x={ctxMenu.x} y={ctxMenu.y} onClose={()=>setCtxMenu(null)} items={[
+          {label:'Select', icon:<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{width:13,height:13}}><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>,
+            fn:()=>setSelectedTaskIds(p=>{const s=new Set(p);s.add(ctxMenu.id);return s;})},
+          'sep',
+          {label:'Delete task', danger:true, icon:<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{width:13,height:13}}><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>,
+            fn:()=>delTask(ctxMenu.id)},
+        ]}/>
+      )}
     </div>
   );
 }
@@ -1265,12 +1624,38 @@ function SyncIconBtn({ onClick, syncStatus }) {
 function Sidebar({ state, update, syncStatus, onSetup, collapsed, onToggle }) {
   const { view } = state.ui;
   const recent = [...state.notes].sort((a,b)=>b.updated-a.updated).slice(0,5);
-  const nav = v => update('ui',{...state.ui,view:v});
+  const folders = state.folders || [];
+  const [addingFolder, setAddingFolder] = useState(false);
+  const [newFolderName, setNewFolderName] = useState('');
+  const [renamingId, setRenamingId] = useState(null);
+  const [renameVal, setRenameVal] = useState('');
+  const [hoveredFolder, setHoveredFolder] = useState(null);
+
+  const nav = v => update('ui',{...state.ui,view:v,folderId:null});
+  const navFolder = fid => update('ui',{...state.ui,view:'notes',folderId:fid});
 
   const newNote = () => {
-    const n={id:uid(),emoji:'📝',title:'',body:'',tags:[],links:[],images:[],created:Date.now(),updated:Date.now()};
+    const n={id:uid(),emoji:'📝',title:'',body:'',tags:[],links:[],images:[],folderId:state.ui.folderId||null,created:Date.now(),updated:Date.now()};
     update('notes',[n,...state.notes]);
     update('ui',{...state.ui,view:'notes',noteId:n.id});
+  };
+
+  const createFolder = e => {
+    e.preventDefault();
+    if (!newFolderName.trim()) return;
+    update('folders',[...folders,{id:uid(),name:newFolderName.trim()}]);
+    setNewFolderName(''); setAddingFolder(false);
+  };
+  const deleteFolder = fid => {
+    update('folders', folders.filter(f=>f.id!==fid));
+    update('notes', state.notes.map(n=>n.folderId===fid?{...n,folderId:null}:n));
+    if (state.ui.folderId===fid) update('ui',{...state.ui,folderId:null});
+  };
+  const saveRename = e => {
+    e.preventDefault();
+    if (!renameVal.trim()) return;
+    update('folders', folders.map(f=>f.id===renamingId?{...f,name:renameVal.trim()}:f));
+    setRenamingId(null);
   };
 
   const navItems = [
@@ -1281,17 +1666,23 @@ function Sidebar({ state, update, syncStatus, onSetup, collapsed, onToggle }) {
     {id:'tags',label:'Tags',icon:Ic.tags},
   ];
 
+  const FolderIcon = ({open}) => (
+    <svg style={{width:13,height:13,flexShrink:0}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
+      {open
+        ? <><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/><line x1="12" y1="11" x2="12" y2="17"/><line x1="9" y1="14" x2="15" y2="14"/></>
+        : <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>}
+    </svg>
+  );
+
   if (collapsed) {
     return (
       <div className="sidebar sidebar-collapsed" style={{alignItems:'center'}}>
-        {/* logo — click to expand */}
         <div style={{padding:'14px 0 12px',borderBottom:'1px solid #1f1f24',width:'100%',display:'flex',justifyContent:'center',flexShrink:0}}>
           <div style={{width:28,height:28,borderRadius:7,background:'linear-gradient(135deg,#818cf8,#6366f1)',display:'flex',alignItems:'center',justifyContent:'center',boxShadow:'0 4px 12px rgba(99,102,241,.4)',cursor:'pointer'}}
             onClick={onToggle} title="Expand sidebar">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.5" strokeLinecap="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><polyline points="14 2 14 8 20 8"/></svg>
           </div>
         </div>
-        {/* nav icons */}
         <div style={{padding:'8px 0',width:'100%',display:'flex',flexDirection:'column',alignItems:'center',gap:2,flexShrink:0}}>
           {navItems.map(({id,label,icon})=>(
             <div key={id} className={`nav-item${view===id?' active':''}`} onClick={()=>nav(id)} title={label}
@@ -1300,7 +1691,6 @@ function Sidebar({ state, update, syncStatus, onSetup, collapsed, onToggle }) {
             </div>
           ))}
         </div>
-        {/* + new note */}
         <div style={{padding:'4px 0',width:'100%',display:'flex',justifyContent:'center',flexShrink:0}}>
           <button onClick={newNote} title="New note"
             style={{background:'none',border:'1px dashed #2a2a31',borderRadius:8,color:'#3a3a44',width:32,height:32,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',transition:'all 120ms'}}
@@ -1310,7 +1700,6 @@ function Sidebar({ state, update, syncStatus, onSetup, collapsed, onToggle }) {
           </button>
         </div>
         <div style={{flex:1}}/>
-        {/* footer sync icon */}
         <div style={{padding:'10px 0',borderTop:'1px solid #1f1f24',width:'100%',display:'flex',justifyContent:'center',flexShrink:0}}>
           <SyncIconBtn onClick={onSetup} syncStatus={syncStatus}/>
         </div>
@@ -1320,7 +1709,7 @@ function Sidebar({ state, update, syncStatus, onSetup, collapsed, onToggle }) {
 
   return (
     <div className="sidebar">
-      {/* logo + collapse toggle */}
+      {/* logo + collapse */}
       <div style={{padding:'18px 14px 12px',borderBottom:'1px solid #1f1f24',flexShrink:0}}>
         <div style={{display:'flex',alignItems:'center',gap:9}}>
           <div style={{width:30,height:30,borderRadius:8,background:'linear-gradient(135deg,#818cf8,#6366f1)',display:'flex',alignItems:'center',justifyContent:'center',boxShadow:'0 4px 12px rgba(99,102,241,.4)',flexShrink:0}}>
@@ -1337,11 +1726,66 @@ function Sidebar({ state, update, syncStatus, onSetup, collapsed, onToggle }) {
       {/* nav */}
       <div style={{padding:'10px 8px',flexShrink:0}}>
         {navItems.map(({id,label,icon})=>(
-          <div key={id} className={`nav-item${view===id?' active':''}`} onClick={()=>nav(id)}>
+          <div key={id} className={`nav-item${view===id&&!state.ui.folderId?' active':''}`} onClick={()=>nav(id)}>
             <span style={{width:15,height:15,display:'flex',alignItems:'center',justifyContent:'center'}}>{icon}</span>
             {label}
           </div>
         ))}
+      </div>
+
+      <div className="divider" style={{margin:'4px 8px'}}/>
+
+      {/* folders */}
+      <div style={{padding:'4px 8px 0',flexShrink:0}}>
+        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'4px 4px 4px'}}>
+          <span style={{fontSize:10,fontWeight:700,letterSpacing:'.08em',color:'#3a3a44',textTransform:'uppercase'}}>Folders</span>
+          <button onClick={()=>{setAddingFolder(true);setNewFolderName('');}}
+            style={{background:'none',border:'none',color:'#3a3a44',cursor:'pointer',padding:'1px 4px',borderRadius:4,fontSize:14,lineHeight:1,transition:'color 110ms'}}
+            title="New folder"
+            onMouseEnter={e=>e.currentTarget.style.color='#818cf8'}
+            onMouseLeave={e=>e.currentTarget.style.color='#3a3a44'}>+</button>
+        </div>
+        {addingFolder&&(
+          <form onSubmit={createFolder} style={{display:'flex',gap:4,padding:'2px 0 6px'}}>
+            <input autoFocus value={newFolderName} onChange={e=>setNewFolderName(e.target.value)}
+              placeholder="Folder name…"
+              style={{flex:1,background:'#17171b',border:'1px solid #2a2a31',borderRadius:6,color:'#f4f3ee',fontSize:12,padding:'3px 7px',outline:'none',minWidth:0}}/>
+            <button type="submit" style={{background:'none',border:'none',color:'#818cf8',fontSize:12,cursor:'pointer',flexShrink:0}}>add</button>
+            <button type="button" onClick={()=>setAddingFolder(false)} style={{background:'none',border:'none',color:'#9a9788',fontSize:12,cursor:'pointer',flexShrink:0}}>×</button>
+          </form>
+        )}
+        {folders.map(f=>(
+          <div key={f.id} style={{position:'relative'}}>
+            {renamingId===f.id ? (
+              <form onSubmit={saveRename} style={{display:'flex',gap:4,padding:'2px 4px 4px'}}>
+                <input autoFocus value={renameVal} onChange={e=>setRenameVal(e.target.value)}
+                  style={{flex:1,background:'#17171b',border:'1px solid #818cf8',borderRadius:6,color:'#f4f3ee',fontSize:12,padding:'2px 6px',outline:'none',minWidth:0}}/>
+                <button type="submit" style={{background:'none',border:'none',color:'#818cf8',fontSize:11,cursor:'pointer'}}>ok</button>
+                <button type="button" onClick={()=>setRenamingId(null)} style={{background:'none',border:'none',color:'#9a9788',fontSize:11,cursor:'pointer'}}>×</button>
+              </form>
+            ) : (
+              <div className={`nav-item${state.ui.folderId===f.id?' active':''}`}
+                onClick={()=>navFolder(f.id)}
+                onMouseEnter={()=>setHoveredFolder(f.id)}
+                onMouseLeave={()=>setHoveredFolder(null)}
+                style={{fontSize:12.5,gap:6,paddingRight:4}}>
+                <FolderIcon open={state.ui.folderId===f.id}/>
+                <span style={{flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{f.name}</span>
+                {hoveredFolder===f.id&&(
+                  <span style={{display:'flex',gap:2}} onClick={e=>e.stopPropagation()}>
+                    <button onClick={()=>{setRenamingId(f.id);setRenameVal(f.name);}}
+                      className="folder-action rename" title="Rename folder">✎</button>
+                    <button onClick={()=>deleteFolder(f.id)}
+                      className="folder-action del" title="Delete folder">✕</button>
+                  </span>
+                )}
+              </div>
+            )}
+          </div>
+        ))}
+        {folders.length===0&&!addingFolder&&(
+          <div style={{fontSize:11,color:'#3a3a44',padding:'2px 4px 6px'}}>No folders yet</div>
+        )}
       </div>
 
       <div className="divider" style={{margin:'4px 8px'}}/>
