@@ -1,4 +1,4 @@
-const CACHE = 'folio-v2';
+const CACHE = 'folio-v3';
 
 const SHELL = [
   '/',
@@ -9,6 +9,23 @@ const SHELL = [
   '/icons/icon-512.png',
   '/icons/icon-maskable-512.png',
   '/icons/apple-touch-icon.png',
+  '/vendor/react.min.js',
+  '/vendor/react-dom.min.js',
+  '/vendor/babel.min.js',
+  '/vendor/tailwind.min.js',
+  '/vendor/prism-tomorrow.min.css',
+  '/vendor/prism.min.js',
+  '/vendor/prism-javascript.min.js',
+  '/vendor/prism-typescript.min.js',
+  '/vendor/prism-python.min.js',
+  '/vendor/prism-rust.min.js',
+  '/vendor/prism-go.min.js',
+  '/vendor/prism-bash.min.js',
+  '/vendor/prism-sql.min.js',
+  '/vendor/prism-json.min.js',
+  '/vendor/prism-css.min.js',
+  '/vendor/prism-jsx.min.js',
+  '/vendor/prism-csharp.min.js',
 ];
 
 self.addEventListener('install', (event) => {
@@ -61,6 +78,31 @@ self.addEventListener('fetch', (event) => {
         })
     )
   );
+});
+
+// Calendar meeting alerts — page posts SCHEDULE_NOTIFICATIONS with a timetable
+const pendingTimers = new Map();
+
+self.addEventListener('message', (event) => {
+  if (event.data?.type !== 'SCHEDULE_NOTIFICATIONS') return;
+  pendingTimers.forEach(t => clearTimeout(t));
+  pendingTimers.clear();
+  const now = Date.now();
+  (event.data.notifications || []).forEach(({ id, title, body, fireAt }) => {
+    const delay = fireAt - now;
+    if (delay <= 0 || delay > 12 * 60 * 60 * 1000) return;
+    const timer = setTimeout(() => {
+      self.registration.showNotification(title, {
+        body,
+        icon:     '/icons/icon-192.png',
+        badge:    '/icons/icon-192.png',
+        tag:      id,
+        renotify: false,
+      });
+      pendingTimers.delete(id);
+    }, delay);
+    pendingTimers.set(id, timer);
+  });
 });
 
 // Push notifications

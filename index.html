@@ -203,6 +203,33 @@ const safeImageSrc = src => {
   return safeHttpUrl(s);
 };
 
+/* ── calendar notification scheduling ── */
+function scheduleCalendarNotifications(meetings) {
+  if (!('Notification' in window) || Notification.permission !== 'granted') return;
+  if (!navigator.serviceWorker?.controller) return;
+  const now = Date.now();
+  const horizon = now + 12 * 60 * 60 * 1000;
+  const notifications = [];
+  const checkDays = [new Date(), new Date(now + 86400000)];
+  for (const m of meetings) {
+    const [h, min] = (m.time || '00:00').split(':').map(Number);
+    for (const day of checkDays) {
+      if (!occursOnDay(m, day)) continue;
+      const dt = new Date(day); dt.setHours(h, min, 0, 0);
+      const fireAt = dt.getTime() - 15 * 60 * 1000;
+      if (fireAt > now && fireAt <= horizon) {
+        notifications.push({
+          id: `meeting-${m.id}-${fmtKey(day)}`,
+          title: m.title,
+          body: `Starting in 15 min${m.attendees ? ' · ' + m.attendees : ''}`,
+          fireAt,
+        });
+      }
+    }
+  }
+  navigator.serviceWorker.controller.postMessage({ type: 'SCHEDULE_NOTIFICATIONS', notifications });
+}
+
 /* ── storage + sync ── */
 const STORE     = 'folio_v1';
 const TOKEN_KEY = 'folio_token';
@@ -1479,6 +1506,16 @@ function CalendarView({ state, update, isMobile }) {
   const [showModal, setShowModal] = useState(false);
   const [form, setForm] = useState(BLANK_FORM);
   const [panelWidth, setPanelWidth] = useState(310);
+  const [notifPerm, setNotifPerm] = useState(() =>
+    ('Notification' in window) ? Notification.permission : 'denied'
+  );
+
+  const requestNotifPerm = async () => {
+    if (!('Notification' in window)) return;
+    const perm = await Notification.requestPermission();
+    setNotifPerm(perm);
+    if (perm === 'granted') scheduleCalendarNotifications(state.meetings);
+  };
 
   const calDate = state.ui.calDate ? parseKey(state.ui.calDate) : new Date();
   const selDate = state.ui.calDate || todayKey();
@@ -1554,6 +1591,16 @@ function CalendarView({ state, update, isMobile }) {
           <h2 style={{fontFamily:'Fraunces,serif',fontSize:isMobile?16:22,fontWeight:600,flex:1,minWidth:0}}>{MONTHS[month]} {year}</h2>
           <button onClick={()=>nav(1)} style={{background:'none',border:'1px solid #1f1f24',borderRadius:7,color:'#9a9788',padding:'5px 10px',cursor:'pointer',fontSize:16,flexShrink:0}}>›</button>
           <button onClick={()=>update('ui',{...state.ui,calDate:today})} style={{background:'none',border:'1px solid #1f1f24',borderRadius:7,color:'#9a9788',padding:'5px 10px',cursor:'pointer',fontSize:isMobile?11:12,flexShrink:0}}>Today</button>
+          <button onClick={requestNotifPerm}
+            title={notifPerm==='granted' ? 'Meeting alerts on' : 'Enable meeting alerts'}
+            style={{background:'none',border:`1px solid ${notifPerm==='granted'?'rgba(16,185,129,.4)':'#1f1f24'}`,borderRadius:7,
+              color:notifPerm==='granted'?'#10b981':'#3a3a44',padding:'5px 8px',cursor:'pointer',flexShrink:0,display:'flex',alignItems:'center',transition:'all 120ms'}}>
+            <svg style={{width:13,height:13}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+              <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
+              <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+              {notifPerm==='granted' && <line x1="1" y1="1" x2="23" y2="23" style={{display:'none'}}/>}
+            </svg>
+          </button>
         </div>
         <div style={{display:'grid',gridTemplateColumns:'repeat(7,1fr)',gap:isMobile?2:4,marginBottom:isMobile?3:6}}>
           {DAY_SHORT.map(d=><div key={d} style={{fontSize:isMobile?9:11,color:'#3a3a44',textAlign:'center',fontWeight:600,padding:'4px 0'}}>{isMobile?d[0]:d}</div>)}
@@ -2442,10 +2489,23 @@ function Sidebar({ state, update, syncStatus, onSetup, collapsed, onToggle }) {
 }
 
 /* ── MobileNav ── */
-function MobileNav({ state, update }) {
+function MobileNav({ state, update, syncStatus, onSetup }) {
   const { view } = state.ui;
   const nav = v => update('ui',{...state.ui,view:v});
   const pending = state.tasks.filter(t=>!t.done&&t.due===todayKey()).length;
+  const dotColor =
+    syncStatus==='synced'  ? '#10b981' :
+    syncStatus==='saving'  ? '#f59e0b' :
+    syncStatus==='offline' ? '#f43f5e' :
+    syncStatus==='unauth'  ? '#f59e0b' : null;
+  const navBtnStyle = active => ({
+    flex:1,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',
+    gap:2,background:'none',border:'none',cursor:'pointer',
+    color:active?'#818cf8':'#3a3a44',
+    fontSize:9,fontFamily:'Manrope,sans-serif',fontWeight:700,
+    letterSpacing:'.04em',textTransform:'uppercase',
+    transition:'color 110ms',position:'relative',padding:'6px 0',
+  });
   return (
     <div className="mobile-nav">
       {[
@@ -2455,14 +2515,7 @@ function MobileNav({ state, update }) {
         {id:'kanban',  label:'Kanban', icon:Ic.kanban},
         {id:'calendar',label:'Cal',    icon:Ic.cal},
       ].map(({id,label,icon})=>(
-        <button key={id} onClick={()=>nav(id)} style={{
-          flex:1,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',
-          gap:2,background:'none',border:'none',cursor:'pointer',
-          color:view===id?'#818cf8':'#3a3a44',
-          fontSize:9,fontFamily:'Manrope,sans-serif',fontWeight:700,
-          letterSpacing:'.04em',textTransform:'uppercase',
-          transition:'color 110ms',position:'relative',padding:'6px 0'
-        }}>
+        <button key={id} onClick={()=>nav(id)} style={navBtnStyle(view===id)}>
           <span style={{width:20,height:20,display:'flex',alignItems:'center',justifyContent:'center'}}>{icon}</span>
           {label}
           {id==='tasks'&&pending>0&&(
@@ -2472,12 +2525,21 @@ function MobileNav({ state, update }) {
           )}
         </button>
       ))}
+      <button onClick={onSetup} style={navBtnStyle(false)} title="Sync settings">
+        <span style={{width:20,height:20,display:'flex',alignItems:'center',justifyContent:'center',position:'relative'}}>
+          <svg style={{width:15,height:15}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+            <circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2"/>
+          </svg>
+          {dotColor && <span style={{position:'absolute',top:-1,right:-1,width:6,height:6,borderRadius:99,background:dotColor,border:'1.5px solid #0d0d10'}}/>}
+        </span>
+        Sync
+      </button>
     </div>
   );
 }
 
 /* ── SetupModal ── */
-function SetupModal({ onClose }) {
+function SetupModal({ onClose, onConnected }) {
   const [token, setToken] = useState(Sync.getToken() || '');
   const [status, setStatus] = useState('');
 
@@ -2488,9 +2550,9 @@ function SetupModal({ onClose }) {
     Sync.setToken(t);
     setStatus('testing…');
     try {
-      await Sync.load();
+      const remote = await Sync.load();
       setStatus('✓ Connected!');
-      setTimeout(onClose, 900);
+      setTimeout(() => { onConnected && onConnected(remote); onClose(); }, 900);
     } catch(err) {
       if (err.message === 'UNAUTHORIZED') {
         const health = await fetch('/api/health').then(r => r.json()).catch(() => ({}));
@@ -2616,6 +2678,25 @@ function App() {
     }
   })(); }, []);
 
+  /* ── reload state from server after token is saved in SetupModal ── */
+  const handleSyncConnected = useCallback(async (remote) => {
+    const cache = Cache.read();
+    const remoteEmpty = !remote?.notes || remote.notes.length === 0;
+    const cacheHasData = cache?.notes?.length > 0;
+    if (remoteEmpty && cacheHasData) {
+      await Sync.save(cache);
+      setStateRaw(hydrate(cache));
+    } else if (!remoteEmpty) {
+      setStateRaw(hydrate(remote));
+    }
+    setSyncStatus('synced');
+  }, []);
+
+  /* ── reschedule calendar notifications whenever meetings change ── */
+  useEffect(() => {
+    if (state?.meetings) scheduleCalendarNotifications(state.meetings);
+  }, [state?.meetings]);
+
   /* ── update: write localStorage immediately, debounce D1 by 1.5s ── */
   const update = useCallback((key, val) => {
     setStateRaw(prev => {
@@ -2659,7 +2740,7 @@ function App() {
         <View state={state} update={update} isMobile={isMobile}/>
       </div>
       <MobileNav state={state} update={update} syncStatus={syncStatus} onSetup={()=>setSetupOpen(true)}/>
-      {setupOpen && <SetupModal onClose={()=>setSetupOpen(false)}/>}
+      {setupOpen && <SetupModal onClose={()=>setSetupOpen(false)} onConnected={handleSyncConnected}/>}
       {installBanner && <InstallBanner/>}
     </>
   );
