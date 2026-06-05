@@ -451,7 +451,10 @@ function NoteEditor({ note, state, update }) {
       last=m.index+m[0].length;
     }
     if(last<rest.length) parts.push({type:'text',content:rest.slice(last)});
-    return parts.length ? parts : [{type:'text',content:''}];
+    if(!parts.length) return [{type:'text',content:''}];
+    if(parts[0].type !== 'text') parts.unshift({type:'text',content:''});
+    if(parts[parts.length-1].type !== 'text') parts.push({type:'text',content:''});
+    return parts;
   }, [note?.body]);
 
   if (!note) return (
