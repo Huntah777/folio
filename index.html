@@ -316,6 +316,44 @@ function NoteEditor({ note, state, update }) {
     {label:'—',  title:'Divider', fn:()=>insertLinePrefix('---\n')},
   ];
 
+  /* ── Tab indentation for bullet lines ── */
+  const handleBodyKeyDown = (e, partIdx) => {
+    if (e.key !== 'Tab') return;
+    e.preventDefault();
+    const el = e.target;
+    const pos = el.selectionStart;
+    const val = el.value;
+    const lineStart = val.lastIndexOf('\n', pos - 1) + 1;
+    const lineEnd = val.indexOf('\n', pos);
+    const lineEndPos = lineEnd === -1 ? val.length : lineEnd;
+    const line = val.slice(lineStart, lineEndPos);
+    const isBullet = /^\s*-\s/.test(line);
+
+    let newVal, newPos;
+    if (isBullet) {
+      if (e.shiftKey) {
+        // unindent: strip up to 2 leading spaces
+        const stripped = line.replace(/^ {1,2}/, '');
+        const removed = line.length - stripped.length;
+        if (removed === 0) return;
+        newVal = val.slice(0, lineStart) + stripped + val.slice(lineEndPos);
+        newPos = Math.max(lineStart, pos - removed);
+      } else {
+        // indent: prepend 2 spaces
+        newVal = val.slice(0, lineStart) + '  ' + val.slice(lineStart);
+        newPos = pos + 2;
+      }
+    } else {
+      // not a bullet — insert 2 spaces at cursor
+      newVal = val.slice(0, pos) + '  ' + val.slice(pos);
+      newPos = pos + 2;
+    }
+
+    const np = [...bodyParts]; np[partIdx] = {...np[partIdx], content: newVal};
+    upNote({body: rebuildBody(np)});
+    setTimeout(() => { el.selectionStart = el.selectionEnd = newPos; }, 0);
+  };
+
   /* ── image upload ── */
   const handleImg = e => {
     const file = e.target.files?.[0];
@@ -473,6 +511,7 @@ function NoteEditor({ note, state, update }) {
                 rows={Math.max(4,(part.content.match(/\n/g)||[]).length+2)}
                 onFocus={e=>{ activeTA.current={el:e.target,partIdx:i}; }}
                 onChange={e=>{const np=[...bodyParts];np[i]={...np[i],content:e.target.value};upNote({body:rebuildBody(np)});}}
+                onKeyDown={e=>handleBodyKeyDown(e,i)}
                 placeholder={i===0?'Start writing… (click toolbar buttons to format)':''}/>
         )}
 
@@ -672,6 +711,8 @@ function TasksView({ state, update, isMobile }) {
   const [newDue, setNewDue] = useState('');
   const [expanded, setExpanded] = useState({});
   const [subInput, setSubInput] = useState({});
+  const [editing, setEditing] = useState(null); // { id, title, priority, due }
+  const [editingSub, setEditingSub] = useState(null); // { tid, sid, title }
 
   const toggleTask = id => update('tasks', state.tasks.map(t=>t.id===id?{...t,done:!t.done}:t));
   const toggleSub = (tid,sid) => update('tasks', state.tasks.map(t=>t.id===tid?{...t,subtasks:t.subtasks.map(s=>s.id===sid?{...s,done:!s.done}:s)}:t));
@@ -680,14 +721,30 @@ function TasksView({ state, update, isMobile }) {
     e.preventDefault();
     if(!newTitle.trim()) return;
     update('tasks',[{id:uid(),title:newTitle,done:false,priority:newPrio,due:newDue,subtasks:[],created:Date.now()},...state.tasks]);
-    setNewTitle(''); setNewDue('');
+    setNewTitle(''); setNewDue(''); setNewPrio('medium');
   };
+  const cancelAdd = () => { setNewTitle(''); setNewDue(''); setNewPrio('medium'); };
   const addSub = (tid) => {
     const v = subInput[tid]||'';
     if(!v.trim()) return;
     update('tasks',state.tasks.map(t=>t.id===tid?{...t,subtasks:[...t.subtasks,{id:uid(),title:v,done:false}]}:t));
     setSubInput({...subInput,[tid]:''});
   };
+  const startEdit = t => setEditing({ id:t.id, title:t.title, priority:t.priority||'medium', due:t.due||'' });
+  const saveEdit = e => {
+    e.preventDefault();
+    if(!editing.title.trim()) return;
+    update('tasks', state.tasks.map(t=>t.id===editing.id?{...t,title:editing.title,priority:editing.priority,due:editing.due}:t));
+    setEditing(null);
+  };
+  const startEditSub = (tid,s) => setEditingSub({ tid, sid:s.id, title:s.title });
+  const saveEditSub = e => {
+    e.preventDefault();
+    if(!editingSub.title.trim()) return;
+    update('tasks', state.tasks.map(t=>t.id===editingSub.tid?{...t,subtasks:t.subtasks.map(s=>s.id===editingSub.sid?{...s,title:editingSub.title}:s)}:t));
+    setEditingSub(null);
+  };
+  const delSub = (tid,sid) => update('tasks', state.tasks.map(t=>t.id===tid?{...t,subtasks:t.subtasks.filter(s=>s.id!==sid)}:t));
 
   const PRIO_ORDER = { high:0, medium:1, low:2, none:3 };
   const byPrio = arr => [...arr].sort((a,b)=>(PRIO_ORDER[a.priority||'none']??3)-(PRIO_ORDER[b.priority||'none']??3));
@@ -708,12 +765,15 @@ function TasksView({ state, update, isMobile }) {
       {/* add task */}
       <form onSubmit={addTask} style={{display:'flex',flexWrap:'wrap',gap:8,marginBottom:24,background:'#131317',border:'1px solid #1f1f24',borderRadius:10,padding:'10px 14px'}}>
         <input className="input" value={newTitle} onChange={e=>setNewTitle(e.target.value)} placeholder="New task…" style={{flex:'1 1 160px',background:'transparent',border:'none',padding:0,fontSize:14}}/>
-        <div style={{display:'flex',gap:8,flexShrink:0}}>
+        <div style={{display:'flex',gap:8,flexShrink:0,flexWrap:'wrap'}}>
           <select value={newPrio} onChange={e=>setNewPrio(e.target.value)} style={{background:'#17171b',border:'1px solid #2a2a31',borderRadius:6,color:PRIO[newPrio],fontSize:12,padding:'4px 8px'}}>
             {Object.keys(PRIO).map(p=><option key={p} value={p}>{p}</option>)}
           </select>
           <input type="date" value={newDue} onChange={e=>setNewDue(e.target.value)} style={{background:'#17171b',border:'1px solid #2a2a31',borderRadius:6,color:'#9a9788',fontSize:12,padding:'4px 8px',maxWidth:130}}/>
           <button className="btn-primary" type="submit" style={{padding:'6px 14px',fontSize:13,flexShrink:0}}>Add</button>
+          {(newTitle||newDue)&&(
+            <button type="button" onClick={cancelAdd} style={{padding:'6px 10px',fontSize:13,flexShrink:0,background:'none',border:'1px solid #2a2a31',borderRadius:6,color:'#9a9788',cursor:'pointer'}}>Cancel</button>
+          )}
         </div>
       </form>
 
@@ -722,28 +782,69 @@ function TasksView({ state, update, isMobile }) {
           <div style={{fontSize:11,fontWeight:700,letterSpacing:'.08em',color:'#3a3a44',textTransform:'uppercase',marginBottom:10}}>{g.label} <span style={{color:'#818cf8'}}>({g.items.length})</span></div>
           {g.items.map(t=>(
             <div key={t.id} style={{marginBottom:6}}>
-              <div className="task-row" style={{display:'flex',alignItems:'center',gap:10,padding:'9px 12px',borderRadius:8,background:'#131317',border:'1px solid #1f1f24'}}>
-                <span className={`tick${t.done?' on':''}`} onClick={()=>toggleTask(t.id)}>
-                  {t.done&&<svg style={{width:10,height:10}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><polyline points="20 6 9 17 4 12"/></svg>}
-                </span>
-                <span style={{flex:1,fontSize:13.5,color:t.done?'#3a3a44':'#f4f3ee',textDecoration:t.done?'line-through':'none'}}>{t.title}</span>
-                <span style={{width:8,height:8,borderRadius:99,background:PRIO[t.priority||'none'],flexShrink:0}}/>
-                {t.due&&<span style={{fontSize:11,color:'#9a9788'}}>{t.due}</span>}
-                <button onClick={()=>setExpanded({...expanded,[t.id]:!expanded[t.id]})} style={{background:'none',border:'none',color:'#9a9788',cursor:'pointer',fontSize:11}}>
-                  {t.subtasks.length>0?`${t.subtasks.filter(s=>s.done).length}/${t.subtasks.length}`:'+sub'}
-                </button>
-                <button onClick={()=>delTask(t.id)} style={{background:'none',border:'none',color:'#3a3a44',cursor:'pointer'}}>
-                  <svg style={{width:13,height:13}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-                </button>
-              </div>
+              {editing&&editing.id===t.id ? (
+                <form onSubmit={saveEdit} style={{display:'flex',flexWrap:'wrap',alignItems:'center',gap:8,padding:'8px 12px',borderRadius:8,background:'#131317',border:'1px solid #818cf8'}}>
+                  <input className="input" autoFocus value={editing.title} onChange={e=>setEditing({...editing,title:e.target.value})}
+                    style={{flex:'1 1 140px',background:'transparent',border:'none',padding:0,fontSize:13.5,color:'#f4f3ee'}}/>
+                  <div style={{display:'flex',gap:6,flexShrink:0,flexWrap:'wrap'}}>
+                    <select value={editing.priority} onChange={e=>setEditing({...editing,priority:e.target.value})}
+                      style={{background:'#17171b',border:'1px solid #2a2a31',borderRadius:6,color:PRIO[editing.priority],fontSize:12,padding:'3px 7px'}}>
+                      {Object.keys(PRIO).map(p=><option key={p} value={p}>{p}</option>)}
+                    </select>
+                    <input type="date" value={editing.due} onChange={e=>setEditing({...editing,due:e.target.value})}
+                      style={{background:'#17171b',border:'1px solid #2a2a31',borderRadius:6,color:'#9a9788',fontSize:12,padding:'3px 7px',maxWidth:130}}/>
+                    <button className="btn-primary" type="submit" style={{padding:'4px 12px',fontSize:12}}>Save</button>
+                    <button type="button" onClick={()=>setEditing(null)} style={{padding:'4px 10px',fontSize:12,background:'none',border:'1px solid #2a2a31',borderRadius:6,color:'#9a9788',cursor:'pointer'}}>Cancel</button>
+                  </div>
+                </form>
+              ) : (
+                <div className="task-row" style={{display:'flex',alignItems:'center',gap:10,padding:'9px 12px',borderRadius:8,background:'#131317',border:'1px solid #1f1f24'}}>
+                  <span className={`tick${t.done?' on':''}`} onClick={()=>toggleTask(t.id)}>
+                    {t.done&&<svg style={{width:10,height:10}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><polyline points="20 6 9 17 4 12"/></svg>}
+                  </span>
+                  <span style={{flex:1,fontSize:13.5,color:t.done?'#3a3a44':'#f4f3ee',textDecoration:t.done?'line-through':'none'}}>{t.title}</span>
+                  <span style={{width:8,height:8,borderRadius:99,background:PRIO[t.priority||'none'],flexShrink:0}}/>
+                  {t.due&&<span style={{fontSize:11,color:'#9a9788'}}>{t.due}</span>}
+                  <button onClick={()=>setExpanded({...expanded,[t.id]:!expanded[t.id]})} style={{background:'none',border:'none',color:'#9a9788',cursor:'pointer',fontSize:11}}>
+                    {t.subtasks.length>0?`${t.subtasks.filter(s=>s.done).length}/${t.subtasks.length}`:'+sub'}
+                  </button>
+                  {!t.done&&(
+                    <button onClick={()=>startEdit(t)} style={{background:'none',border:'none',color:'#3a3a44',cursor:'pointer'}} title="Edit task">
+                      <svg style={{width:13,height:13}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                    </button>
+                  )}
+                  <button onClick={()=>delTask(t.id)} style={{background:'none',border:'none',color:'#3a3a44',cursor:'pointer'}}>
+                    <svg style={{width:13,height:13}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                  </button>
+                </div>
+              )}
               {expanded[t.id]&&(
                 <div style={{paddingLeft:32,marginTop:4}}>
                   {t.subtasks.map(s=>(
-                    <div key={s.id} style={{display:'flex',alignItems:'center',gap:8,padding:'5px 8px',borderRadius:6}}>
-                      <span className={`tick${s.done?' on':''}`} onClick={()=>toggleSub(t.id,s.id)} style={{width:14,height:14,borderRadius:4}}>
-                        {s.done&&<svg style={{width:8,height:8}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><polyline points="20 6 9 17 4 12"/></svg>}
-                      </span>
-                      <span style={{fontSize:12.5,color:s.done?'#3a3a44':'#c9c6b8',textDecoration:s.done?'line-through':'none'}}>{s.title}</span>
+                    <div key={s.id}>
+                      {editingSub&&editingSub.tid===t.id&&editingSub.sid===s.id ? (
+                        <form onSubmit={saveEditSub} style={{display:'flex',alignItems:'center',gap:6,padding:'4px 8px',borderRadius:6,border:'1px solid #818cf8',marginBottom:2}}>
+                          <input autoFocus value={editingSub.title} onChange={e=>setEditingSub({...editingSub,title:e.target.value})}
+                            style={{flex:1,background:'transparent',border:'none',color:'#f4f3ee',fontSize:12.5,padding:0,outline:'none'}}/>
+                          <button type="submit" style={{background:'none',border:'none',color:'#818cf8',fontSize:11,cursor:'pointer'}}>save</button>
+                          <button type="button" onClick={()=>setEditingSub(null)} style={{background:'none',border:'none',color:'#9a9788',fontSize:11,cursor:'pointer'}}>cancel</button>
+                        </form>
+                      ) : (
+                        <div style={{display:'flex',alignItems:'center',gap:8,padding:'5px 8px',borderRadius:6}}>
+                          <span className={`tick${s.done?' on':''}`} onClick={()=>toggleSub(t.id,s.id)} style={{width:14,height:14,borderRadius:4}}>
+                            {s.done&&<svg style={{width:8,height:8}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><polyline points="20 6 9 17 4 12"/></svg>}
+                          </span>
+                          <span style={{flex:1,fontSize:12.5,color:s.done?'#3a3a44':'#c9c6b8',textDecoration:s.done?'line-through':'none'}}>{s.title}</span>
+                          {!s.done&&(
+                            <button onClick={()=>startEditSub(t.id,s)} style={{background:'none',border:'none',color:'#3a3a44',cursor:'pointer',padding:0}} title="Edit subtask">
+                              <svg style={{width:11,height:11}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                            </button>
+                          )}
+                          <button onClick={()=>delSub(t.id,s.id)} style={{background:'none',border:'none',color:'#3a3a44',cursor:'pointer',padding:0}} title="Delete subtask">
+                            <svg style={{width:11,height:11}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                          </button>
+                        </div>
+                      )}
                     </div>
                   ))}
                   <form onSubmit={e=>{e.preventDefault();addSub(t.id);}} style={{display:'flex',gap:6,marginTop:4}}>
