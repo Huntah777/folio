@@ -139,6 +139,7 @@ input:focus,textarea:focus{outline:none}
 .btn-ghost:hover{border-color:#2a2a31;color:#f4f3ee}
 @keyframes fadeUp{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:none}}
 .fadeUp{animation:fadeUp 220ms ease both}
+@keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
 .divider{border-top:1px solid #1f1f24}
 /* resize handle */
 .resize-handle{width:5px;cursor:col-resize;flex-shrink:0;background:transparent;transition:background 150ms}
@@ -1877,16 +1878,23 @@ function SyncIconBtn({ onClick, syncStatus }) {
   const dotColor =
     syncStatus==='synced'  ? '#10b981' :
     syncStatus==='saving'  ? '#f59e0b' :
+    syncStatus==='syncing' ? '#818cf8' :
     syncStatus==='offline' ? '#f43f5e' :
     syncStatus==='unauth'  ? '#f59e0b' : null;
+  const spinning = syncStatus==='syncing' || syncStatus==='saving';
+  const label =
+    syncStatus==='synced'  ? 'Synced — click to pull latest' :
+    syncStatus==='syncing' ? 'Syncing…' :
+    syncStatus==='saving'  ? 'Saving…' :
+    syncStatus==='offline' ? 'Offline — click to retry' :
+    syncStatus==='unauth'  ? 'Auth error — click to reconnect' : 'Set up sync';
   return (
-    <button onClick={onClick}
-      title={`Sync — ${syncStatus==='synced'?'synced':syncStatus==='saving'?'saving…':syncStatus==='offline'?'offline':syncStatus==='unauth'?'re-auth':'local'}`}
+    <button onClick={onClick} title={label}
       style={{background:'linear-gradient(135deg,#818cf8,#6366f1)',border:'none',borderRadius:7,cursor:'pointer',width:28,height:28,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,position:'relative',boxShadow:'0 4px 10px rgba(99,102,241,.35)',transition:'box-shadow 120ms'}}
       onMouseEnter={e=>e.currentTarget.style.boxShadow='0 4px 16px rgba(99,102,241,.6)'}
       onMouseLeave={e=>e.currentTarget.style.boxShadow='0 4px 10px rgba(99,102,241,.35)'}>
-      <svg style={{width:13,height:13}} viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round">
-        <circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2"/>
+      <svg style={{width:13,height:13,animation:spinning?'spin 0.8s linear infinite':'none'}} viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round">
+        <path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/>
       </svg>
       {dotColor && <span style={{position:'absolute',top:-3,right:-3,width:8,height:8,borderRadius:99,background:dotColor,border:'2px solid #0d0d10'}}/>}
     </button>
@@ -2276,7 +2284,7 @@ function InstallBanner() {
 }
 
 /* ── Sidebar ── */
-function Sidebar({ state, update, syncStatus, onSetup, collapsed, onToggle }) {
+function Sidebar({ state, update, syncStatus, onSetup, onSync, collapsed, onToggle }) {
   const { view } = state.ui;
   const recent = [...state.notes].sort((a,b)=>b.updated-a.updated).slice(0,5);
   const folders = state.folders || [];
@@ -2356,8 +2364,16 @@ function Sidebar({ state, update, syncStatus, onSetup, collapsed, onToggle }) {
           </button>
         </div>
         <div style={{flex:1}}/>
-        <div style={{padding:'10px 0',borderTop:'1px solid #1f1f24',width:'100%',display:'flex',justifyContent:'center',flexShrink:0}}>
-          <SyncIconBtn onClick={onSetup} syncStatus={syncStatus}/>
+        <div style={{padding:'10px 0',borderTop:'1px solid #1f1f24',width:'100%',display:'flex',flexDirection:'column',alignItems:'center',gap:4,flexShrink:0}}>
+          <SyncIconBtn onClick={onSync} syncStatus={syncStatus}/>
+          <button onClick={onSetup} title="Sync settings"
+            style={{background:'none',border:'none',cursor:'pointer',color:'#2a2a31',padding:4,borderRadius:5,display:'flex',alignItems:'center',justifyContent:'center',transition:'color 120ms'}}
+            onMouseEnter={e=>e.currentTarget.style.color='#818cf8'}
+            onMouseLeave={e=>e.currentTarget.style.color='#2a2a31'}>
+            <svg style={{width:11,height:11}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+              <circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2"/>
+            </svg>
+          </button>
         </div>
       </div>
     );
@@ -2481,20 +2497,32 @@ function Sidebar({ state, update, syncStatus, onSetup, collapsed, onToggle }) {
             <span><span style={{color:'#818cf8',fontWeight:700}}>{due}</span> task{due!==1?'s':''} due</span>
           );})()}
         </div>
-        <SyncIconBtn onClick={onSetup} syncStatus={syncStatus}/>
+        <div style={{display:'flex',alignItems:'center',gap:5}}>
+          <button onClick={onSetup} title="Sync settings"
+            style={{background:'none',border:'none',cursor:'pointer',color:'#2a2a31',padding:4,borderRadius:5,display:'flex',alignItems:'center',justifyContent:'center',transition:'color 120ms'}}
+            onMouseEnter={e=>e.currentTarget.style.color='#818cf8'}
+            onMouseLeave={e=>e.currentTarget.style.color='#2a2a31'}>
+            <svg style={{width:12,height:12}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+              <circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2"/>
+            </svg>
+          </button>
+          <SyncIconBtn onClick={onSync} syncStatus={syncStatus}/>
+        </div>
       </div>
     </div>
   );
 }
 
 /* ── MobileNav ── */
-function MobileNav({ state, update, syncStatus, onSetup }) {
+function MobileNav({ state, update, syncStatus, onSetup, onSync }) {
   const { view } = state.ui;
   const nav = v => update('ui',{...state.ui,view:v});
   const pending = state.tasks.filter(t=>!t.done&&t.due===todayKey()).length;
+  const spinning = syncStatus==='syncing' || syncStatus==='saving';
   const dotColor =
     syncStatus==='synced'  ? '#10b981' :
     syncStatus==='saving'  ? '#f59e0b' :
+    syncStatus==='syncing' ? '#818cf8' :
     syncStatus==='offline' ? '#f43f5e' :
     syncStatus==='unauth'  ? '#f59e0b' : null;
   const navBtnStyle = active => ({
@@ -2524,10 +2552,10 @@ function MobileNav({ state, update, syncStatus, onSetup }) {
           )}
         </button>
       ))}
-      <button onClick={onSetup} style={navBtnStyle(false)} title="Sync settings">
+      <button onClick={onSync} style={navBtnStyle(false)} title={syncStatus==='syncing'?'Syncing…':'Sync now'}>
         <span style={{width:20,height:20,display:'flex',alignItems:'center',justifyContent:'center',position:'relative'}}>
-          <svg style={{width:15,height:15}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-            <circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2"/>
+          <svg style={{width:15,height:15,animation:spinning?'spin 0.8s linear infinite':'none'}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+            <path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/>
           </svg>
           {dotColor && <span style={{position:'absolute',top:-1,right:-1,width:6,height:6,borderRadius:99,background:dotColor,border:'1.5px solid #0d0d10'}}/>}
         </span>
@@ -2606,6 +2634,10 @@ function App() {
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
   const saveTimer    = useRef(null);
   const pendingFlush = useRef(null); /* latest unsaved state, cleared on successful D1 write */
+  const stateRef     = useRef(null); /* always-current state for syncNow closure */
+  const syncingRef   = useRef(false);
+  const lastSyncRef  = useRef(0);
+  stateRef.current = state;
   const [installBanner, setInstallBanner] = useState(!!window._installPrompt);
 
   useEffect(() => {
@@ -2740,6 +2772,52 @@ function App() {
     };
   }, []);
 
+  /* ── manual / auto sync-now: pull remote, merge local extras, push if needed ── */
+  const syncNow = useCallback(async () => {
+    if (!Sync.configured()) { setSetupOpen(true); return; }
+    if (syncingRef.current) return;
+    syncingRef.current = true;
+    clearTimeout(saveTimer.current);
+    pendingFlush.current = null;
+    setSyncStatus('syncing');
+    try {
+      const remote = await Sync.load();
+      const current = stateRef.current;
+      const merged = hydrate(remote || {});
+      let hasExtras = false;
+      ['notes','tasks','meetings','folders'].forEach(key => {
+        const remoteIds = new Set(((remote||{})[key]||[]).map(x => x.id));
+        const extras = (current?.[key]||[]).filter(x => !remoteIds.has(x.id));
+        if (extras.length) { merged[key] = [...merged[key], ...extras]; hasExtras = true; }
+      });
+      if (hasExtras) await Sync.save(merged);
+      Cache.write(merged);
+      setStateRaw(merged);
+      lastSyncRef.current = Date.now();
+      setSyncStatus('synced');
+    } catch(e) {
+      setSyncStatus(e.message === 'UNAUTHORIZED' ? 'unauth' : 'offline');
+    } finally {
+      syncingRef.current = false;
+    }
+  }, []);
+
+  /* ── auto-pull when app comes to foreground (critical for iPad PWA) ── */
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState !== 'visible') return;
+      if (!Sync.configured()) return;
+      if (Date.now() - lastSyncRef.current < 30000) return; /* throttle: 30s minimum */
+      syncNow();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('focus', onVisible);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('focus', onVisible);
+    };
+  }, [syncNow]);
+
   /* ── update: write localStorage immediately, debounce D1 by 1.5s ── */
   const update = useCallback((key, val) => {
     setStateRaw(prev => {
@@ -2780,11 +2858,11 @@ function App() {
   return (
     <>
       <Sidebar state={state} update={update} syncStatus={syncStatus} onSetup={()=>setSetupOpen(true)}
-        collapsed={!sidebarOpen} onToggle={()=>setSidebarOpen(v=>!v)}/>
+        onSync={syncNow} collapsed={!sidebarOpen} onToggle={()=>setSidebarOpen(v=>!v)}/>
       <div className="main">
         <View state={state} update={update} isMobile={isMobile}/>
       </div>
-      <MobileNav state={state} update={update} syncStatus={syncStatus} onSetup={()=>setSetupOpen(true)}/>
+      <MobileNav state={state} update={update} syncStatus={syncStatus} onSetup={()=>setSetupOpen(true)} onSync={syncNow}/>
       {setupOpen && <SetupModal onClose={()=>setSetupOpen(false)} onConnected={handleSyncConnected}/>}
       {installBanner && <InstallBanner/>}
     </>
