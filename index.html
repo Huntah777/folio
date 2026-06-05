@@ -99,9 +99,10 @@ input:focus,textarea:focus{outline:none}
 @media(max-width:768px){
   .sidebar{display:none!important}
   .mobile-nav{display:flex!important;height:calc(56px + env(safe-area-inset-bottom,0px));padding-bottom:env(safe-area-inset-bottom,0px)}
-  #app{padding-bottom:calc(56px + env(safe-area-inset-bottom,0px))}
+  #app{padding-bottom:calc(56px + env(safe-area-inset-bottom,0px));overflow-x:hidden}
   .main{min-width:0;overflow:hidden}
 }
+html,body{overflow-x:hidden}
 </style>
 </head>
 <body>
@@ -790,6 +791,7 @@ function recurLabel(m) {
 function CalendarView({ state, update, isMobile }) {
   const [showModal, setShowModal] = useState(false);
   const [form, setForm] = useState(BLANK_FORM);
+  const [panelWidth, setPanelWidth] = useState(310);
 
   const calDate = state.ui.calDate ? parseKey(state.ui.calDate) : new Date();
   const selDate = state.ui.calDate || todayKey();
@@ -856,28 +858,28 @@ function CalendarView({ state, update, isMobile }) {
   });
 
   return (
-    <div style={{display:'flex',height:'100%',overflow:'hidden',flexDirection:isMobile?'column':'row'}}>
+    <div style={{display:'flex',flex:1,overflow:'hidden',flexDirection:isMobile?'column':'row'}}>
 
       {/* ── month grid ── */}
-      <div style={{flex:1,padding:isMobile?'12px 6px':'24px 24px 24px 40px',overflow:'auto'}} className="scrollbar">
-        <div style={{display:'flex',alignItems:'center',gap:16,marginBottom:20}}>
-          <button onClick={()=>nav(-1)} style={{background:'none',border:'1px solid #1f1f24',borderRadius:7,color:'#9a9788',padding:'5px 10px',cursor:'pointer',fontSize:16}}>‹</button>
-          <h2 style={{fontFamily:'Fraunces,serif',fontSize:22,fontWeight:600,flex:1}}>{MONTHS[month]} {year}</h2>
-          <button onClick={()=>nav(1)} style={{background:'none',border:'1px solid #1f1f24',borderRadius:7,color:'#9a9788',padding:'5px 10px',cursor:'pointer',fontSize:16}}>›</button>
-          <button onClick={()=>update('ui',{...state.ui,calDate:today})} style={{background:'none',border:'1px solid #1f1f24',borderRadius:7,color:'#9a9788',padding:'5px 12px',cursor:'pointer',fontSize:12}}>Today</button>
+      <div style={{flex:1,padding:isMobile?'10px 6px':'24px 24px 24px 40px',overflow:'auto',minWidth:0}} className="scrollbar">
+        <div style={{display:'flex',alignItems:'center',gap:isMobile?6:16,marginBottom:isMobile?10:20}}>
+          <button onClick={()=>nav(-1)} style={{background:'none',border:'1px solid #1f1f24',borderRadius:7,color:'#9a9788',padding:'5px 10px',cursor:'pointer',fontSize:16,flexShrink:0}}>‹</button>
+          <h2 style={{fontFamily:'Fraunces,serif',fontSize:isMobile?16:22,fontWeight:600,flex:1,minWidth:0}}>{MONTHS[month]} {year}</h2>
+          <button onClick={()=>nav(1)} style={{background:'none',border:'1px solid #1f1f24',borderRadius:7,color:'#9a9788',padding:'5px 10px',cursor:'pointer',fontSize:16,flexShrink:0}}>›</button>
+          <button onClick={()=>update('ui',{...state.ui,calDate:today})} style={{background:'none',border:'1px solid #1f1f24',borderRadius:7,color:'#9a9788',padding:'5px 10px',cursor:'pointer',fontSize:isMobile?11:12,flexShrink:0}}>Today</button>
         </div>
-        <div style={{display:'grid',gridTemplateColumns:'repeat(7,1fr)',gap:4,marginBottom:6}}>
-          {DAY_SHORT.map(d=><div key={d} style={{fontSize:11,color:'#3a3a44',textAlign:'center',fontWeight:600,padding:'4px 0'}}>{d}</div>)}
+        <div style={{display:'grid',gridTemplateColumns:'repeat(7,1fr)',gap:isMobile?2:4,marginBottom:isMobile?3:6}}>
+          {DAY_SHORT.map(d=><div key={d} style={{fontSize:isMobile?9:11,color:'#3a3a44',textAlign:'center',fontWeight:600,padding:'4px 0'}}>{isMobile?d[0]:d}</div>)}
         </div>
-        <div style={{display:'grid',gridTemplateColumns:'repeat(7,1fr)',gap:4}}>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(7,1fr)',gap:isMobile?2:4}}>
           {cells.map((d,i)=> d===null ? <div key={`e${i}`}/> : (
             <div key={d.toISOString()} className={`cal-cell${fmtKey(d)===today?' today':''}${fmtKey(d)===selDate?' sel':''}`}
               onClick={()=>update('ui',{...state.ui,calDate:fmtKey(d)})}>
-              <div style={{fontSize:12,fontWeight:fmtKey(d)===today?700:400,color:fmtKey(d)===today?'#818cf8':'#c9c6b8',marginBottom:3}}>{d.getDate()}</div>
+              <div style={{fontSize:isMobile?10:12,fontWeight:fmtKey(d)===today?700:400,color:fmtKey(d)===today?'#818cf8':'#c9c6b8',marginBottom:2}}>{d.getDate()}</div>
               {meetingsOnDay(d).slice(0,3).map((m,idx)=>(
                 <div key={m.id+idx} style={{display:'flex',alignItems:'center',gap:2,marginBottom:2}}>
-                  <div style={{width:'60%',height:4,borderRadius:3,background: m.recurrence&&m.recurrence!=='none' ? '#10b981' : '#818cf8'}}/>
-                  {m.recurrence&&m.recurrence!=='none'&&<span style={{fontSize:8,color:'#10b981'}}>↻</span>}
+                  <div style={{width:'60%',height:isMobile?3:4,borderRadius:3,background: m.recurrence&&m.recurrence!=='none' ? '#10b981' : '#818cf8'}}/>
+                  {!isMobile&&m.recurrence&&m.recurrence!=='none'&&<span style={{fontSize:8,color:'#10b981'}}>↻</span>}
                 </div>
               ))}
             </div>
@@ -885,8 +887,21 @@ function CalendarView({ state, update, isMobile }) {
         </div>
       </div>
 
+      {/* resize handle — desktop only */}
+      {!isMobile && (
+        <div className="resize-handle"
+          onMouseDown={e=>{
+            const startX=e.clientX, startW=panelWidth;
+            const onMove=mv=>setPanelWidth(Math.max(200,Math.min(520,startW-(mv.clientX-startX))));
+            const onUp=()=>{document.removeEventListener('mousemove',onMove);document.removeEventListener('mouseup',onUp);document.body.style.cursor='';document.body.style.userSelect='';};
+            document.body.style.cursor='col-resize';document.body.style.userSelect='none';
+            document.addEventListener('mousemove',onMove);document.addEventListener('mouseup',onUp);e.preventDefault();
+          }}
+        />
+      )}
+
       {/* ── day panel ── */}
-      <div style={{width:isMobile?'100%':310,height:isMobile?220:undefined,borderLeft:isMobile?'none':'1px solid #1f1f24',borderTop:isMobile?'1px solid #1f1f24':'none',display:'flex',flexDirection:'column',overflow:'hidden',flexShrink:0}}>
+      <div style={{width:isMobile?'100%':panelWidth,borderLeft:isMobile?'none':'1px solid #1f1f24',borderTop:isMobile?'1px solid #1f1f24':'none',display:'flex',flexDirection:'column',overflow:'hidden',flexShrink:0,minHeight:isMobile?160:undefined}}>
         <div style={{padding:'20px 16px 12px',borderBottom:'1px solid #1f1f24',flexShrink:0}}>
           <div style={{fontFamily:'Fraunces,serif',fontSize:16,fontWeight:600,marginBottom:2}}>
             {selDate===today ? 'Today' : parseKey(selDate).toLocaleDateString('en-GB',{weekday:'long',day:'numeric',month:'short'})}
@@ -1035,8 +1050,8 @@ function TodayView({ state, update, isMobile }) {
   const toggleTask = id => update('tasks',state.tasks.map(t=>t.id===id?{...t,done:!t.done}:t));
 
   return (
-    <div style={{flex:1,overflow:'auto',padding:isMobile?'20px 16px':'32px 36px'}} className="scrollbar">
-      <div style={{fontFamily:'Fraunces,serif',fontSize:isMobile?22:28,fontWeight:600,marginBottom:4}}>{greeting}</div>
+    <div style={{flex:1,overflowY:'auto',overflowX:'hidden',padding:isMobile?'20px 16px':'32px 36px'}} className="scrollbar">
+      <div style={{fontFamily:'Fraunces,serif',fontSize:isMobile?20:28,fontWeight:600,marginBottom:4,wordBreak:'break-word'}}>{greeting}</div>
       <div style={{color:'#9a9788',fontSize:13,marginBottom:isMobile?20:32}}>
         {new Date().toLocaleDateString('en-GB',{weekday:'long',day:'numeric',month:'long',year:'numeric'})}
       </div>
@@ -1078,15 +1093,15 @@ function TodayView({ state, update, isMobile }) {
           <div style={{fontSize:11,fontWeight:700,letterSpacing:'.08em',color:'#f59e0b',textTransform:'uppercase',marginBottom:12}}>Recent notes</div>
           <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr':'repeat(2,1fr)',gap:10}}>
             {recent.map(n=>(
-              <div key={n.id} style={{background:'#17171b',border:'1px solid #1f1f24',borderRadius:9,padding:'12px 14px',cursor:'pointer',transition:'border-color 120ms'}}
+              <div key={n.id} style={{background:'#17171b',border:'1px solid #1f1f24',borderRadius:9,padding:'12px 14px',cursor:'pointer',transition:'border-color 120ms',overflow:'hidden'}}
                 onClick={()=>update('ui',{...state.ui,view:'notes',noteId:n.id})}
                 onMouseEnter={e=>e.currentTarget.style.borderColor='#2a2a31'}
                 onMouseLeave={e=>e.currentTarget.style.borderColor='#1f1f24'}>
-                <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:4}}>
-                  <span style={{fontSize:14}}>{n.emoji||'📝'}</span>
-                  <span style={{fontSize:13,fontWeight:600,color:'#f4f3ee',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{n.title||'Untitled'}</span>
+                <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:4,overflow:'hidden'}}>
+                  <span style={{fontSize:14,flexShrink:0}}>{n.emoji||'📝'}</span>
+                  <span style={{fontSize:13,fontWeight:600,color:'#f4f3ee',minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{n.title||'Untitled'}</span>
                 </div>
-                <div style={{fontSize:11.5,color:'#9a9788',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{(n.body||'').replace(/```[\s\S]*?```/g,'[code]').slice(0,80)}</div>
+                <div style={{fontSize:11.5,color:'#9a9788',display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical',overflow:'hidden'}}>{(n.body||'').replace(/```[\s\S]*?```/g,'[code]').slice(0,120)}</div>
               </div>
             ))}
           </div>
