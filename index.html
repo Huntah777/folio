@@ -435,16 +435,19 @@ function NoteEditor({ note, state, update }) {
   const [wlUrl,   setWlUrl]   = useState('');
   const [wlTitle, setWlTitle] = useState('');
   const imgInputRef = useRef(null);
-  const activeTA = useRef(null); /* { el, partIdx } */
+  const activeTA = useRef(null); /* { el, partIdx, pos } */
 
   /* ── bodyParts — MUST be before any early return (Rules of Hooks) ── */
   const bodyParts = useMemo(() => {
     if (!note) return [{type:'text',content:''}];
     const parts=[]; let rest=note.body||'';
-    const re=/```(\w+)?\n([\s\S]*?)```/g; let m; let last=0;
+    const re=/```(\w+)?\n([\s\S]*?)```|\[url:(.*?)\|(.*?)\]/g; let m; let last=0;
     while((m=re.exec(rest))!==null){
       if(m.index>last) parts.push({type:'text',content:rest.slice(last,m.index)});
-      parts.push({type:'code',lang:m[1]||'plaintext',content:m[2].replace(/\n$/,'')});
+      if(m[0].startsWith('```'))
+        parts.push({type:'code',lang:m[1]||'plaintext',content:m[2].replace(/\n$/,'')});
+      else
+        parts.push({type:'link',title:m[3]||'',url:m[4]||''});
       last=m.index+m[0].length;
     }
     if(last<rest.length) parts.push({type:'text',content:rest.slice(last)});
@@ -461,7 +464,11 @@ function NoteEditor({ note, state, update }) {
   const removeTag = t => upNote({ tags: note.tags.filter(x=>x!==t) });
   const addTag = t => { const clean=t.startsWith('#')?t:'#'+t; if(!note.tags.includes(clean)) upNote({tags:[...note.tags,clean]}); };
 
-  const rebuildBody = np => np.map(p=>p.type==='code'?'```'+p.lang+'\n'+p.content+'\n```':p.content).join('');
+  const rebuildBody = np => np.map(p=>{
+    if(p.type==='code') return '```'+p.lang+'\n'+p.content+'\n```';
+    if(p.type==='link') return '[url:'+p.title+'|'+p.url+']';
+    return p.content;
+  }).join('');
 
   /* ── formatting toolbar ── */
   const insertLinePrefix = prefix => {
@@ -586,7 +593,10 @@ function NoteEditor({ note, state, update }) {
     if (!wlUrl.trim()) return;
     const url = /^https?:\/\//i.test(wlUrl) ? wlUrl.trim() : 'https://'+wlUrl.trim();
     const title = wlTitle.trim() || (() => { try { return new URL(url).hostname; } catch { return url; } })();
-    upNote({webLinks:[...(note.webLinks||[]),{id:uid(),url,title}]});
+    insertAtCursor(
+      {type:'link', title, url},
+      (note.body||'')+'\n\n[url:'+title+'|'+url+']'
+    );
     setWlUrl(''); setWlTitle(''); setShowWebLink(false);
   };
   const removeWebLink = id => upNote({webLinks:(note.webLinks||[]).filter(l=>l.id!==id)});
@@ -596,10 +606,34 @@ function NoteEditor({ note, state, update }) {
   const linkedNotes = (note.links||[]).map(id=>state.notes.find(n=>n.id===id)).filter(Boolean);
   const linkable = state.notes.filter(n=>n.id!==note.id&&!(note.links||[]).includes(n.id)&&(!linkQuery||n.title.toLowerCase().includes(linkQuery.toLowerCase())));
 
+  /* ── insert a part at the active cursor position, or append ── */
+  const insertAtCursor = (newPart, fallbackBody) => {
+    if (activeTA.current) {
+      const { partIdx, pos=0 } = activeTA.current;
+      const cur = bodyParts[partIdx];
+      if (cur && cur.type==='text') {
+        const before = cur.content.slice(0, pos);
+        const after  = cur.content.slice(pos);
+        const np = [...bodyParts];
+        np.splice(partIdx, 1,
+          {type:'text', content: before},
+          newPart,
+          {type:'text', content: after}
+        );
+        upNote({body: rebuildBody(np)});
+        return;
+      }
+    }
+    upNote({body: fallbackBody});
+  };
+
   /* ── code insert ── */
   const insertCode = () => {
     if (!codeVal.trim()) return;
-    upNote({body:(note.body||'')+'\n\n```'+codeLang+'\n'+codeVal+'\n```'});
+    insertAtCursor(
+      {type:'code', lang:codeLang, content:codeVal},
+      (note.body||'')+'\n\n```'+codeLang+'\n'+codeVal+'\n```'
+    );
     setCodeVal(''); setShowCode(false);
   };
 
@@ -766,15 +800,35 @@ function NoteEditor({ note, state, update }) {
           </div>
         )}
 
-        {/* text + code parts */}
+        {/* text + code + inline link parts */}
         {bodyParts.map((part,i)=>
           part.type==='code'
             ? <CodeBlock key={i} value={part.content} lang={part.lang}
                 onChange={v=>{const np=[...bodyParts];np[i]={...np[i],content:v};upNote({body:rebuildBody(np)});}}
                 onLangChange={l=>{const np=[...bodyParts];np[i]={...np[i],lang:l};upNote({body:rebuildBody(np)});}}/>
+            : part.type==='link'
+            ? <div key={i} style={{display:'flex',alignItems:'center',gap:8,background:'#17171b',border:'1px solid #1f1f24',borderRadius:8,padding:'7px 10px',margin:'4px 0',transition:'border-color 120ms'}}
+                onMouseEnter={e=>e.currentTarget.style.borderColor='#2a2a31'}
+                onMouseLeave={e=>e.currentTarget.style.borderColor='#1f1f24'}>
+                <svg style={{width:12,height:12,color:'#818cf8',flexShrink:0}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+                <a href={part.url} target="_blank" rel="noopener noreferrer"
+                  style={{flex:1,color:'#818cf8',fontSize:13,textDecoration:'none',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',fontFamily:'Manrope,sans-serif'}}
+                  onMouseEnter={e=>e.currentTarget.style.textDecoration='underline'}
+                  onMouseLeave={e=>e.currentTarget.style.textDecoration='none'}>
+                  {part.title}
+                </a>
+                <span style={{fontSize:11,color:'#3a3a44',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',maxWidth:160,flexShrink:0}}>
+                  {(()=>{try{return new URL(part.url).hostname;}catch{return '';}})()}
+                </span>
+                <button onClick={()=>{const np=[...bodyParts];np.splice(i,1);upNote({body:rebuildBody(np)});}} className="del-btn" style={{padding:'2px 4px',flexShrink:0}} title="Remove link">
+                  <svg style={{width:11,height:11}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                </button>
+              </div>
             : <textarea key={i} className="editor-body" value={part.content}
                 rows={Math.max(4,(part.content.match(/\n/g)||[]).length+2)}
-                onFocus={e=>{ activeTA.current={el:e.target,partIdx:i}; }}
+                onFocus={e=>{ activeTA.current={el:e.target,partIdx:i,pos:e.target.selectionStart}; }}
+                onBlur={e=>{ if(activeTA.current?.el===e.target) activeTA.current.pos=e.target.selectionStart; }}
+                onSelect={e=>{ if(activeTA.current?.el===e.target) activeTA.current.pos=e.target.selectionStart; }}
                 onChange={e=>handleBodyChange(e,i)}
                 onKeyDown={e=>handleBodyKeyDown(e,i)}
                 placeholder={i===0?'Start writing… (click toolbar buttons to format)':''}/>
