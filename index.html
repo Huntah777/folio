@@ -283,8 +283,61 @@ const SEED = () => ({
     {id:'done',      name:'Done',        color:'#10b981'},
   ],
   tags: ['#getting-started','#work','#personal','#ideas','#meeting'],
+  salah: { enabled:false, lat:null, lng:null, method:'mwl', asr:'standard', prayers:{fajr:true,sunrise:false,dhuhr:true,asr:true,maghrib:true,isha:true} },
   ui: { view:'today', noteId: null, calDate: todayKey(), filterTag:'', folderId: null },
 });
+
+/* ── Salah (prayer time) calculation ── */
+const SALAH_METHODS = {
+  mwl:     { name:'Muslim World League',           fajr:18,   isha:17   },
+  isna:    { name:'ISNA (North America)',          fajr:15,   isha:15   },
+  egypt:   { name:'Egyptian General Authority',    fajr:19.5, isha:17.5 },
+  makkah:  { name:"Umm Al-Qura (Makkah)",         fajr:18.5, ishaMin:90 },
+  karachi: { name:'University of Karachi',          fajr:18,   isha:18   },
+  tehran:  { name:'Geophysics Inst. Tehran',        fajr:17.7, isha:14   },
+};
+const PRAYER_NAMES  = ['fajr','sunrise','dhuhr','asr','maghrib','isha'];
+const PRAYER_LABELS = { fajr:'Fajr', sunrise:'Sunrise (Shuruq)', dhuhr:'Dhuhr', asr:'Asr', maghrib:'Maghrib', isha:'Isha' };
+
+function calcSalahTimes(date, lat, lng, timezone, method, asrJuristic) {
+  const P  = Math.PI / 180;
+  const ds = d => Math.sin(d*P), dc = d => Math.cos(d*P);
+  const as = x => Math.asin(x)/P, ac = x => Math.acos(x)/P;
+  const at2= (y,x) => Math.atan2(y,x)/P;
+  const fA = a => ((a%360)+360)%360, fH = h => ((h%24)+24)%24;
+  const fmt = h => {
+    if (h===null) return '--:--';
+    h = fH(h);
+    const hh = Math.floor(h);
+    let mm = Math.floor((h-hh)*60+0.5);
+    if (mm>=60) return `${String(hh+1).padStart(2,'0')}:00`;
+    return `${String(hh).padStart(2,'0')}:${String(mm).padStart(2,'0')}`;
+  };
+  let Y=date.getFullYear(), M=date.getMonth()+1, D=date.getDate();
+  if (M<=2){Y--;M+=12;}
+  const A=Math.floor(Y/100), B=2-A+Math.floor(A/4);
+  const jd = Math.floor(365.25*(Y+4716))+Math.floor(30.6001*(M+1))+D+B-1524.5 - lng/(15*24);
+  const Dn = jd+0.5-2451545;
+  const g=fA(357.529+0.98560028*Dn), q=fA(280.459+0.98564736*Dn);
+  const L=fA(q+1.915*ds(g)+0.020*ds(2*g));
+  const e=23.439-0.00000036*Dn;
+  const RA=at2(dc(e)*ds(L),dc(L))/15;
+  const eqt=q/15-fH(RA), decl=as(ds(e)*ds(L));
+  const noonLocal = fH(12-eqt)+timezone-lng/15;
+  const ha = angle => {
+    const c=(ds(angle)-ds(lat)*ds(decl))/(dc(lat)*dc(decl));
+    return (c>1||c<-1)?null:ac(c)/15;
+  };
+  const sunHA=ha(-0.8333);
+  const sunrise=sunHA!==null?noonLocal-sunHA:null, sunset=sunHA!==null?noonLocal+sunHA:null;
+  const mp=SALAH_METHODS[method]||SALAH_METHODS.mwl;
+  const fajrHA=ha(-(mp.fajr)), fajr=fajrHA!==null?noonLocal-fajrHA:null;
+  const isha=mp.ishaMin?(sunset!==null?sunset+mp.ishaMin/60:null):(()=>{const h=ha(-(mp.isha));return h!==null?noonLocal+h:null;})();
+  const sf=asrJuristic==='hanafi'?2:1;
+  const asrAngle=Math.atan(1/(sf+Math.tan(Math.abs(lat-decl)*P)))/P;
+  const asrHA=ha(asrAngle), asr=asrHA!==null?noonLocal+asrHA:null;
+  return {fajr:fmt(fajr),sunrise:fmt(sunrise),dhuhr:fmt(noonLocal),asr:fmt(asr),maghrib:fmt(sunset),isha:fmt(isha)};
+}
 
 /* ── icons ── */
 const Ic = {
@@ -1484,9 +1537,11 @@ const BLANK_FORM = { title:'', time:'09:00', duration:30, attendees:'', recurren
 
 function occursOnDay(m, d) {
   const key = fmtKey(d);
-  if (key < m.date) return false;                          /* before start */
-  if (m.recurrenceEnd && key > m.recurrenceEnd) return false; /* after end */
-  if (m.date === key) return true;                         /* exact start date */
+  if (m.exceptionDate) return m.exceptionDate === key;     /* single edited occurrence */
+  if (key < m.date) return false;
+  if (m.recurrenceEnd && key > m.recurrenceEnd) return false;
+  if ((m.exceptions||[]).includes(key)) return false;      /* overridden occurrence */
+  if (m.date === key) return true;
   const r = m.recurrence || 'none';
   if (r === 'none')    return false;
   if (r === 'daily')   return true;
@@ -1513,6 +1568,10 @@ function CalendarView({ state, update, isMobile }) {
   const [notifPerm, setNotifPerm] = useState(() =>
     ('Notification' in window) ? Notification.permission : 'denied'
   );
+  const [editModal,  setEditModal]  = useState(null);
+  const [editForm,   setEditForm]   = useState(BLANK_FORM);
+  const [editScope,  setEditScope]  = useState('all');
+  const [confirmDel, setConfirmDel] = useState(null);
 
   const requestNotifPerm = async () => {
     if (!('Notification' in window)) return;
@@ -1568,12 +1627,61 @@ function CalendarView({ state, update, isMobile }) {
     update('ui',{...state.ui,view:'notes',noteId:n.id});
   };
 
-  const delMeeting = (m) => {
+  const openEditMeeting = m => {
+    setEditModal(m);
+    setEditScope('all');
+    setEditForm({
+      title:m.title, time:m.time, duration:m.duration, attendees:m.attendees||'',
+      recurrence:m.recurrence||'none', recurrenceDays:m.recurrenceDays||[],
+      recurrenceEnd:m.recurrenceEnd||'',
+    });
+  };
+
+  const submitEditMeeting = e => {
+    e.preventDefault();
+    if (!editForm.title.trim()) return;
+    const m = editModal;
     const isRecurring = m.recurrence && m.recurrence !== 'none';
-    const msg = isRecurring
-      ? `Delete "${m.title}" and all its recurring occurrences?`
-      : `Delete "${m.title}"?`;
-    if (confirm(msg)) update('meetings', state.meetings.filter(x=>x.id!==m.id));
+    const updates = {
+      title:editForm.title, time:editForm.time, duration:editForm.duration,
+      attendees:editForm.attendees,
+      recurrence:editForm.recurrence,
+      recurrenceDays:editForm.recurrence==='weekly'?editForm.recurrenceDays:[],
+      recurrenceEnd:editForm.recurrence!=='none'?editForm.recurrenceEnd:'',
+    };
+    if (isRecurring && editScope==='one' && !m.exceptionDate) {
+      const exception = {...m,...updates, id:uid(), exceptionDate:selDate, editedFrom:m.editedFrom||m.id, recurrence:'none', recurrenceDays:[], recurrenceEnd:''};
+      const origId = m.editedFrom || m.id;
+      const updated = state.meetings.map(x=>x.id===origId?{...x,exceptions:[...(x.exceptions||[]),selDate]}:x);
+      update('meetings',[...updated, exception]);
+    } else {
+      update('meetings', state.meetings.map(x=>x.id===m.id?{...x,...updates}:x));
+    }
+    setEditModal(null);
+  };
+
+  const handleDeleteClick = m => {
+    const isRecurring = (m.recurrence && m.recurrence !== 'none') || m.exceptionDate;
+    if (!isRecurring) {
+      if (confirm(`Delete "${m.title}"?`)) update('meetings', state.meetings.filter(x=>x.id!==m.id));
+      return;
+    }
+    setConfirmDel(m.id === confirmDel ? null : m.id);
+  };
+
+  const doDeleteOne = m => {
+    if (m.exceptionDate) {
+      update('meetings', state.meetings.filter(x=>x.id!==m.id));
+    } else {
+      update('meetings', state.meetings.map(x=>x.id===m.id?{...x,exceptions:[...(x.exceptions||[]),selDate]}:x));
+    }
+    setConfirmDel(null);
+  };
+
+  const doDeleteAll = m => {
+    const origId = m.editedFrom || m.id;
+    update('meetings', state.meetings.filter(x=>x.id!==origId && x.editedFrom!==origId));
+    setConfirmDel(null);
   };
 
   /* toolbar toggle style helper */
@@ -1647,9 +1755,28 @@ function CalendarView({ state, update, isMobile }) {
           <button className="btn-primary" onClick={openModal} style={{fontSize:12,padding:'5px 12px',marginTop:10,width:'100%'}}>+ Add meeting</button>
         </div>
         <div style={{flex:1,overflow:'auto',padding:'12px'}} className="scrollbar">
+          {/* Prayer times for selected day */}
+          {state.salah?.enabled && state.salah?.lat !== null && (()=>{
+            const tz = -(new Date().getTimezoneOffset()/60);
+            const pt = calcSalahTimes(parseKey(selDate), state.salah.lat, state.salah.lng, tz, state.salah.method, state.salah.asr);
+            const shown = PRAYER_NAMES.filter(p=>state.salah.prayers?.[p]!==false);
+            if (!shown.length) return null;
+            return (
+              <div style={{marginBottom:12,paddingBottom:10,borderBottom:'1px solid #1f1f24'}}>
+                <div style={{fontSize:10,fontWeight:700,letterSpacing:'.08em',color:'#f59e0b',textTransform:'uppercase',marginBottom:8}}>Prayer Times</div>
+                {shown.map(p=>(
+                  <div key={p} style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'4px 2px',borderBottom:'1px solid #1f1f2420'}}>
+                    <span style={{fontSize:12,color:'#c9c6b8'}}>{PRAYER_LABELS[p]}</span>
+                    <span style={{fontSize:12,fontWeight:600,color:'#f4f3ee',fontFamily:'"JetBrains Mono",monospace'}}>{pt[p]}</span>
+                  </div>
+                ))}
+              </div>
+            );
+          })()}
           {selDayMeetings.length===0 && <div style={{color:'#3a3a44',fontSize:12,padding:'8px 4px'}}>No meetings.</div>}
           {selDayMeetings.map(m=>{
             const label = recurLabel(m);
+            const isDelConfirm = confirmDel === m.id;
             return (
               <div key={m.id} style={{background:'#131317',border:`1px solid ${label?'rgba(16,185,129,.25)':'rgba(129,140,248,.2)'}`,borderRadius:10,padding:'12px 14px',marginBottom:8}}>
                 <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
@@ -1665,13 +1792,41 @@ function CalendarView({ state, update, isMobile }) {
                         </span>
                       </div>
                     )}
+                    {m.exceptionDate && (
+                      <div style={{fontSize:10,color:'#f59e0b',marginTop:4}}>Edited occurrence</div>
+                    )}
                   </div>
-                  <button onClick={()=>delMeeting(m)} style={{background:'none',border:'none',color:'#3a3a44',cursor:'pointer',marginLeft:8,flexShrink:0}}
-                    onMouseEnter={e=>e.currentTarget.style.color='#f43f5e'}
-                    onMouseLeave={e=>e.currentTarget.style.color='#3a3a44'}>
-                    <svg style={{width:13,height:13}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-                  </button>
+                  <div style={{display:'flex',gap:4,marginLeft:8,flexShrink:0,alignItems:'center'}}>
+                    <button onClick={()=>openEditMeeting(m)} title="Edit meeting"
+                      style={{background:'none',border:'none',color:'#3a3a44',cursor:'pointer',padding:'2px',display:'flex',alignItems:'center',transition:'color 120ms'}}
+                      onMouseEnter={e=>e.currentTarget.style.color='#818cf8'}
+                      onMouseLeave={e=>e.currentTarget.style.color='#3a3a44'}>
+                      <svg style={{width:13,height:13}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                    </button>
+                    <button onClick={()=>handleDeleteClick(m)} title="Delete meeting"
+                      style={{background:'none',border:'none',color:'#3a3a44',cursor:'pointer',padding:'2px',display:'flex',alignItems:'center',transition:'color 120ms'}}
+                      onMouseEnter={e=>e.currentTarget.style.color='#f43f5e'}
+                      onMouseLeave={e=>e.currentTarget.style.color='#3a3a44'}>
+                      <svg style={{width:13,height:13}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                    </button>
+                  </div>
                 </div>
+                {isDelConfirm && (
+                  <div style={{marginTop:8,padding:'8px 10px',background:'#0f0f13',borderRadius:7,border:'1px solid #2a2a31'}}>
+                    <div style={{fontSize:11,color:'#9a9788',marginBottom:6}}>Delete recurring meeting:</div>
+                    <div style={{display:'flex',gap:5}}>
+                      <button onClick={()=>doDeleteOne(m)} style={{flex:1,background:'rgba(245,158,11,.1)',border:'1px solid rgba(245,158,11,.3)',borderRadius:6,color:'#f59e0b',fontSize:11,padding:'5px 4px',cursor:'pointer',fontFamily:'Manrope,sans-serif',fontWeight:600}}>
+                        This occurrence
+                      </button>
+                      <button onClick={()=>doDeleteAll(m)} style={{flex:1,background:'rgba(244,63,94,.1)',border:'1px solid rgba(244,63,94,.3)',borderRadius:6,color:'#f43f5e',fontSize:11,padding:'5px 4px',cursor:'pointer',fontFamily:'Manrope,sans-serif',fontWeight:600}}>
+                        All occurrences
+                      </button>
+                      <button onClick={()=>setConfirmDel(null)} style={{background:'none',border:'1px solid #2a2a31',borderRadius:6,color:'#9a9788',fontSize:11,padding:'5px 8px',cursor:'pointer',fontFamily:'Manrope,sans-serif'}}>
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                )}
                 <button onClick={()=>openMeetingNote(m)}
                   style={{marginTop:8,background:'none',border:'1px solid #2a2a31',borderRadius:6,color:'#818cf8',fontSize:11.5,padding:'4px 10px',cursor:'pointer',width:'100%'}}>
                   {m.noteId?'Open meeting note':'Create meeting note'}
@@ -1773,6 +1928,88 @@ function CalendarView({ state, update, isMobile }) {
           </div>
         </div>
       )}
+
+      {/* ── edit meeting modal ── */}
+      {editModal&&(
+        <div className="modal-bg" onClick={e=>{if(e.target===e.currentTarget){setEditModal(null);setConfirmDel(null);}}}>
+          <div className="modal fadeUp" style={{maxHeight:'90vh',overflowY:'auto'}}>
+            <div style={{padding:'20px 24px',borderBottom:'1px solid #1f1f24',display:'flex',justifyContent:'space-between',alignItems:'center',position:'sticky',top:0,background:'#131317',zIndex:1}}>
+              <span style={{fontFamily:'Fraunces,serif',fontSize:17,fontWeight:600}}>Edit meeting</span>
+              <button onClick={()=>setEditModal(null)} style={{background:'none',border:'none',color:'#9a9788',cursor:'pointer',fontSize:20}}>×</button>
+            </div>
+
+            {/* scope selector for recurring meetings */}
+            {editModal.recurrence && editModal.recurrence!=='none' && !editModal.exceptionDate && (
+              <div style={{padding:'12px 24px',borderBottom:'1px solid #1f1f24',background:'#0f0f13'}}>
+                <div style={{fontSize:11,color:'#9a9788',marginBottom:8}}>Recurring meeting — save changes for:</div>
+                <div style={{display:'flex',gap:6}}>
+                  {[['all','All occurrences'],['one','This occurrence only']].map(([v,l])=>(
+                    <button type="button" key={v} onClick={()=>setEditScope(v)} style={tog(editScope===v)}>{l}</button>
+                  ))}
+                </div>
+                {editScope==='one'&&<div style={{fontSize:10,color:'#9a9788',marginTop:6}}>Creates a separate entry for {selDate} only.</div>}
+              </div>
+            )}
+
+            <form onSubmit={submitEditMeeting} style={{padding:'20px 24px',display:'flex',flexDirection:'column',gap:16}}>
+              <div>
+                <label style={{fontSize:12,color:'#9a9788',display:'block',marginBottom:5}}>Title</label>
+                <input className="input" value={editForm.title} onChange={e=>setEditForm({...editForm,title:e.target.value})} autoFocus required/>
+              </div>
+              <div style={{display:'flex',gap:12}}>
+                <div style={{flex:1}}>
+                  <label style={{fontSize:12,color:'#9a9788',display:'block',marginBottom:5}}>Time</label>
+                  <input type="time" className="input" value={editForm.time} onChange={e=>setEditForm({...editForm,time:e.target.value})}/>
+                </div>
+                <div style={{flex:1}}>
+                  <label style={{fontSize:12,color:'#9a9788',display:'block',marginBottom:5}}>Duration (min)</label>
+                  <input type="number" className="input" value={editForm.duration} min={5} max={480} onChange={e=>setEditForm({...editForm,duration:+e.target.value})}/>
+                </div>
+              </div>
+              <div>
+                <label style={{fontSize:12,color:'#9a9788',display:'block',marginBottom:5}}>Attendees</label>
+                <input className="input" value={editForm.attendees} onChange={e=>setEditForm({...editForm,attendees:e.target.value})} placeholder="Names or emails"/>
+              </div>
+              {editScope==='all' && (
+                <div>
+                  <label style={{fontSize:12,color:'#9a9788',display:'block',marginBottom:8}}>Recurrence</label>
+                  <div style={{display:'flex',gap:6}}>
+                    {['none','daily','weekly','monthly'].map(r=>(
+                      <button type="button" key={r} onClick={()=>{
+                        const days=r==='weekly'?(editForm.recurrenceDays.length?editForm.recurrenceDays:[parseKey(selDate).getDay()]):[];
+                        setEditForm({...editForm,recurrence:r,recurrenceDays:days});
+                      }} style={tog(editForm.recurrence===r)}>
+                        {r==='none'?'None':r[0].toUpperCase()+r.slice(1)}
+                      </button>
+                    ))}
+                  </div>
+                  {editForm.recurrence==='weekly'&&(
+                    <div style={{marginTop:10}}>
+                      <div style={{fontSize:11,color:'#9a9788',marginBottom:6}}>Repeats on</div>
+                      <div style={{display:'flex',gap:5}}>
+                        {DAY_SHORT.map((day,i)=>{
+                          const on=(editForm.recurrenceDays||[]).includes(i);
+                          return <button type="button" key={i} onClick={()=>{const ds=on?editForm.recurrenceDays.filter(d=>d!==i):[...(editForm.recurrenceDays||[]),i];setEditForm({...editForm,recurrenceDays:ds});}} style={{...tog(on),flex:1,padding:'5px 0',fontSize:11}}>{day[0]}</button>;
+                        })}
+                      </div>
+                    </div>
+                  )}
+                  {editForm.recurrence!=='none'&&(
+                    <div style={{marginTop:12}}>
+                      <label style={{fontSize:12,color:'#9a9788',display:'block',marginBottom:5}}>End date <span style={{color:'#3a3a44'}}>(optional)</span></label>
+                      <input type="date" className="input" value={editForm.recurrenceEnd} onChange={e=>setEditForm({...editForm,recurrenceEnd:e.target.value})}/>
+                    </div>
+                  )}
+                </div>
+              )}
+              <div style={{display:'flex',gap:8,justifyContent:'flex-end',paddingTop:4}}>
+                <button type="button" className="btn-ghost" onClick={()=>setEditModal(null)}>Cancel</button>
+                <button type="submit" className="btn-primary">Save changes</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1825,6 +2062,25 @@ function TodayView({ state, update, isMobile }) {
           <button onClick={()=>update('ui',{...state.ui,view:'calendar'})}
             style={{marginTop:12,background:'none',border:'none',color:'#10b981',fontSize:12,cursor:'pointer',padding:0}}>Open calendar →</button>
         </div>
+
+        {/* prayer times */}
+        {state.salah?.enabled && state.salah?.lat !== null && (()=>{
+          const tz = -(new Date().getTimezoneOffset()/60);
+          const pt = calcSalahTimes(new Date(), state.salah.lat, state.salah.lng, tz, state.salah.method, state.salah.asr);
+          const shown = PRAYER_NAMES.filter(p=>state.salah.prayers?.[p]!==false);
+          if (!shown.length) return null;
+          return (
+            <div className="card" style={{padding:'18px 20px'}}>
+              <div style={{fontSize:11,fontWeight:700,letterSpacing:'.08em',color:'#f59e0b',textTransform:'uppercase',marginBottom:12}}>Prayer Times</div>
+              {shown.map(p=>(
+                <div key={p} style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'5px 0',borderBottom:'1px solid #1f1f2420'}}>
+                  <span style={{fontSize:13,color:'#c9c6b8'}}>{PRAYER_LABELS[p]}</span>
+                  <span style={{fontSize:13,fontWeight:600,color:'#f4f3ee',fontFamily:'"JetBrains Mono",monospace'}}>{pt[p]}</span>
+                </div>
+              ))}
+            </div>
+          );
+        })()}
 
         {/* recent notes */}
         <div className="card" style={{padding:'18px 20px',gridColumn:'1/-1'}}>
@@ -2288,7 +2544,7 @@ function InstallBanner() {
 }
 
 /* ── Sidebar ── */
-function Sidebar({ state, update, syncStatus, onSetup, onSync, collapsed, onToggle }) {
+function Sidebar({ state, update, syncStatus, onSetup, onSync, collapsed, onToggle, onSalah }) {
   const { view } = state.ui;
   const recent = [...state.notes].sort((a,b)=>b.updated-a.updated).slice(0,5);
   const folders = state.folders || [];
@@ -2370,6 +2626,14 @@ function Sidebar({ state, update, syncStatus, onSetup, onSync, collapsed, onTogg
         <div style={{flex:1}}/>
         <div style={{padding:'10px 0',borderTop:'1px solid #1f1f24',width:'100%',display:'flex',flexDirection:'column',alignItems:'center',gap:4,flexShrink:0}}>
           <SyncIconBtn onClick={onSync} syncStatus={syncStatus}/>
+          <button onClick={onSalah} title="Prayer times"
+            style={{background:'none',border:'none',cursor:'pointer',color:state.salah?.enabled?'#f59e0b':'#2a2a31',padding:4,borderRadius:5,display:'flex',alignItems:'center',justifyContent:'center',transition:'color 120ms'}}
+            onMouseEnter={e=>e.currentTarget.style.color='#f59e0b'}
+            onMouseLeave={e=>e.currentTarget.style.color=state.salah?.enabled?'#f59e0b':'#2a2a31'}>
+            <svg style={{width:12,height:12}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+              <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9z"/>
+            </svg>
+          </button>
           <button onClick={onSetup} title="Sync settings"
             style={{background:'none',border:'none',cursor:'pointer',color:'#2a2a31',padding:4,borderRadius:5,display:'flex',alignItems:'center',justifyContent:'center',transition:'color 120ms'}}
             onMouseEnter={e=>e.currentTarget.style.color='#818cf8'}
@@ -2502,6 +2766,14 @@ function Sidebar({ state, update, syncStatus, onSetup, onSync, collapsed, onTogg
           );})()}
         </div>
         <div style={{display:'flex',alignItems:'center',gap:5}}>
+          <button onClick={onSalah} title="Prayer times"
+            style={{background:'none',border:'none',cursor:'pointer',color:state.salah?.enabled?'#f59e0b':'#2a2a31',padding:4,borderRadius:5,display:'flex',alignItems:'center',justifyContent:'center',transition:'color 120ms'}}
+            onMouseEnter={e=>e.currentTarget.style.color='#f59e0b'}
+            onMouseLeave={e=>e.currentTarget.style.color=state.salah?.enabled?'#f59e0b':'#2a2a31'}>
+            <svg style={{width:12,height:12}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+              <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9z"/>
+            </svg>
+          </button>
           <button onClick={onSetup} title="Sync settings"
             style={{background:'none',border:'none',cursor:'pointer',color:'#2a2a31',padding:4,borderRadius:5,display:'flex',alignItems:'center',justifyContent:'center',transition:'color 120ms'}}
             onMouseEnter={e=>e.currentTarget.style.color='#818cf8'}
@@ -2518,7 +2790,7 @@ function Sidebar({ state, update, syncStatus, onSetup, onSync, collapsed, onTogg
 }
 
 /* ── MobileNav ── */
-function MobileNav({ state, update, syncStatus, onSetup, onSync }) {
+function MobileNav({ state, update, syncStatus, onSetup, onSync, onSalah }) {
   const { view } = state.ui;
   const nav = v => update('ui',{...state.ui,view:v});
   const pending = state.tasks.filter(t=>!t.done&&t.due===todayKey()).length;
@@ -2556,6 +2828,14 @@ function MobileNav({ state, update, syncStatus, onSetup, onSync }) {
           )}
         </button>
       ))}
+      <button onClick={onSalah} style={{...navBtnStyle(false),color:state.salah?.enabled?'#f59e0b':undefined}} title="Prayer times">
+        <span style={{width:20,height:20,display:'flex',alignItems:'center',justifyContent:'center'}}>
+          <svg style={{width:15,height:15}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+            <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9z"/>
+          </svg>
+        </span>
+        Salah
+      </button>
       <button onClick={onSetup} style={navBtnStyle(false)} title="Sync">
         <span style={{width:20,height:20,display:'flex',alignItems:'center',justifyContent:'center',position:'relative'}}>
           <svg style={{width:15,height:15,animation:spinning?'spin 0.8s linear infinite':'none'}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
@@ -2565,6 +2845,164 @@ function MobileNav({ state, update, syncStatus, onSetup, onSync }) {
         </span>
         Sync
       </button>
+    </div>
+  );
+}
+
+/* ── SalahModal ── */
+function SalahModal({ state, update, onClose }) {
+  const s = state.salah || {};
+  const [enabled,  setEnabled]  = useState(!!s.enabled);
+  const [lat,      setLat]      = useState(s.lat !== null && s.lat !== undefined ? String(s.lat) : '');
+  const [lng,      setLng]      = useState(s.lng !== null && s.lng !== undefined ? String(s.lng) : '');
+  const [method,   setMethod]   = useState(s.method || 'mwl');
+  const [asr,      setAsr]      = useState(s.asr || 'standard');
+  const [prayers,  setPrayers]  = useState({fajr:true,sunrise:false,dhuhr:true,asr:true,maghrib:true,isha:true,...(s.prayers||{})});
+  const [locMsg,   setLocMsg]   = useState('');
+  const [preview,  setPreview]  = useState(null);
+
+  const tz = -(new Date().getTimezoneOffset()/60);
+
+  /* auto-preview whenever inputs change */
+  useEffect(()=>{
+    const la=parseFloat(lat), lo=parseFloat(lng);
+    if (!isNaN(la) && !isNaN(lo)) setPreview(calcSalahTimes(new Date(),la,lo,tz,method,asr));
+    else setPreview(null);
+  },[lat,lng,method,asr]);
+
+  const detectLocation = () => {
+    if (!navigator.geolocation){setLocMsg('Geolocation not supported');return;}
+    setLocMsg('Detecting location…');
+    navigator.geolocation.getCurrentPosition(
+      pos=>{setLat(pos.coords.latitude.toFixed(6));setLng(pos.coords.longitude.toFixed(6));setLocMsg('✓ Location detected');},
+      err=>{setLocMsg('✗ '+err.message);},
+      {timeout:10000}
+    );
+  };
+
+  const save = () => {
+    const la=parseFloat(lat), lo=parseFloat(lng);
+    if (enabled && (isNaN(la)||isNaN(lo))){setLocMsg('✗ Enter valid latitude and longitude first');return;}
+    update('salah',{enabled, lat:isNaN(la)?null:la, lng:isNaN(lo)?null:lo, method, asr, prayers});
+    onClose();
+  };
+
+  const togBtn = active => ({
+    flex:1, padding:'7px 8px', borderRadius:7, fontSize:12, fontWeight:600,
+    cursor:'pointer', border:'1px solid', transition:'all 110ms',
+    background:active?'#818cf8':'transparent',
+    borderColor:active?'#818cf8':'#1f1f24',
+    color:active?'#fff':'#9a9788',
+  });
+
+  return (
+    <div className="modal-bg" onClick={e=>{if(e.target===e.currentTarget)onClose();}}>
+      <div className="modal fadeUp" style={{maxHeight:'90vh',overflowY:'auto'}}>
+        <div style={{padding:'20px 24px',borderBottom:'1px solid #1f1f24',display:'flex',justifyContent:'space-between',alignItems:'center',position:'sticky',top:0,background:'#131317',zIndex:1}}>
+          <div>
+            <div style={{fontFamily:'Fraunces,serif',fontSize:17,fontWeight:600}}>Prayer Times</div>
+            <div style={{fontSize:12,color:'#9a9788',marginTop:2}}>Automatic salah times in your calendar &amp; Today view</div>
+          </div>
+          <button onClick={onClose} style={{background:'none',border:'none',color:'#9a9788',cursor:'pointer',fontSize:20,lineHeight:1}}>×</button>
+        </div>
+
+        <div style={{padding:'20px 24px',display:'flex',flexDirection:'column',gap:18}}>
+
+          {/* enable toggle */}
+          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:12}}>
+            <div>
+              <div style={{fontSize:14,fontWeight:600,color:'#f4f3ee'}}>Show prayer times</div>
+              <div style={{fontSize:11,color:'#9a9788',marginTop:2}}>Displays salah times in the calendar day panel and Today view</div>
+            </div>
+            <button type="button" onClick={()=>setEnabled(v=>!v)}
+              style={{width:42,height:24,borderRadius:12,border:'none',cursor:'pointer',transition:'background 150ms',background:enabled?'#10b981':'#2a2a31',position:'relative',flexShrink:0}}>
+              <span style={{position:'absolute',top:3,left:enabled?21:3,width:18,height:18,borderRadius:9,background:'#fff',transition:'left 150ms'}}/>
+            </button>
+          </div>
+
+          {enabled && (<>
+            {/* location */}
+            <div>
+              <label style={{fontSize:12,color:'#9a9788',display:'block',marginBottom:8}}>Location</label>
+              <button type="button" onClick={detectLocation}
+                style={{width:'100%',marginBottom:10,background:'rgba(99,91,255,.08)',border:'1px solid rgba(99,91,255,.25)',borderRadius:8,color:'#a09cf7',fontSize:12,fontWeight:600,padding:'8px 14px',cursor:'pointer',display:'flex',alignItems:'center',gap:8,justifyContent:'center',fontFamily:'Manrope,sans-serif',transition:'all 120ms'}}
+                onMouseEnter={e=>{e.currentTarget.style.background='rgba(99,91,255,.15)';}}
+                onMouseLeave={e=>{e.currentTarget.style.background='rgba(99,91,255,.08)';}}>
+                <svg style={{width:13,height:13}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                  <circle cx="12" cy="10" r="3"/><path d="M12 2a8 8 0 0 1 8 8c0 5.25-8 13-8 13S4 15.25 4 10a8 8 0 0 1 8-8z"/>
+                </svg>
+                Use my current location
+              </button>
+              <div style={{display:'flex',gap:10}}>
+                <div style={{flex:1}}>
+                  <label style={{fontSize:11,color:'#3a3a44',display:'block',marginBottom:4}}>Latitude</label>
+                  <input className="input" type="number" step="any" value={lat} onChange={e=>setLat(e.target.value)} placeholder="51.5074"/>
+                </div>
+                <div style={{flex:1}}>
+                  <label style={{fontSize:11,color:'#3a3a44',display:'block',marginBottom:4}}>Longitude</label>
+                  <input className="input" type="number" step="any" value={lng} onChange={e=>setLng(e.target.value)} placeholder="-0.1278"/>
+                </div>
+              </div>
+              {locMsg && <div style={{fontSize:11,marginTop:6,color:locMsg.startsWith('✓')?'#10b981':locMsg.startsWith('✗')?'#f43f5e':'#f59e0b'}}>{locMsg}</div>}
+            </div>
+
+            {/* calculation method */}
+            <div>
+              <label style={{fontSize:12,color:'#9a9788',display:'block',marginBottom:8}}>Calculation Method</label>
+              <select value={method} onChange={e=>setMethod(e.target.value)}
+                style={{width:'100%',background:'#17171b',border:'1px solid #2a2a31',borderRadius:8,color:'#f4f3ee',fontSize:13,padding:'8px 10px',fontFamily:'Manrope,sans-serif',cursor:'pointer',outline:'none'}}>
+                {Object.entries(SALAH_METHODS).map(([k,v])=>(
+                  <option key={k} value={k}>{v.name}</option>
+                ))}
+              </select>
+            </div>
+
+            {/* asr juristic method */}
+            <div>
+              <label style={{fontSize:12,color:'#9a9788',display:'block',marginBottom:8}}>Asr Juristic Method</label>
+              <div style={{display:'flex',gap:6}}>
+                {[['standard','Standard (Shafi / Maliki / Hanbali)'],['hanafi','Hanafi']].map(([v,l])=>(
+                  <button type="button" key={v} onClick={()=>setAsr(v)} style={togBtn(asr===v)}>{l}</button>
+                ))}
+              </div>
+            </div>
+
+            {/* which prayers to show */}
+            <div>
+              <label style={{fontSize:12,color:'#9a9788',display:'block',marginBottom:8}}>Prayers to display</label>
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:6}}>
+                {PRAYER_NAMES.map(p=>(
+                  <label key={p} style={{display:'flex',alignItems:'center',gap:8,padding:'7px 10px',background:'#17171b',borderRadius:7,cursor:'pointer',border:`1px solid ${prayers[p]?'rgba(129,140,248,.3)':'#1f1f24'}`,transition:'border-color 120ms'}}>
+                    <input type="checkbox" checked={!!prayers[p]} onChange={e=>setPrayers({...prayers,[p]:e.target.checked})}
+                      style={{accentColor:'#818cf8',width:13,height:13,flexShrink:0}}/>
+                    <span style={{fontSize:12,color:prayers[p]?'#f4f3ee':'#9a9788'}}>{PRAYER_LABELS[p]}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            {/* live preview */}
+            {preview && (
+              <div style={{background:'#17171b',border:'1px solid #1f1f24',borderRadius:10,padding:'14px 16px'}}>
+                <div style={{fontSize:10,fontWeight:700,letterSpacing:'.08em',color:'#f59e0b',textTransform:'uppercase',marginBottom:10}}>
+                  Today's times (preview)
+                </div>
+                {PRAYER_NAMES.filter(p=>prayers[p]).map(p=>(
+                  <div key={p} style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'4px 0',borderBottom:'1px solid #1f1f2415'}}>
+                    <span style={{fontSize:12,color:'#c9c6b8'}}>{PRAYER_LABELS[p]}</span>
+                    <span style={{fontSize:12,fontWeight:600,color:'#f4f3ee',fontFamily:'"JetBrains Mono",monospace'}}>{preview[p]}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </>)}
+
+          <div style={{display:'flex',gap:8,justifyContent:'flex-end',paddingTop:4}}>
+            <button type="button" className="btn-ghost" onClick={onClose}>Cancel</button>
+            <button type="button" className="btn-primary" onClick={save}>Save</button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -2724,6 +3162,7 @@ function App() {
   const [state, setStateRaw]   = useState(null);
   const [syncStatus, setSyncStatus] = useState('idle'); /* idle|saving|synced|offline|unauth|local */
   const [setupOpen, setSetupOpen]   = useState(false);
+  const [salahOpen, setSalahOpen]   = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
   const saveTimer    = useRef(null);
@@ -2952,12 +3391,13 @@ function App() {
   return (
     <>
       <Sidebar state={state} update={update} syncStatus={syncStatus} onSetup={()=>setSetupOpen(true)}
-        onSync={syncNow} collapsed={!sidebarOpen} onToggle={()=>setSidebarOpen(v=>!v)}/>
+        onSync={syncNow} collapsed={!sidebarOpen} onToggle={()=>setSidebarOpen(v=>!v)} onSalah={()=>setSalahOpen(true)}/>
       <div className="main">
         <View state={state} update={update} isMobile={isMobile}/>
       </div>
-      <MobileNav state={state} update={update} syncStatus={syncStatus} onSetup={()=>setSetupOpen(true)} onSync={syncNow}/>
+      <MobileNav state={state} update={update} syncStatus={syncStatus} onSetup={()=>setSetupOpen(true)} onSync={syncNow} onSalah={()=>setSalahOpen(true)}/>
       {setupOpen && <SetupModal onClose={()=>setSetupOpen(false)} onConnected={handleSyncConnected} onSync={syncNow} syncStatus={syncStatus}/>}
+      {salahOpen && <SalahModal state={state} update={update} onClose={()=>setSalahOpen(false)}/>}
       {installBanner && <InstallBanner/>}
     </>
   );
