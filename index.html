@@ -208,31 +208,62 @@ const safeImageSrc = src => {
   return safeHttpUrl(s);
 };
 
-/* ── calendar notification scheduling ── */
-function scheduleCalendarNotifications(meetings) {
+/* ── notification scheduling (meetings + salah) ── */
+function scheduleNotifications(meetings, salah) {
   if (!('Notification' in window) || Notification.permission !== 'granted') return;
   if (!navigator.serviceWorker?.controller) return;
   const now = Date.now();
   const notifications = [];
   const checkDays = Array.from({ length: 14 }, (_, i) => new Date(now + i * 86400000));
+  const OFFSETS = [[15, '15 min'], [5, '5 min']];
+
+  // Meetings
   for (const m of meetings) {
     const [h, min] = (m.time || '00:00').split(':').map(Number);
     for (const day of checkDays) {
       if (!occursOnDay(m, day)) continue;
       const dt = new Date(day); dt.setHours(h, min, 0, 0);
-      const fireAt = dt.getTime() - 15 * 60 * 1000;
-      if (fireAt > now) {
-        notifications.push({
-          id: `meeting-${m.id}-${fmtKey(day)}`,
+      const meetAt = dt.getTime();
+      for (const [offset, label] of OFFSETS) {
+        const fireAt = meetAt - offset * 60 * 1000;
+        if (fireAt > now) notifications.push({
+          id: `meeting-${m.id}-${fmtKey(day)}-${offset}`,
           title: m.title,
-          body: `Starting in 15 min${m.attendees ? ' · ' + m.attendees : ''}`,
+          body: `Starting in ${label}${m.attendees ? ' · ' + m.attendees : ''}`,
           fireAt,
         });
       }
     }
   }
+
+  // Prayer times
+  if (salah?.enabled && salah.lat !== null && salah.lat !== undefined) {
+    const tz = -(new Date().getTimezoneOffset() / 60);
+    for (const day of checkDays) {
+      const pt = calcSalahTimes(day, salah.lat, salah.lng, tz, salah.method, salah.asr);
+      for (const p of PRAYER_NAMES) {
+        if (salah.prayers?.[p] === false) continue;
+        const t = pt[p]; if (!t || t === '--:--') continue;
+        const [h, min] = t.split(':').map(Number);
+        const dt = new Date(day); dt.setHours(h, min, 0, 0);
+        const prayAt = dt.getTime();
+        for (const [offset, label] of OFFSETS) {
+          const fireAt = prayAt - offset * 60 * 1000;
+          if (fireAt > now) notifications.push({
+            id: `salah-${p}-${fmtKey(day)}-${offset}`,
+            title: PRAYER_LABELS[p],
+            body: `In ${label}`,
+            fireAt,
+          });
+        }
+      }
+    }
+  }
+
   navigator.serviceWorker.controller.postMessage({ type: 'SCHEDULE_NOTIFICATIONS', notifications });
 }
+/* legacy alias so any older cached code still works */
+const scheduleCalendarNotifications = (m) => scheduleNotifications(m, null);
 
 /* ── storage + sync ── */
 const STORE     = 'folio_v1';
@@ -1577,7 +1608,7 @@ function CalendarView({ state, update, isMobile }) {
     if (!('Notification' in window)) return;
     const perm = await Notification.requestPermission();
     setNotifPerm(perm);
-    if (perm === 'granted') scheduleCalendarNotifications(state.meetings);
+    if (perm === 'granted') scheduleNotifications(state.meetings, state.salah);
   };
 
   const calDate = state.ui.calDate ? parseKey(state.ui.calDate) : new Date();
@@ -3281,19 +3312,19 @@ function App() {
     setSyncStatus('synced');
   }, []);
 
-  /* ── reschedule calendar notifications whenever meetings change ── */
+  /* ── reschedule notifications whenever meetings or salah settings change ── */
   useEffect(() => {
-    if (state?.meetings) scheduleCalendarNotifications(state.meetings);
-  }, [state?.meetings]);
+    if (state?.meetings) scheduleNotifications(state.meetings, state?.salah);
+  }, [state?.meetings, state?.salah]);
 
   /* ── reschedule notifications when app comes back to foreground ── */
   useEffect(() => {
     if (!state?.meetings) return;
-    const meetings = state.meetings;
-    const onVisible = () => { if (document.visibilityState === 'visible') scheduleCalendarNotifications(meetings); };
+    const { meetings, salah } = state;
+    const onVisible = () => { if (document.visibilityState === 'visible') scheduleNotifications(meetings, salah); };
     document.addEventListener('visibilitychange', onVisible);
     return () => document.removeEventListener('visibilitychange', onVisible);
-  }, [state?.meetings]);
+  }, [state?.meetings, state?.salah]);
 
   /* ── flush pending D1 write before the page is hidden/unloaded ── */
   useEffect(() => {
