@@ -1,209 +1,166 @@
-// Folio background push worker
-// Handles: POST /push (upsert subscription + schedule) + cron (send due notifications)
+// Folio — Web Push cron worker
+// Required secret: VAPID_PRIVATE_KEY (wrangler secret put VAPID_PRIVATE_KEY)
+// Required D1 binding: DB
 
-const CORS = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-};
+const VAPID_PUBLIC_KEY = 'BMg79Dc4KgbVAa253omi5oER5VpB3ErcDnjaR5lgmIinGMVlUpe4-LUgfuQrTb9a3urAaLnDZgQ_vtE4OvVLcPA';
+const VAPID_PUBLIC_X   = 'yDv0NzgqBtUBrbneiaLmgRHlWkHcStwOeNpHmWCYiKc';
+const VAPID_PUBLIC_Y   = 'GMVlUpe4-LUgfuQrTb9a3urAaLnDZgQ_vtE4OvVLcPA';
+const VAPID_SUBJECT    = 'mailto:abdul-malik@huntah.co.uk';
 
-// ─── base64url helpers ────────────────────────────────────────────────────────
+// ─── helpers ──────────────────────────────────────────────────────────────────
 
-function b64url(buf) {
-  const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
-  let s = '';
-  for (const b of bytes) s += String.fromCharCode(b);
-  return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+function fromB64u(s) {
+  return Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
 }
 
-function b64urlDecode(str) {
-  str = str.replace(/-/g, '+').replace(/_/g, '/');
-  const pad = str.length % 4;
-  if (pad) str += '='.repeat(4 - pad);
-  const bin = atob(str);
-  const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+function toB64u(buf) {
+  return btoa(Array.from(new Uint8Array(buf), c => String.fromCharCode(c)).join(''))
+    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function concat(...arrays) {
+  const total = arrays.reduce((n, a) => n + a.length, 0);
+  const out = new Uint8Array(total);
+  let pos = 0;
+  for (const a of arrays) { out.set(a, pos); pos += a.length; }
   return out;
 }
 
-function concat(...bufs) {
-  let len = 0;
-  for (const b of bufs) len += b.length;
-  const out = new Uint8Array(len);
-  let off = 0;
-  for (const b of bufs) { out.set(b, off); off += b.length; }
-  return out;
+const te = s => new TextEncoder().encode(s);
+
+// HKDF-SHA-256 extract + single expand block (length ≤ 32)
+async function hkdf(salt, ikm, info, length) {
+  const saltKey = await crypto.subtle.importKey('raw', salt, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const prk     = new Uint8Array(await crypto.subtle.sign('HMAC', saltKey, ikm));
+  const prkKey  = await crypto.subtle.importKey('raw', prk, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const okm     = new Uint8Array(await crypto.subtle.sign('HMAC', prkKey, concat(info, new Uint8Array([1]))));
+  return okm.slice(0, length);
 }
 
-// ─── HKDF (RFC 5869) ─────────────────────────────────────────────────────────
+// ─── RFC 8291 aes128gcm encryption ────────────────────────────────────────────
 
-async function hkdfExtract(salt, ikm) {
-  const key = await crypto.subtle.importKey('raw', salt, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
-  return new Uint8Array(await crypto.subtle.sign('HMAC', key, ikm));
-}
+async function encryptWebPush(plaintext, subscription) {
+  const receiverPub = fromB64u(subscription.keys.p256dh);
+  const authSecret  = fromB64u(subscription.keys.auth);
 
-async function hkdfExpand(prk, info, len) {
-  const key = await crypto.subtle.importKey('raw', prk, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
-  let t = new Uint8Array(0), okm = new Uint8Array(0);
-  for (let i = 1; i <= Math.ceil(len / 32); i++) {
-    t = new Uint8Array(await crypto.subtle.sign('HMAC', key, concat(t, info, new Uint8Array([i]))));
-    okm = concat(okm, t);
-  }
-  return okm.slice(0, len);
-}
-
-// ─── RFC 8291 Web Push content encryption ────────────────────────────────────
-
-async function encryptWebPush(payload, subscription) {
-  const receiverPub = b64urlDecode(subscription.keys.p256dh);
-  const authSecret  = b64urlDecode(subscription.keys.auth);
-
-  const ephemeral  = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits']);
-  const senderPub  = new Uint8Array(await crypto.subtle.exportKey('raw', ephemeral.publicKey));
-  const receiverKey = await crypto.subtle.importKey('raw', receiverPub, { name: 'ECDH', namedCurve: 'P-256' }, false, []);
-  const sharedSecret = new Uint8Array(await crypto.subtle.deriveBits({ name: 'ECDH', public: receiverKey }, ephemeral.privateKey, 256));
-
-  const enc  = new TextEncoder();
-  const salt = crypto.getRandomValues(new Uint8Array(16));
-
-  // RFC 8291 key derivation
-  const prk     = await hkdfExtract(authSecret, sharedSecret);
-  const ikm     = await hkdfExpand(prk, concat(enc.encode('WebPush: info\x00'), receiverPub, senderPub), 32);
-  const prk2    = await hkdfExtract(salt, ikm);
-  const cek     = await hkdfExpand(prk2, concat(enc.encode('Content-Encoding: aes128gcm\x00'), new Uint8Array([1])), 16);
-  const nonce   = await hkdfExpand(prk2, concat(enc.encode('Content-Encoding: nonce\x00'), new Uint8Array([1])), 12);
-
-  const plainBuf = enc.encode(typeof payload === 'string' ? payload : JSON.stringify(payload));
-  const cekKey   = await crypto.subtle.importKey('raw', cek, { name: 'AES-GCM' }, false, ['encrypt']);
-  const cipher   = new Uint8Array(
-    await crypto.subtle.encrypt({ name: 'AES-GCM', iv: nonce, tagLength: 128 }, cekKey, concat(plainBuf, new Uint8Array([2])))
+  const receiverKey = await crypto.subtle.importKey(
+    'raw', receiverPub, { name: 'ECDH', namedCurve: 'P-256' }, false, [],
   );
 
-  // aes128gcm body: salt(16) | rs(4,be) | keylen(1=65) | senderPub(65) | ciphertext
-  const body = new Uint8Array(16 + 4 + 1 + 65 + cipher.length);
-  body.set(salt, 0);
-  new DataView(body.buffer).setUint32(16, 4096, false);
-  body[20] = 65;
-  body.set(senderPub, 21);
-  body.set(cipher, 86);
-  return body;
+  const senderKP  = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits']);
+  const senderPub = new Uint8Array(await crypto.subtle.exportKey('raw', senderKP.publicKey));
+
+  const ecdhSecret = new Uint8Array(await crypto.subtle.deriveBits(
+    { name: 'ECDH', public: receiverKey }, senderKP.privateKey, 256,
+  ));
+
+  const salt  = crypto.getRandomValues(new Uint8Array(16));
+  const ikm   = await hkdf(authSecret, ecdhSecret, concat(te('WebPush: info\x00'), receiverPub, senderPub), 32);
+  const cek   = await hkdf(salt, ikm, te('Content-Encoding: aes128gcm\x00'), 16);
+  const nonce = await hkdf(salt, ikm, te('Content-Encoding: nonce\x00'), 12);
+
+  const cekKey = await crypto.subtle.importKey('raw', cek, 'AES-GCM', false, ['encrypt']);
+  const msg    = concat(te(plaintext), new Uint8Array([0x02]));
+  const cipher = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv: nonce }, cekKey, msg));
+
+  const rs = new Uint8Array(4);
+  new DataView(rs.buffer).setUint32(0, 4096, false);
+  return concat(salt, rs, new Uint8Array([senderPub.length]), senderPub, cipher);
 }
 
-// ─── VAPID JWT + key import ───────────────────────────────────────────────────
+// ─── VAPID JWT ─────────────────────────────────────────────────────────────────
 
-let _vapidKey = null;
+async function makeVapidJWT(endpoint, privateKeyB64u) {
+  const audience  = new URL(endpoint).origin;
+  const hdr = toB64u(te(JSON.stringify({ typ: 'JWT', alg: 'ES256' })));
+  const pay = toB64u(te(JSON.stringify({ aud: audience, exp: Math.floor(Date.now() / 1000) + 43200, sub: VAPID_SUBJECT })));
+  const unsigned = `${hdr}.${pay}`;
 
-async function getVapidSignKey(env) {
-  if (_vapidKey) return _vapidKey;
-  const pub = b64urlDecode(env.VAPID_PUBLIC_KEY);
-  _vapidKey = await crypto.subtle.importKey(
-    'jwk',
-    {
-      kty: 'EC', crv: 'P-256',
-      d: env.VAPID_PRIVATE_KEY,
-      x: b64url(pub.slice(1, 33)),
-      y: b64url(pub.slice(33, 65)),
-      key_ops: ['sign'],
-    },
-    { name: 'ECDSA', namedCurve: 'P-256' },
-    false,
-    ['sign']
-  );
-  return _vapidKey;
+  const key = await crypto.subtle.importKey('jwk', {
+    kty: 'EC', crv: 'P-256',
+    d: privateKeyB64u, x: VAPID_PUBLIC_X, y: VAPID_PUBLIC_Y,
+    key_ops: ['sign'], ext: true,
+  }, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign']);
+
+  const sig = new Uint8Array(await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, key, te(unsigned)));
+  return `${unsigned}.${toB64u(sig)}`;
 }
 
-async function vapidAuth(endpoint, env) {
-  const url = new URL(endpoint);
-  const aud = `${url.protocol}//${url.host}`;
-  const e   = s => btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
-  const hdr = e(JSON.stringify({ alg: 'ES256', typ: 'JWT' }));
-  const pld = e(JSON.stringify({ aud, exp: Math.floor(Date.now() / 1000) + 43200, sub: env.VAPID_SUBJECT }));
-  const inp = `${hdr}.${pld}`;
-  const key = await getVapidSignKey(env);
-  const sig = new Uint8Array(await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, key, new TextEncoder().encode(inp)));
-  return `vapid t=${inp}.${b64url(sig)},k=${env.VAPID_PUBLIC_KEY}`;
-}
+// ─── Send one Web Push ────────────────────────────────────────────────────────
 
-// ─── Send one Web Push message ────────────────────────────────────────────────
+async function sendPush(subscription, payload, privateKeyB64u) {
+  const jwt  = await makeVapidJWT(subscription.endpoint, privateKeyB64u);
+  const body = await encryptWebPush(JSON.stringify(payload), subscription);
 
-async function sendPush(subscription, payload, env) {
-  const body  = await encryptWebPush(JSON.stringify(payload), subscription);
-  const auth  = await vapidAuth(subscription.endpoint, env);
-  const res   = await fetch(subscription.endpoint, {
-    method: 'POST',
+  const r = await fetch(subscription.endpoint, {
+    method:  'POST',
     headers: {
-      Authorization:    auth,
-      'Content-Type':   'application/octet-stream',
+      'Authorization':    `vapid t=${jwt},k=${VAPID_PUBLIC_KEY}`,
+      'Content-Type':     'application/octet-stream',
       'Content-Encoding': 'aes128gcm',
-      TTL:              '86400',
+      'TTL':              '86400',
+      'Urgency':          'high',
     },
     body,
   });
-  return res.status;
+  return r.status;
 }
 
-// ─── Fetch handler: POST /push (legacy — browser now calls Pages Function /api/push) ──
-
-async function handleFetch(request, env) {
-  if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
-  return new Response('Use /api/push', { status: 410, headers: CORS });
-}
-
-// ─── Scheduled handler: fire due notifications ────────────────────────────────
+// ─── Scheduled handler ────────────────────────────────────────────────────────
 
 async function handleScheduled(env) {
-  const now       = Date.now();
-  const lookback  = 90  * 1000;   // catch anything missed within 90 s
-  const lookahead = 150 * 1000;   // 2.5 min window (cron every 2 min)
+  const now      = Date.now();
+  const lookBack = 90_000;
 
-  // Index scan: only rows whose next notification falls in this window
   const { results } = await env.DB.prepare(
-    'SELECT id, subscription, schedule FROM push_subs WHERE next_fire_at BETWEEN ? AND ?'
-  ).bind(now - lookback, now + lookahead).all();
+    'SELECT id, subscription, schedule FROM push_subs WHERE next_fire_at > 0 AND next_fire_at <= ?'
+  ).bind(now + 30_000).all();
 
   if (!results.length) return;
 
-  const writes = [];   // batched UPDATE / DELETE statements
+  const writes = [];
 
-  for (const row of results) {
-    let subscription, schedule;
+  await Promise.all(results.map(async row => {
     try {
-      subscription = JSON.parse(row.subscription);
-      schedule     = JSON.parse(row.schedule);
-    } catch { continue; }
+      const sub      = JSON.parse(row.subscription);
+      const schedule = JSON.parse(row.schedule || '[]');
 
-    const due = schedule.filter(n => n.fireAt >= now - lookback && n.fireAt <= now + lookahead);
-    if (!due.length) continue;
+      const due    = schedule.filter(n => n.fireAt >= now - lookBack && n.fireAt <= now + 30_000);
+      const remain = schedule.filter(n => !due.some(d => d.id === n.id));
 
-    const remaining  = schedule.filter(n => n.fireAt > now + lookahead);
-    const nextFireAt = remaining.length ? Math.min(...remaining.map(n => n.fireAt)) : 0;
+      if (!due.length) return;
 
-    let expired = false;
-    for (const n of due) {
-      try {
-        const status = await sendPush(subscription, {
+      let expired = false;
+
+      await Promise.all(due.map(async n => {
+        if (expired) return;
+        const status = await sendPush(sub, {
           title:  n.title,
-          body:   n.body,
+          body:   n.body || '',
           id:     n.id,
-          type:   n.type  ?? 'meeting',
+          type:   n.type   ?? 'meeting',
           prayer: n.prayer ?? null,
-        }, env);
+        }, env.VAPID_PRIVATE_KEY);
+
+        console.log(`push → ${row.id} [${n.title}] → HTTP ${status}`);
 
         if (status === 410 || status === 404) {
           writes.push(env.DB.prepare('DELETE FROM push_subs WHERE id = ?').bind(row.id));
           expired = true;
-          break;
         }
-      } catch {}
-    }
+      }));
 
-    if (!expired) {
-      writes.push(
-        env.DB.prepare('UPDATE push_subs SET schedule = ?, next_fire_at = ? WHERE id = ?')
-          .bind(JSON.stringify(remaining), nextFireAt, row.id)
-      );
+      if (!expired) {
+        const nextFireAt = remain.length ? Math.min(...remain.map(n => n.fireAt)) : 0;
+        writes.push(
+          env.DB.prepare('UPDATE push_subs SET schedule = ?, next_fire_at = ? WHERE id = ?')
+            .bind(JSON.stringify(remain), nextFireAt, row.id)
+        );
+      }
+    } catch (e) {
+      console.error(`push error for ${row.id}:`, e.message);
     }
-  }
+  }));
 
   if (writes.length) await env.DB.batch(writes);
 }
@@ -211,6 +168,6 @@ async function handleScheduled(env) {
 // ─── Entry points ─────────────────────────────────────────────────────────────
 
 export default {
-  fetch:     (req, env)       => handleFetch(req, env),
-  scheduled: (event, env, ctx) => ctx.waitUntil(handleScheduled(env)),
+  fetch:     () => new Response('Folio Push Worker', { status: 200 }),
+  scheduled: (_event, env, ctx) => ctx.waitUntil(handleScheduled(env)),
 };
