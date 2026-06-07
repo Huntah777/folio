@@ -212,6 +212,16 @@ const safeImageSrc = src => {
 const VAPID_PUBLIC_KEY = 'BMg79Dc4KgbVAa253omi5oER5VpB3ErcDnjaR5lgmIinGMVlUpe4-LUgfuQrTb9a3urAaLnDZgQ_vtE4OvVLcPA';
 const PUSH_API_KEY     = 'folio_push_api'; // localStorage key for push-worker URL
 
+function vapidKeyBytes() {
+  const pad = VAPID_PUBLIC_KEY.length % 4;
+  const b64 = (pad ? VAPID_PUBLIC_KEY + '='.repeat(4 - pad) : VAPID_PUBLIC_KEY)
+    .replace(/-/g, '+').replace(/_/g, '/');
+  const raw = atob(b64);
+  const out = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+  return out;
+}
+
 /* ── notification scheduling (meetings + salah) ── */
 function buildSchedule(meetings, salah) {
   const now = Date.now();
@@ -277,7 +287,7 @@ async function syncPushSchedule(schedule) {
     if (!sub) {
       sub = await reg.pushManager.subscribe({
         userVisibleOnly: true,
-        applicationServerKey: VAPID_PUBLIC_KEY,
+        applicationServerKey: vapidKeyBytes(),
       });
     }
     const token = localStorage.getItem('folio_token');
@@ -3108,20 +3118,27 @@ function SetupModal({ onClose, onConnected, onSync, syncStatus }) {
     if (Notification.permission !== 'granted') {
       setPushStatus('Grant notification permission first'); return;
     }
-    setPushStatus('Connecting…');
+    setPushStatus('Subscribing…');
+    let sub;
     try {
       const reg = await navigator.serviceWorker.ready;
-      let sub = await reg.pushManager.getSubscription();
-      if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: VAPID_PUBLIC_KEY });
+      sub = await reg.pushManager.getSubscription();
+      if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: vapidKeyBytes() });
+    } catch (e) {
+      setPushStatus(`Subscription error: ${e.message}`);
+      return;
+    }
+    setPushStatus('Connecting…');
+    try {
       const tok = localStorage.getItem('folio_token');
       const res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...(tok ? { Authorization: `Bearer ${tok}` } : {}) },
         body: JSON.stringify({ subscription: sub.toJSON(), schedule: [] }),
       });
-      setPushStatus(res.ok ? 'active' : `Error ${res.status}`);
+      setPushStatus(res.ok ? 'active' : `Error ${res.status}: ${await res.text()}`);
     } catch (e) {
-      setPushStatus(`Error: ${e.message}`);
+      setPushStatus(`Fetch error: ${e.message}`);
     }
   };
 
