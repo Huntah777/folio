@@ -105,17 +105,34 @@ self.addEventListener('message', (event) => {
   });
 });
 
-// Push notifications
+// Push notifications (from background push-worker via Web Push)
 self.addEventListener('push', (event) => {
-  const data = event.data ? event.data.json() : {};
-  const title = data.title || 'Folio';
+  const d = event.data?.json() ?? {};
+  const { title = 'Folio', body = '', id, type, prayer } = d;
+
   const options = {
-    body: data.body || '',
-    icon: '/icons/icon-192.png',
-    badge: '/icons/icon-192.png',
-    data: data.url || '/',
+    body,
+    icon:     '/icons/icon-192.png',
+    badge:    '/icons/icon-192.png',
+    tag:      id || type || title,
+    renotify: false,
+    data:     { type, prayer, url: '/' },
+    vibrate:  type === 'salah_athan' ? [200, 100, 200, 100, 200] : [200],
   };
-  event.waitUntil(self.registration.showNotification(title, options));
+
+  const notify = self.registration.showNotification(title, options);
+
+  if (type === 'salah_athan') {
+    event.waitUntil(
+      Promise.all([
+        notify,
+        self.clients.matchAll({ type: 'window', includeUncontrolled: true })
+          .then(clients => clients.forEach(c => c.postMessage({ type: 'PLAY_ADHAN', prayer, title }))),
+      ])
+    );
+  } else {
+    event.waitUntil(notify);
+  }
 });
 
 self.addEventListener('notificationclick', (event) => {
