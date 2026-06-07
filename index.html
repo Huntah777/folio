@@ -221,32 +221,25 @@ function vapidKeyBytes() {
   return out;
 }
 
-/* ── notification scheduling (meetings + salah) ── */
+/* ── notification scheduling (meetings + salah unified) ── */
 async function buildSchedule(meetings, salah) {
   const now = Date.now();
-  const notifications = [];
   const checkDays = Array.from({ length: 14 }, (_, i) => new Date(now + i * 86400000));
   const OFFSETS = [[15, '15 min'], [5, '5 min']];
+
+  // Build a flat event list — meetings and salah treated identically
+  const events = [];
 
   for (const m of meetings) {
     const [h, min] = (m.time || '00:00').split(':').map(Number);
     for (const day of checkDays) {
       if (!occursOnDay(m, day)) continue;
       const dt = new Date(day); dt.setHours(h, min, 0, 0);
-      const meetAt = dt.getTime();
-      for (const [offset, label] of OFFSETS) {
-        const fireAt = meetAt - offset * 60 * 1000;
-        if (fireAt > now) notifications.push({
-          id: `meeting-${m.id}-${fmtKey(day)}-${offset}`,
-          title: m.title,
-          body: `Starting in ${label}${m.attendees ? ' · ' + m.attendees : ''}`,
-          fireAt, type: 'meeting',
-        });
-      }
+      events.push({ id: `meeting-${m.id}-${fmtKey(day)}`, title: m.title, sub: m.attendees || '', at: dt.getTime(), type: 'meeting' });
     }
   }
 
-  if (salah?.enabled && salah.lat !== null && salah.lat !== undefined) {
+  if (salah?.enabled && salah.lat != null) {
     const timesArr = await Promise.all(
       checkDays.map(day => fetchAlAdhan(fmtKey(day), salah.lat, salah.lng, salah.method, salah.asr))
     );
@@ -257,22 +250,31 @@ async function buildSchedule(meetings, salah) {
         const t = pt[p]; if (!t || t === '--:--') continue;
         const [h, min] = t.split(':').map(Number);
         const dt = new Date(day); dt.setHours(h, min, 0, 0);
-        const prayAt = dt.getTime();
-        for (const [offset, label] of OFFSETS) {
-          const fireAt = prayAt - offset * 60 * 1000;
-          if (fireAt > now) notifications.push({
-            id: `salah-${p}-${fmtKey(day)}-${offset}`,
-            title: PRAYER_LABELS[p], body: `In ${label}`,
-            fireAt, type: 'salah', prayer: p,
-          });
-        }
-        // At-time notification — triggers adhan in foreground, OS sound in background
-        if (prayAt > now) notifications.push({
-          id: `salah-${p}-${fmtKey(day)}-athan`,
-          title: PRAYER_LABELS[p], body: 'Prayer time',
-          fireAt: prayAt, type: 'salah_athan', prayer: p,
-        });
+        events.push({ id: `salah-${p}-${fmtKey(day)}`, title: PRAYER_LABELS[p], sub: '', at: dt.getTime(), type: 'salah', prayer: p });
       }
+    });
+  }
+
+  // Single loop: reminders + at-time for every event
+  const notifications = [];
+  for (const evt of events) {
+    for (const [offset, label] of OFFSETS) {
+      const fireAt = evt.at - offset * 60 * 1000;
+      if (fireAt > now) notifications.push({
+        id: `${evt.id}-${offset}`,
+        title: evt.title,
+        body: `In ${label}${evt.sub ? ' · ' + evt.sub : ''}`,
+        fireAt, type: evt.type,
+        ...(evt.prayer ? { prayer: evt.prayer } : {}),
+      });
+    }
+    if (evt.at > now) notifications.push({
+      id: `${evt.id}-0`,
+      title: evt.title,
+      body: evt.type === 'salah' ? 'Prayer time' : `Starting now${evt.sub ? ' · ' + evt.sub : ''}`,
+      fireAt: evt.at,
+      type: evt.type === 'salah' ? 'salah_athan' : 'meeting',
+      ...(evt.prayer ? { prayer: evt.prayer } : {}),
     });
   }
 

@@ -142,47 +142,28 @@ async function sendPush(subscription, payload, env) {
   return res.status;
 }
 
-// ─── Fetch handler: POST /push ────────────────────────────────────────────────
+// ─── Fetch handler: POST /push (legacy — browser now calls Pages Function /api/push) ──
 
 async function handleFetch(request, env) {
   if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
-
-  const { pathname } = new URL(request.url);
-  if (pathname !== '/push' || request.method !== 'POST')
-    return new Response('Not found', { status: 404, headers: CORS });
-
-  try {
-    const text = await request.text();
-    const { subscription, schedule } = JSON.parse(text);
-    if (!subscription?.endpoint || !subscription?.keys?.p256dh || !subscription?.keys?.auth)
-      return new Response('Invalid subscription', { status: 400, headers: CORS });
-
-    await env.DB.prepare(
-      'INSERT OR REPLACE INTO push_subs (id, subscription, schedule, updated_at) VALUES (?, ?, ?, ?)'
-    ).bind(
-      subscription.endpoint,
-      JSON.stringify(subscription),
-      JSON.stringify(schedule ?? []),
-      Date.now()
-    ).run();
-
-    return new Response('OK', { headers: CORS });
-  } catch (e) {
-    return new Response(e.message, { status: 500, headers: CORS });
-  }
+  return new Response('Use /api/push', { status: 410, headers: CORS });
 }
 
 // ─── Scheduled handler: fire due notifications ────────────────────────────────
 
 async function handleScheduled(env) {
-  const now        = Date.now();
-  const lookback   = 90  * 1000;  // catch anything missed within 90s
-  const lookahead  = 150 * 1000;  // 2.5 min window (cron is every 2 min)
-  const staleAfter = 7 * 24 * 60 * 60 * 1000;
+  const now       = Date.now();
+  const lookback  = 90  * 1000;   // catch anything missed within 90 s
+  const lookahead = 150 * 1000;   // 2.5 min window (cron every 2 min)
 
+  // Index scan: only rows whose next notification falls in this window
   const { results } = await env.DB.prepare(
-    'SELECT id, subscription, schedule FROM push_subs WHERE updated_at > ?'
-  ).bind(now - staleAfter).all();
+    'SELECT id, subscription, schedule FROM push_subs WHERE next_fire_at BETWEEN ? AND ?'
+  ).bind(now - lookback, now + lookahead).all();
+
+  if (!results.length) return;
+
+  const writes = [];   // batched UPDATE / DELETE statements
 
   for (const row of results) {
     let subscription, schedule;
@@ -194,29 +175,37 @@ async function handleScheduled(env) {
     const due = schedule.filter(n => n.fireAt >= now - lookback && n.fireAt <= now + lookahead);
     if (!due.length) continue;
 
-    // Remove the firing window from the stored schedule immediately (prevents double-fire)
-    const remaining = schedule.filter(n => n.fireAt > now + lookahead);
-    await env.DB.prepare('UPDATE push_subs SET schedule = ? WHERE id = ?')
-      .bind(JSON.stringify(remaining), row.id).run();
+    const remaining  = schedule.filter(n => n.fireAt > now + lookahead);
+    const nextFireAt = remaining.length ? Math.min(...remaining.map(n => n.fireAt)) : 0;
 
+    let expired = false;
     for (const n of due) {
       try {
         const status = await sendPush(subscription, {
-          title: n.title,
-          body:  n.body,
-          id:    n.id,
-          type:  n.type  ?? 'meeting',
+          title:  n.title,
+          body:   n.body,
+          id:     n.id,
+          type:   n.type  ?? 'meeting',
           prayer: n.prayer ?? null,
         }, env);
 
         if (status === 410 || status === 404) {
-          // Subscription expired — clean up
-          await env.DB.prepare('DELETE FROM push_subs WHERE id = ?').bind(row.id).run();
+          writes.push(env.DB.prepare('DELETE FROM push_subs WHERE id = ?').bind(row.id));
+          expired = true;
           break;
         }
       } catch {}
     }
+
+    if (!expired) {
+      writes.push(
+        env.DB.prepare('UPDATE push_subs SET schedule = ?, next_fire_at = ? WHERE id = ?')
+          .bind(JSON.stringify(remaining), nextFireAt, row.id)
+      );
+    }
   }
+
+  if (writes.length) await env.DB.batch(writes);
 }
 
 // ─── Entry points ─────────────────────────────────────────────────────────────
