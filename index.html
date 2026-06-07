@@ -222,7 +222,7 @@ function vapidKeyBytes() {
 }
 
 /* ── notification scheduling (meetings + salah) ── */
-function buildSchedule(meetings, salah) {
+async function buildSchedule(meetings, salah) {
   const now = Date.now();
   const notifications = [];
   const checkDays = Array.from({ length: 14 }, (_, i) => new Date(now + i * 86400000));
@@ -247,9 +247,11 @@ function buildSchedule(meetings, salah) {
   }
 
   if (salah?.enabled && salah.lat !== null && salah.lat !== undefined) {
-    const tz = -(new Date().getTimezoneOffset() / 60);
-    for (const day of checkDays) {
-      const pt = calcSalahTimes(day, salah.lat, salah.lng, tz, salah.method, salah.asr);
+    const timesArr = await Promise.all(
+      checkDays.map(day => fetchAlAdhan(fmtKey(day), salah.lat, salah.lng, salah.method, salah.asr))
+    );
+    checkDays.forEach((day, i) => {
+      const pt = timesArr[i]; if (!pt) return;
       for (const p of PRAYER_NAMES) {
         if (salah.prayers?.[p] === false) continue;
         const t = pt[p]; if (!t || t === '--:--') continue;
@@ -271,7 +273,7 @@ function buildSchedule(meetings, salah) {
           fireAt: prayAt, type: 'salah_athan', prayer: p,
         });
       }
-    }
+    });
   }
 
   return notifications;
@@ -304,8 +306,8 @@ async function activatePush() {
   return syncPushSchedule([]);
 }
 
-function scheduleNotifications(meetings, salah) {
-  const schedule = buildSchedule(meetings, salah);
+async function scheduleNotifications(meetings, salah) {
+  const schedule = await buildSchedule(meetings, salah);
   if (('Notification' in window) && Notification.permission === 'granted' && navigator.serviceWorker?.controller) {
     navigator.serviceWorker.controller.postMessage({ type: 'SCHEDULE_NOTIFICATIONS', notifications: schedule });
   }
@@ -366,56 +368,55 @@ const SEED = () => ({
   ui: { view:'today', noteId: null, calDate: todayKey(), filterTag:'', folderId: null },
 });
 
-/* ── Salah (prayer time) calculation ── */
+/* ── Salah (prayer time) — AlAdhan API ── */
 const SALAH_METHODS = {
-  mwl:     { name:'Muslim World League',           fajr:18,   isha:17   },
-  isna:    { name:'ISNA (North America)',          fajr:15,   isha:15   },
-  egypt:   { name:'Egyptian General Authority',    fajr:19.5, isha:17.5 },
-  makkah:  { name:"Umm Al-Qura (Makkah)",         fajr:18.5, ishaMin:90 },
-  karachi: { name:'University of Karachi',          fajr:18,   isha:18   },
-  tehran:  { name:'Geophysics Inst. Tehran',        fajr:17.7, isha:14   },
+  mwl:     { name:'Muslim World League',                id:3 },
+  isna:    { name:'ISNA (North America)',               id:2 },
+  egypt:   { name:'Egyptian General Authority',         id:5 },
+  makkah:  { name:"Umm Al-Qura (Makkah)",              id:4 },
+  karachi: { name:'University of Karachi',               id:1 },
+  tehran:  { name:'Geophysics Inst. Tehran',             id:7 },
 };
 const PRAYER_NAMES  = ['fajr','sunrise','dhuhr','asr','maghrib','isha'];
 const PRAYER_LABELS = { fajr:'Fajr', sunrise:'Sunrise (Shuruq)', dhuhr:'Dhuhr', asr:'Asr', maghrib:'Maghrib', isha:'Isha' };
+const SALAH_CACHE_PFX = 'folio_salah_';
 
-function calcSalahTimes(date, lat, lng, timezone, method, asrJuristic) {
-  const P  = Math.PI / 180;
-  const ds = d => Math.sin(d*P), dc = d => Math.cos(d*P);
-  const as = x => Math.asin(x)/P, ac = x => Math.acos(x)/P;
-  const at2= (y,x) => Math.atan2(y,x)/P;
-  const fA = a => ((a%360)+360)%360, fH = h => ((h%24)+24)%24;
-  const fmt = h => {
-    if (h===null) return '--:--';
-    h = fH(h);
-    const hh = Math.floor(h);
-    let mm = Math.floor((h-hh)*60+0.5);
-    if (mm>=60) return `${String(hh+1).padStart(2,'0')}:00`;
-    return `${String(hh).padStart(2,'0')}:${String(mm).padStart(2,'0')}`;
-  };
-  let Y=date.getFullYear(), M=date.getMonth()+1, D=date.getDate();
-  if (M<=2){Y--;M+=12;}
-  const A=Math.floor(Y/100), B=2-A+Math.floor(A/4);
-  const jd = Math.floor(365.25*(Y+4716))+Math.floor(30.6001*(M+1))+D+B-1524.5 - lng/(15*24);
-  const Dn = jd+0.5-2451545;
-  const g=fA(357.529+0.98560028*Dn), q=fA(280.459+0.98564736*Dn);
-  const L=fA(q+1.915*ds(g)+0.020*ds(2*g));
-  const e=23.439-0.00000036*Dn;
-  const RA=at2(dc(e)*ds(L),dc(L))/15;
-  const eqt=q/15-fH(RA), decl=as(ds(e)*ds(L));
-  const noonLocal = fH(12-eqt)+timezone-lng/15;
-  const ha = angle => {
-    const c=(ds(angle)-ds(lat)*ds(decl))/(dc(lat)*dc(decl));
-    return (c>1||c<-1)?null:ac(c)/15;
-  };
-  const sunHA=ha(-0.8333);
-  const sunrise=sunHA!==null?noonLocal-sunHA:null, sunset=sunHA!==null?noonLocal+sunHA:null;
-  const mp=SALAH_METHODS[method]||SALAH_METHODS.mwl;
-  const fajrHA=ha(-(mp.fajr)), fajr=fajrHA!==null?noonLocal-fajrHA:null;
-  const isha=mp.ishaMin?(sunset!==null?sunset+mp.ishaMin/60:null):(()=>{const h=ha(-(mp.isha));return h!==null?noonLocal+h:null;})();
-  const sf=asrJuristic==='hanafi'?2:1;
-  const asrAngle=Math.atan(1/(sf+Math.tan(Math.abs(lat-decl)*P)))/P;
-  const asrHA=ha(asrAngle), asr=asrHA!==null?noonLocal+asrHA:null;
-  return {fajr:fmt(fajr),sunrise:fmt(sunrise),dhuhr:fmt(noonLocal),asr:fmt(asr),maghrib:fmt(sunset),isha:fmt(isha)};
+async function fetchAlAdhan(dateKey, lat, lon, method, asrJuristic) {
+  const m      = (SALAH_METHODS[method] || SALAH_METHODS.mwl).id;
+  const school = asrJuristic === 'hanafi' ? 1 : 0;
+  const cacheKey = `${SALAH_CACHE_PFX}${dateKey}_${Number(lat).toFixed(3)}_${Number(lon).toFixed(3)}_m${m}_s${school}`;
+  try {
+    const cached = localStorage.getItem(cacheKey);
+    if (cached) return JSON.parse(cached);
+  } catch {}
+  const [y, mo, d] = dateKey.split('-');
+  try {
+    const r = await fetch(
+      `https://api.aladhan.com/v1/timings/${d}-${mo}-${y}?latitude=${lat}&longitude=${lon}&method=${m}&school=${school}`
+    );
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const json = await r.json();
+    const t = json.data.timings;
+    const strip = s => (s || '--:--').split(' ')[0];
+    const result = {
+      fajr: strip(t.Fajr), sunrise: strip(t.Sunrise), dhuhr: strip(t.Dhuhr),
+      asr: strip(t.Asr), maghrib: strip(t.Maghrib), isha: strip(t.Isha),
+    };
+    try { localStorage.setItem(cacheKey, JSON.stringify(result)); } catch {}
+    return result;
+  } catch { return null; }
+}
+
+function useSalahTimes(dateKey, salah) {
+  const [times, setTimes] = React.useState(null);
+  React.useEffect(() => {
+    if (!salah?.enabled || salah.lat == null || salah.lng == null) { setTimes(null); return; }
+    let cancelled = false;
+    fetchAlAdhan(dateKey, salah.lat, salah.lng, salah.method, salah.asr)
+      .then(t => { if (!cancelled) setTimes(t); });
+    return () => { cancelled = true; };
+  }, [dateKey, salah?.lat, salah?.lng, salah?.method, salah?.asr, salah?.enabled]);
+  return times;
 }
 
 /* ── icons ── */
@@ -1678,6 +1679,7 @@ function CalendarView({ state, update, isMobile }) {
 
   const calDate = state.ui.calDate ? parseKey(state.ui.calDate) : new Date();
   const selDate = state.ui.calDate || todayKey();
+  const selSalahTimes = useSalahTimes(selDate, state.salah);
 
   const year = calDate.getFullYear(), month = calDate.getMonth();
   const firstDay = new Date(year,month,1).getDay();
@@ -1867,9 +1869,8 @@ function CalendarView({ state, update, isMobile }) {
           {/* ── unified day timeline ── */}
           {(()=>{
             const tItems=[];
-            if(state.salah?.enabled&&state.salah?.lat!==null){
-              const tz=-(new Date().getTimezoneOffset()/60);
-              const pt=calcSalahTimes(parseKey(selDate),state.salah.lat,state.salah.lng,tz,state.salah.method,state.salah.asr);
+            if(state.salah?.enabled&&state.salah?.lat!==null&&selSalahTimes){
+              const pt=selSalahTimes;
               PRAYER_NAMES.filter(p=>state.salah.prayers?.[p]!==false).forEach(p=>{
                 const t=pt[p];if(!t||t==='--:--')return;
                 const [h,m]=t.split(':').map(Number);
@@ -2139,6 +2140,7 @@ function TodayView({ state, update, isMobile }) {
   const recent = [...state.notes].sort((a,b)=>b.updated-a.updated).slice(0,4);
 
   const toggleTask = id => update('tasks',state.tasks.map(t=>t.id===id?{...t,done:!t.done}:t));
+  const todaySalahTimes = useSalahTimes(todayKey(), state.salah);
 
   return (
     <div style={{flex:1,overflowY:'auto',overflowX:'hidden',padding:isMobile?'20px 16px':'32px 36px'}} className="scrollbar">
@@ -2180,9 +2182,8 @@ function TodayView({ state, update, isMobile }) {
         </div>
 
         {/* prayer times */}
-        {state.salah?.enabled && state.salah?.lat !== null && (()=>{
-          const tz = -(new Date().getTimezoneOffset()/60);
-          const pt = calcSalahTimes(new Date(), state.salah.lat, state.salah.lng, tz, state.salah.method, state.salah.asr);
+        {state.salah?.enabled && state.salah?.lat !== null && todaySalahTimes && (()=>{
+          const pt = todaySalahTimes;
           const shown = PRAYER_NAMES.filter(p=>state.salah.prayers?.[p]!==false);
           if (!shown.length) return null;
           return (
@@ -2982,8 +2983,9 @@ function SalahModal({ state, update, onClose }) {
   /* auto-preview whenever inputs change */
   useEffect(()=>{
     const la=parseFloat(lat), lo=parseFloat(lng);
-    if (!isNaN(la) && !isNaN(lo)) setPreview(calcSalahTimes(new Date(),la,lo,tz,method,asr));
-    else setPreview(null);
+    if (!isNaN(la) && !isNaN(lo)) {
+      fetchAlAdhan(todayKey(),la,lo,method,asr).then(t=>setPreview(t));
+    } else setPreview(null);
   },[lat,lng,method,asr]);
 
   const detectLocation = () => {
