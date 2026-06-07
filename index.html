@@ -290,10 +290,9 @@ async function syncPushSchedule(schedule) {
         applicationServerKey: vapidKeyBytes(),
       });
     }
-    const token = localStorage.getItem('folio_token');
     await fetch(pushApi, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      headers: { 'Content-Type': 'text/plain' },
       body: JSON.stringify({ subscription: sub.toJSON(), schedule }),
     });
   } catch {}
@@ -3130,10 +3129,9 @@ function SetupModal({ onClose, onConnected, onSync, syncStatus }) {
     }
     setPushStatus('Connecting…');
     try {
-      const tok = localStorage.getItem('folio_token');
       const res = await fetch(url, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...(tok ? { Authorization: `Bearer ${tok}` } : {}) },
+        headers: { 'Content-Type': 'text/plain' },
         body: JSON.stringify({ subscription: sub.toJSON(), schedule: [] }),
       });
       setPushStatus(res.ok ? 'active' : `Error ${res.status}: ${await res.text()}`);

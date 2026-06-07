@@ -152,7 +152,8 @@ async function handleFetch(request, env) {
     return new Response('Not found', { status: 404, headers: CORS });
 
   try {
-    const { subscription, schedule } = await request.json();
+    const text = await request.text();
+    const { subscription, schedule } = JSON.parse(text);
     if (!subscription?.endpoint || !subscription?.keys?.p256dh || !subscription?.keys?.auth)
       return new Response('Invalid subscription', { status: 400, headers: CORS });
 
