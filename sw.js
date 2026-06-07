@@ -50,6 +50,9 @@ self.addEventListener('fetch', (event) => {
   const { request } = event;
   const url = new URL(request.url);
 
+  // Never intercept cross-origin requests
+  if (url.origin !== self.location.origin) return;
+
   // API calls — never intercept, let them reach the network
   if (url.pathname.startsWith('/api/')) return;
 
