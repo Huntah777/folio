@@ -209,8 +209,7 @@ const safeImageSrc = src => {
 };
 
 /* ── push notification constants ── */
-const VAPID_PUBLIC_KEY = 'BMg79Dc4KgbVAa253omi5oER5VpB3ErcDnjaR5lgmIinGMVlUpe4-LUgfuQrTb9a3urAaLnDZgQ_vtE4OvVLcPA';
-const PUSH_API_KEY     = 'folio_push_api'; // localStorage key for push-worker URL
+const VAPID_PUBLIC_KEY  = 'BMg79Dc4KgbVAa253omi5oER5VpB3ErcDnjaR5lgmIinGMVlUpe4-LUgfuQrTb9a3urAaLnDZgQ_vtE4OvVLcPA';
 
 function vapidKeyBytes() {
   const pad = VAPID_PUBLIC_KEY.length % 4;
@@ -280,8 +279,8 @@ function buildSchedule(meetings, salah) {
 
 async function syncPushSchedule(schedule) {
   try {
-    const pushApi = localStorage.getItem(PUSH_API_KEY);
-    if (!pushApi || !('serviceWorker' in navigator)) return;
+    const token = localStorage.getItem('folio_token');
+    if (!token || !('serviceWorker' in navigator)) return false;
     const reg = await navigator.serviceWorker.ready;
     let sub = await reg.pushManager.getSubscription();
     if (!sub) {
@@ -290,12 +289,19 @@ async function syncPushSchedule(schedule) {
         applicationServerKey: vapidKeyBytes(),
       });
     }
-    await fetch(pushApi, {
+    const res = await fetch('/api/push', {
       method: 'POST',
-      headers: { 'Content-Type': 'text/plain' },
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       body: JSON.stringify({ subscription: sub.toJSON(), schedule }),
     });
-  } catch {}
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+async function activatePush() {
+  return syncPushSchedule([]);
 }
 
 function scheduleNotifications(meetings, salah) {
@@ -1642,13 +1648,14 @@ function CalendarView({ state, update, isMobile }) {
     ('Notification' in window) ? Notification.permission : 'denied'
   );
   const [pushActive, setPushActive] = useState(false);
+  const [pushToast,  setPushToast]  = useState(null); /* null | 'active' | 'foreground' */
   const [editModal,  setEditModal]  = useState(null);
   const [editForm,   setEditForm]   = useState(BLANK_FORM);
   const [editScope,  setEditScope]  = useState('all');
   const [confirmDel, setConfirmDel] = useState(null);
 
   useEffect(() => {
-    if (notifPerm !== 'granted' || !('serviceWorker' in navigator) || !localStorage.getItem(PUSH_API_KEY)) {
+    if (notifPerm !== 'granted' || !('serviceWorker' in navigator)) {
       setPushActive(false); return;
     }
     navigator.serviceWorker.ready
@@ -1661,7 +1668,12 @@ function CalendarView({ state, update, isMobile }) {
     if (!('Notification' in window)) return;
     const perm = await Notification.requestPermission();
     setNotifPerm(perm);
-    if (perm === 'granted') scheduleNotifications(state.meetings, state.salah);
+    if (perm !== 'granted') return;
+    scheduleNotifications(state.meetings, state.salah);
+    const ok = await activatePush();
+    if (ok) setPushActive(true);
+    setPushToast(ok ? 'active' : 'foreground');
+    setTimeout(() => setPushToast(null), 5000);
   };
 
   const calDate = state.ui.calDate ? parseKey(state.ui.calDate) : new Date();
@@ -1788,7 +1800,7 @@ function CalendarView({ state, update, isMobile }) {
           <button onClick={()=>nav(1)} style={{background:'none',border:'1px solid #1f1f24',borderRadius:7,color:'#9a9788',padding:'5px 10px',cursor:'pointer',fontSize:16,flexShrink:0}}>›</button>
           <button onClick={()=>update('ui',{...state.ui,calDate:today})} style={{background:'none',border:'1px solid #1f1f24',borderRadius:7,color:'#9a9788',padding:'5px 10px',cursor:'pointer',fontSize:isMobile?11:12,flexShrink:0}}>Today</button>
           <button onClick={requestNotifPerm}
-            title={notifPerm!=='granted'?'Enable alerts':pushActive?'Background push active':'Alerts on (foreground only — add push URL in Sync settings)'}
+            title={notifPerm!=='granted'?'Enable alerts':pushActive?'Background push active':'Alerts on (foreground only)'}
             style={{background:notifPerm==='granted'?(pushActive?'rgba(245,158,11,0.12)':'rgba(16,185,129,0.08)'):'none',
               border:`1px solid ${notifPerm==='granted'?(pushActive?'rgba(245,158,11,.45)':'rgba(16,185,129,.4)'):'#1f1f24'}`,
               borderRadius:7,color:notifPerm==='granted'?(pushActive?'#f59e0b':'#10b981'):'#3a3a44',
@@ -1800,6 +1812,17 @@ function CalendarView({ state, update, isMobile }) {
             {notifPerm==='granted' && pushActive && <span style={{fontSize:9,fontWeight:700,letterSpacing:'.04em',textTransform:'uppercase'}}>BG</span>}
           </button>
         </div>
+        {pushToast && (
+          <div style={{display:'flex',alignItems:'center',gap:8,padding:'9px 14px',borderRadius:8,marginBottom:12,
+            background:pushToast==='active'?'rgba(245,158,11,0.08)':'rgba(16,185,129,0.07)',
+            border:`1px solid ${pushToast==='active'?'rgba(245,158,11,0.25)':'rgba(16,185,129,0.25)'}`,
+            color:pushToast==='active'?'#f59e0b':'#10b981',fontSize:12,animation:'fadeIn 200ms ease'}}>
+            <svg style={{width:13,height:13,flexShrink:0}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>
+            {pushToast==='active'
+              ? 'Background alerts active — you\'ll be notified even when the app is closed'
+              : 'Alerts on (open app only) — connect sync to enable background alerts'}
+          </div>
+        )}
         <div style={{display:'grid',gridTemplateColumns:'repeat(7,1fr)',gap:isMobile?2:4,marginBottom:isMobile?3:6}}>
           {DAY_SHORT.map(d=><div key={d} style={{fontSize:isMobile?9:11,color:'#3a3a44',textAlign:'center',fontWeight:600,padding:'4px 0'}}>{isMobile?d[0]:d}</div>)}
         </div>
@@ -3104,41 +3127,20 @@ function SalahModal({ state, update, onClose }) {
 function SetupModal({ onClose, onConnected, onSync, syncStatus }) {
   const [token, setToken] = useState(Sync.getToken() || '');
   const [status, setStatus] = useState('');
-  const [pushUrl,    setPushUrl]    = useState(() => localStorage.getItem(PUSH_API_KEY) || '');
-  const [pushStatus, setPushStatus] = useState('');
+  const [pushState, setPushState] = useState('checking'); /* 'checking' | 'active' | 'no-perm' | 'no-sub' | 'no-token' */
 
-  const savePushUrl = async () => {
-    const url = pushUrl.trim();
-    localStorage.setItem(PUSH_API_KEY, url);
-    if (!url) { setPushStatus('Cleared'); return; }
-    if (!('serviceWorker' in navigator) || !('Notification' in window)) {
-      setPushStatus('Notifications not supported in this browser'); return;
-    }
-    if (Notification.permission !== 'granted') {
-      setPushStatus('Grant notification permission first'); return;
-    }
-    setPushStatus('Subscribing…');
-    let sub;
-    try {
-      const reg = await navigator.serviceWorker.ready;
-      sub = await reg.pushManager.getSubscription();
-      if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: vapidKeyBytes() });
-    } catch (e) {
-      setPushStatus(`Subscription error: ${e.message}`);
-      return;
-    }
-    setPushStatus('Connecting…');
-    try {
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'text/plain' },
-        body: JSON.stringify({ subscription: sub.toJSON(), schedule: [] }),
-      });
-      setPushStatus(res.ok ? 'active' : `Error ${res.status}: ${await res.text()}`);
-    } catch (e) {
-      setPushStatus(`Fetch error: ${e.message}`);
-    }
-  };
+  React.useEffect(() => {
+    (async () => {
+      if (!('Notification' in window) || Notification.permission !== 'granted') { setPushState('no-perm'); return; }
+      if (!localStorage.getItem('folio_token')) { setPushState('no-token'); return; }
+      if (!('serviceWorker' in navigator)) { setPushState('no-sub'); return; }
+      try {
+        const reg = await navigator.serviceWorker.ready;
+        const sub = await reg.pushManager.getSubscription();
+        setPushState(sub ? 'active' : 'no-sub');
+      } catch { setPushState('no-sub'); }
+    })();
+  }, []);
 
   const save = async e => {
     e.preventDefault();
@@ -3225,22 +3227,15 @@ function SetupModal({ onClose, onConnected, onSync, syncStatus }) {
           </div>
         </form>
 
-        {/* Background push */}
-        <div style={{padding:'16px 24px',borderTop:'1px solid #1f1f24'}}>
-          <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8}}>
-            <svg style={{width:13,height:13,color:'#f59e0b',flexShrink:0}} viewBox="0 0 24 24" fill="none" stroke="#f59e0b" strokeWidth="2" strokeLinecap="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
-            <span style={{fontFamily:'Fraunces,serif',fontSize:14,fontWeight:600}}>Background notifications</span>
-            {pushStatus==='active' && <span style={{marginLeft:'auto',fontSize:10,fontWeight:700,color:'#10b981',background:'rgba(16,185,129,0.1)',border:'1px solid rgba(16,185,129,0.3)',borderRadius:4,padding:'2px 6px'}}>ACTIVE</span>}
-          </div>
-          <div style={{fontSize:11,color:'#9a9788',marginBottom:10}}>Push-worker URL — deploy <code style={{color:'#a09cf7',fontSize:10}}>push-worker/</code> and paste the URL here to receive alerts when the app is closed.</div>
-          <div style={{display:'flex',gap:8}}>
-            <input className="input" type="url" value={pushUrl} onChange={e=>setPushUrl(e.target.value)}
-              placeholder="https://folio-push.workers.dev/push" style={{flex:1,fontSize:12}}/>
-            <button type="button" onClick={savePushUrl} className="btn-primary" style={{fontSize:12,padding:'8px 14px',flexShrink:0}}>Save</button>
-          </div>
-          {pushStatus && pushStatus!=='active' && (
-            <div style={{fontSize:11,marginTop:6,color:pushStatus.startsWith('Error')?'#f43f5e':'#f59e0b'}}>{pushStatus}</div>
-          )}
+        {/* Push status */}
+        <div style={{padding:'12px 24px',borderTop:'1px solid #1f1f24',display:'flex',alignItems:'center',gap:10}}>
+          <svg style={{width:13,height:13,flexShrink:0,color:pushState==='active'?'#f59e0b':'#3a3a44'}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+          <span style={{fontSize:12,color:'#9a9788',flex:1}}>Background alerts</span>
+          {pushState==='checking' && <span style={{fontSize:11,color:'#3a3a44'}}>checking…</span>}
+          {pushState==='active'   && <span style={{fontSize:11,fontWeight:700,color:'#f59e0b',background:'rgba(245,158,11,0.1)',border:'1px solid rgba(245,158,11,0.3)',borderRadius:4,padding:'2px 8px'}}>ACTIVE</span>}
+          {pushState==='no-perm'  && <span style={{fontSize:11,color:'#3a3a44'}}>Enable notifications via the bell button</span>}
+          {pushState==='no-token' && <span style={{fontSize:11,color:'#3a3a44'}}>Requires sync token above</span>}
+          {pushState==='no-sub'   && <span style={{fontSize:11,color:'#3a3a44'}}>Inactive — tap the bell button to activate</span>}
         </div>
 
         {/* Advanced / PWA reset */}
