@@ -5,7 +5,6 @@
 const VAPID_PUBLIC_KEY = 'BMg79Dc4KgbVAa253omi5oER5VpB3ErcDnjaR5lgmIinGMVlUpe4-LUgfuQrTb9a3urAaLnDZgQ_vtE4OvVLcPA';
 const VAPID_PUBLIC_X   = 'yDv0NzgqBtUBrbneiaLmgRHlWkHcStwOeNpHmWCYiKc';
 const VAPID_PUBLIC_Y   = 'GMVlUpe4-LUgfuQrTb9a3urAaLnDZgQ_vtE4OvVLcPA';
-const VAPID_SUBJECT    = 'mailto:abdul-malik@huntah.co.uk';
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -70,10 +69,10 @@ async function encryptWebPush(plaintext, subscription) {
 
 // ─── VAPID JWT ─────────────────────────────────────────────────────────────────
 
-async function makeVapidJWT(endpoint, privateKeyB64u) {
+async function makeVapidJWT(endpoint, privateKeyB64u, subject) {
   const audience  = new URL(endpoint).origin;
   const hdr = toB64u(te(JSON.stringify({ typ: 'JWT', alg: 'ES256' })));
-  const pay = toB64u(te(JSON.stringify({ aud: audience, exp: Math.floor(Date.now() / 1000) + 43200, sub: VAPID_SUBJECT })));
+  const pay = toB64u(te(JSON.stringify({ aud: audience, exp: Math.floor(Date.now() / 1000) + 43200, sub: subject })));
   const unsigned = `${hdr}.${pay}`;
 
   const key = await crypto.subtle.importKey('jwk', {
@@ -88,8 +87,8 @@ async function makeVapidJWT(endpoint, privateKeyB64u) {
 
 // ─── Send one Web Push ────────────────────────────────────────────────────────
 
-async function sendPush(subscription, payload, privateKeyB64u) {
-  const jwt  = await makeVapidJWT(subscription.endpoint, privateKeyB64u);
+async function sendPush(subscription, payload, privateKeyB64u, subject) {
+  const jwt  = await makeVapidJWT(subscription.endpoint, privateKeyB64u, subject);
   const body = await encryptWebPush(JSON.stringify(payload), subscription);
 
   const r = await fetch(subscription.endpoint, {
@@ -140,7 +139,7 @@ async function handleScheduled(env) {
           id:     n.id,
           type:   n.type   ?? 'meeting',
           prayer: n.prayer ?? null,
-        }, env.VAPID_PRIVATE_KEY);
+        }, env.VAPID_PRIVATE_KEY, env.VAPID_SUBJECT);
 
         console.log(`push → ${row.id} [${n.title}] → HTTP ${status}`);
 
