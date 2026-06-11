@@ -825,10 +825,10 @@ function NoteEditor({ note, state, update, isMobile }) {
   };
   const removeWebLink = id => upNote({webLinks:(note.webLinks||[]).filter(l=>l.id!==id)});
 
-  const addLink = id => { if(!(note.links||[]).includes(id)) upNote({links:[...(note.links||[]),id]}); setShowLinkSearch(false); setLinkQuery(''); };
+  const addLink = id => { if(!(note.links||[]).includes(id)) upNote({links:[...(note.links||[]),id]}); setLinkQuery(''); };
   const removeLink = id => upNote({links:(note.links||[]).filter(x=>x!==id)});
   const linkedNotes = (note.links||[]).map(id=>state.notes.find(n=>n.id===id)).filter(Boolean);
-  const linkable = state.notes.filter(n=>n.id!==note.id&&!(note.links||[]).includes(n.id)&&(!linkQuery||n.title.toLowerCase().includes(linkQuery.toLowerCase())));
+  const linkable = state.notes.filter(n=>n.id!==note.id&&(!linkQuery||n.title.toLowerCase().includes(linkQuery.toLowerCase())));
 
   /* ── insert a part at the active cursor position, or append ── */
   const insertAtCursor = (newPart, fallbackBody, extraPatch={}) => {
@@ -1006,20 +1006,26 @@ function NoteEditor({ note, state, update, isMobile }) {
         {/* link search dropdown */}
         {showLinkSearch && (
           <div style={{background:'#17171b',border:'1px solid #2a2a31',borderRadius:10,padding:'10px 12px',marginBottom:14}}>
-            <div style={{fontSize:11,color:'#9a9788',marginBottom:6}}>Search notes to link:</div>
-            <input autoFocus value={linkQuery} onChange={e=>setLinkQuery(e.target.value)} placeholder="Note title…"
-              style={{background:'#0d0d10',border:'1px solid #2a2a31',borderRadius:6,padding:'5px 10px',color:'#f4f3ee',fontSize:12.5,width:'100%',outline:'none',marginBottom:6}}/>
-            <div style={{maxHeight:140,overflow:'auto'}}>
-              {linkable.slice(0,8).map(n=>(
-                <div key={n.id} onClick={()=>addLink(n.id)}
-                  style={{display:'flex',alignItems:'center',gap:8,padding:'6px 8px',borderRadius:6,cursor:'pointer',transition:'background 110ms'}}
+            <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:6}}>
+              <div style={{fontSize:11,color:'#9a9788'}}>Link notes — click to add or remove:</div>
+              <button onClick={()=>{setShowLinkSearch(false);setLinkQuery('');}} style={{background:'none',border:'none',color:'#9a9788',cursor:'pointer',fontSize:11,padding:'0 2px'}}>Done</button>
+            </div>
+            <input autoFocus value={linkQuery} onChange={e=>setLinkQuery(e.target.value)} placeholder="Search by title…"
+              style={{background:'#0d0d10',border:'1px solid #2a2a31',borderRadius:6,padding:'5px 10px',color:'#f4f3ee',fontSize:12.5,width:'100%',outline:'none',marginBottom:6,boxSizing:'border-box'}}/>
+            <div style={{maxHeight:160,overflow:'auto'}}>
+              {linkable.slice(0,10).map(n=>{
+                const linked = (note.links||[]).includes(n.id);
+                return <div key={n.id}
+                  onClick={()=>linked ? removeLink(n.id) : addLink(n.id)}
+                  style={{display:'flex',alignItems:'center',gap:8,padding:'6px 8px',borderRadius:6,cursor:'pointer',transition:'background 110ms',opacity:linked?1:0.85}}
                   onMouseEnter={e=>e.currentTarget.style.background='#2a2a31'}
                   onMouseLeave={e=>e.currentTarget.style.background='transparent'}>
-                  <span style={{fontSize:13}}>{n.emoji||'📝'}</span>
-                  <span style={{fontSize:13,color:'#f4f3ee'}}>{n.title||'Untitled'}</span>
-                </div>
-              ))}
-              {linkable.length===0&&<div style={{color:'#3a3a44',fontSize:12,padding:'4px 8px'}}>No notes found.</div>}
+                  <span style={{fontSize:13,flexShrink:0}}>{n.emoji||'📝'}</span>
+                  <span style={{fontSize:13,color:'#f4f3ee',flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{n.title||'Untitled'}</span>
+                  {linked && <span style={{fontSize:11,color:'#818cf8',flexShrink:0,fontWeight:600}}>✓ linked</span>}
+                </div>;
+              })}
+              {linkable.length===0&&<div style={{color:'#3a3a44',fontSize:12,padding:'4px 8px'}}>No other notes found.</div>}
             </div>
           </div>
         )}
