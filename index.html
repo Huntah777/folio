@@ -160,6 +160,23 @@ body.pwa-install-banner #app{padding-top:52px}
   .editor-title{font-size:22px!important}
   .editor-body{font-size:14px!important}
 }
+/* markdown rendered view */
+.md-view{font-family:'Manrope',sans-serif;font-size:14.5px;color:#e6e4dc;line-height:1.75;cursor:text;min-height:60px;padding:2px 0;width:100%}
+.md-view:empty::before{content:'Start writing…';color:#3a3a44}
+.md-view .md-h1{font-family:'Fraunces',serif;font-size:26px;font-weight:600;color:#f4f3ee;margin:20px 0 8px;line-height:1.2}
+.md-view .md-h2{font-family:'Fraunces',serif;font-size:21px;font-weight:600;color:#f4f3ee;margin:18px 0 6px;line-height:1.25}
+.md-view .md-h3{font-family:'Fraunces',serif;font-size:17px;font-weight:600;color:#f4f3ee;margin:14px 0 4px;line-height:1.3}
+.md-view .md-hr{border:none;border-top:1px solid #2a2a31;margin:16px 0}
+.md-view .md-quote{border-left:2px solid #818cf8;padding-left:12px;color:#9a9788;margin:4px 0}
+.md-view .md-ul{list-style:none;padding:0;margin:4px 0}
+.md-view .md-li,.md-view .md-todo{display:flex;align-items:flex-start;gap:7px;padding:2px 0}
+.md-view .md-bullet{color:#818cf8;font-size:7px;margin-top:8px;flex-shrink:0;line-height:1}
+.md-view .md-p{margin:1px 0;color:#e6e4dc}
+.md-view .md-gap{height:0.6em}
+.md-view code{background:#1a1a22;padding:1px 5px;border-radius:3px;font-family:'JetBrains Mono',monospace;font-size:.88em;color:#a5b4fc}
+.md-view strong{color:#f4f3ee;font-weight:600}
+.md-view em{color:#c9c6b8;font-style:italic}
+.md-view del{color:#3a3a44;text-decoration:line-through}
 </style>
 </head>
 <body>
@@ -207,6 +224,58 @@ const safeImageSrc = src => {
   if (/^data:image\/(png|jpe?g|gif|webp|svg\+xml);base64,/i.test(s)) return s;
   return safeHttpUrl(s);
 };
+
+/* ── markdown renderer ── */
+function escH(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+function inlineMd(raw) {
+  let s = escH(raw);
+  s = s.replace(/`([^`\n]+)`/g, '<code>$1</code>');
+  s = s.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>');
+  s = s.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  s = s.replace(/__(.+?)__/g, '<strong>$1</strong>');
+  s = s.replace(/\*([^\s*\n][^*\n]*?)\*/g, '<em>$1</em>');
+  s = s.replace(/_([^\s_\n][^_\n]*?)_/g, '<em>$1</em>');
+  s = s.replace(/~~(.+?)~~/g, '<del>$1</del>');
+  return s;
+}
+function renderMd(text) {
+  if (!text || !text.trim()) return '';
+  const lines = text.split('\n');
+  const out = []; let i = 0;
+  while (i < lines.length) {
+    const ln = lines[i];
+    if (/^### /.test(ln)) { out.push('<h3 class="md-h3">'+inlineMd(ln.slice(4))+'</h3>'); i++; continue; }
+    if (/^## /.test(ln))  { out.push('<h2 class="md-h2">'+inlineMd(ln.slice(3))+'</h2>'); i++; continue; }
+    if (/^# /.test(ln))   { out.push('<h1 class="md-h1">'+inlineMd(ln.slice(2))+'</h1>'); i++; continue; }
+    if (/^---+\s*$/.test(ln)) { out.push('<hr class="md-hr">'); i++; continue; }
+    if (/^> /.test(ln)) { out.push('<blockquote class="md-quote">'+inlineMd(ln.slice(2))+'</blockquote>'); i++; continue; }
+    if (/^\s*[-*] /.test(ln)) {
+      out.push('<ul class="md-ul">');
+      while (i < lines.length && /^\s*[-*] /.test(lines[i])) {
+        const lm = lines[i].match(/^(\s*)[-*] (\[x\] |\[ \] )?(.+)/i);
+        if (!lm) break;
+        const depth = Math.floor(lm[1].length / 2);
+        const isDone = lm[2] && /x/i.test(lm[2]);
+        const isTodo = !!lm[2];
+        const body = inlineMd(lm[3]);
+        if (isTodo) {
+          out.push(`<li class="md-todo" style="padding-left:${depth*16}px"><span class="tick${isDone?' on':''}" style="flex-shrink:0;margin-top:3px">${isDone?'<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>':''}</span><span style="${isDone?'text-decoration:line-through;color:#3a3a44':'color:#e6e4dc'}">${body}</span></li>`);
+        } else {
+          out.push(`<li class="md-li" style="padding-left:${depth*16}px"><span class="md-bullet">●</span><span>${body}</span></li>`);
+        }
+        i++;
+      }
+      out.push('</ul>');
+      continue;
+    }
+    if (!ln.trim()) { out.push('<div class="md-gap"></div>'); i++; continue; }
+    out.push('<p class="md-p">'+inlineMd(ln)+'</p>');
+    i++;
+  }
+  return out.join('');
+}
 
 /* ── push notification constants ── */
 const VAPID_PUBLIC_KEY  = 'BMg79Dc4KgbVAa253omi5oER5VpB3ErcDnjaR5lgmIinGMVlUpe4-LUgfuQrTb9a3urAaLnDZgQ_vtE4OvVLcPA';
@@ -451,6 +520,19 @@ const tagColor = t => {
 };
 const PRIO = { high:'#f43f5e', medium:'#f59e0b', low:'#22d3ee', none:'#3a3a44' };
 
+/* ── MarkdownView ── */
+function MarkdownView({ content, onClick }) {
+  const html = useMemo(() => renderMd(content), [content]);
+  return (
+    <div
+      className="md-view"
+      dangerouslySetInnerHTML={{__html: html || ''}}
+      onClick={onClick}
+      title="Click to edit"
+    />
+  );
+}
+
 /* ── CodeBlock ── */
 function CodeBlock({ value='', lang='javascript', onChange, onLangChange }) {
   const taRef  = useRef(null);
@@ -645,7 +727,9 @@ function NoteEditor({ note, state, update, isMobile }) {
   const [showWebLink, setShowWebLink] = useState(false);
   const [wlUrl,   setWlUrl]   = useState('');
   const [wlTitle, setWlTitle] = useState('');
+  const [previewMode, setPreviewMode] = useState(false);
   const imgInputRef = useRef(null);
+  const mdInputRef  = useRef(null);
   const activeTA = useRef(null); /* { el, partIdx, pos } */
 
   /* ── bodyParts — MUST be before any early return (Rules of Hooks) ── */
@@ -807,6 +891,41 @@ function NoteEditor({ note, state, update, isMobile }) {
     };
     reader.readAsDataURL(file);
     e.target.value='';
+  };
+
+  /* ── markdown import / export ── */
+  const insertTextAtCursor = text => {
+    if (activeTA.current) {
+      const { partIdx, pos=0 } = activeTA.current;
+      const cur = bodyParts[partIdx];
+      if (cur && cur.type==='text') {
+        const before = cur.content.slice(0,pos);
+        const after  = cur.content.slice(pos);
+        const np=[...bodyParts]; np[partIdx]={...np[partIdx],content:before+text+after};
+        upNote({body:rebuildBody(np)});
+        return;
+      }
+    }
+    upNote({body:(note.body?note.body+'\n\n':'')+text});
+  };
+  const handleMdUpload = e => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = ev => insertTextAtCursor(ev.target.result);
+    reader.readAsText(file, 'UTF-8');
+    e.target.value='';
+  };
+  const exportMd = () => {
+    const content = note.body || '';
+    const blob = new Blob([content], {type:'text/markdown'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = (note.title||'note').replace(/[^a-zA-Z0-9\-_ ]/g,'').trim()||'note';
+    a.download += '.md';
+    a.click();
+    URL.revokeObjectURL(url);
   };
 
   /* ── linked notes ── */
@@ -983,6 +1102,28 @@ function NoteEditor({ note, state, update, isMobile }) {
           onMouseLeave={e=>{e.currentTarget.style.background='none';}}>
           <svg style={{width:10,height:10}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>link
         </button>
+        <div style={{width:1,height:14,background:'#2a2a31',margin:'0 2px'}}/>
+        {/* .md import */}
+        <button onClick={()=>mdInputRef.current?.click()} title="Import a .md file" style={{...tbBtn,display:'flex',alignItems:'center',gap:3}}
+          onMouseEnter={e=>{e.currentTarget.style.background='#17171b';e.currentTarget.style.color='#f4f3ee';}}
+          onMouseLeave={e=>{e.currentTarget.style.background='none';e.currentTarget.style.color='#9a9788';}}>
+          <svg style={{width:10,height:10}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>.md
+        </button>
+        <input ref={mdInputRef} type="file" accept=".md,.markdown,text/markdown,text/plain" style={{display:'none'}} onChange={handleMdUpload}/>
+        {/* .md export */}
+        <button onClick={exportMd} title="Export as .md file" style={{...tbBtn,display:'flex',alignItems:'center',gap:3}}
+          onMouseEnter={e=>{e.currentTarget.style.background='#17171b';e.currentTarget.style.color='#f4f3ee';}}
+          onMouseLeave={e=>{e.currentTarget.style.background='none';e.currentTarget.style.color='#9a9788';}}>
+          <svg style={{width:10,height:10}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>↓md
+        </button>
+        <div style={{marginLeft:'auto'}}>
+          <button onClick={()=>setPreviewMode(v=>!v)} title={previewMode?'Back to editing':'Preview rendered markdown'}
+            style={{...tbBtn,color:previewMode?'#818cf8':'#9a9788',borderColor:previewMode?'#818cf8':'#1f1f24',fontSize:11}}
+            onMouseEnter={e=>{e.currentTarget.style.background='#17171b';}}
+            onMouseLeave={e=>{e.currentTarget.style.background='none';}}>
+            {previewMode ? 'edit' : 'preview'}
+          </button>
+        </div>
       </div>
 
       {/* ── body ── */}
@@ -1075,6 +1216,8 @@ function NoteEditor({ note, state, update, isMobile }) {
                     placeholder="Add caption…" style={{display:'block',width:'100%',background:'transparent',border:'none',borderTop:'1px solid #1f1f24',color:'#9a9788',fontSize:11.5,padding:'6px 10px',outline:'none',boxSizing:'border-box'}}/>
                 </div>;
               })()
+            : previewMode
+            ? <MarkdownView key={i} content={part.content} onClick={()=>setPreviewMode(false)}/>
             : <textarea key={i} className="editor-body" value={part.content}
                 rows={Math.max(5,(part.content.match(/\n/g)||[]).length+2)}
                 onFocus={e=>{ activeTA.current={el:e.target,partIdx:i,pos:e.target.selectionStart}; }}
