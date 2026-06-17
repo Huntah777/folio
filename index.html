@@ -521,15 +521,19 @@ const tagColor = t => {
 const PRIO = { high:'#f43f5e', medium:'#f59e0b', low:'#22d3ee', none:'#3a3a44' };
 
 /* ── MarkdownView ── */
-function MarkdownView({ content, onClick }) {
+function MarkdownView({ content, onCheckboxToggle }) {
   const html = useMemo(() => renderMd(content), [content]);
+  const ref = useRef(null);
+  const handleClick = e => {
+    if (!onCheckboxToggle) return;
+    const tick = e.target.closest('.tick');
+    if (!tick) return;
+    const allTicks = [...(ref.current?.querySelectorAll('.md-todo .tick') || [])];
+    const idx = allTicks.indexOf(tick);
+    if (idx !== -1) onCheckboxToggle(idx);
+  };
   return (
-    <div
-      className="md-view"
-      dangerouslySetInnerHTML={{__html: html || ''}}
-      onClick={onClick}
-      title="Click to edit"
-    />
+    <div ref={ref} className="md-view" dangerouslySetInnerHTML={{__html: html || ''}} onClick={handleClick}/>
   );
 }
 
@@ -835,6 +839,21 @@ function NoteEditor({ note, state, update, isMobile }) {
     }
     const np=[...bodyParts]; np[partIdx]={...np[partIdx],content};
     upNote({body:rebuildBody(np)});
+  };
+
+  const handleCheckboxToggle = (partIdx, cbIdx) => {
+    const lines = bodyParts[partIdx].content.split('\n');
+    let n = 0;
+    const toggled = lines.map(line => {
+      const m = line.match(/^(\s*[-*] )(\[[ x]\] )(.*)$/i);
+      if (m) {
+        if (n === cbIdx) { n++; return m[1] + (/x/i.test(m[2]) ? '[ ] ' : '[x] ') + m[3]; }
+        n++;
+      }
+      return line;
+    });
+    const np = [...bodyParts]; np[partIdx] = {...np[partIdx], content: toggled.join('\n')};
+    upNote({body: rebuildBody(np)});
   };
 
   /* ── Tab indentation for bullet lines ── */
@@ -1217,7 +1236,7 @@ function NoteEditor({ note, state, update, isMobile }) {
                 </div>;
               })()
             : previewMode
-            ? <MarkdownView key={i} content={part.content} onClick={()=>setPreviewMode(false)}/>
+            ? <MarkdownView key={i} content={part.content} onCheckboxToggle={idx=>handleCheckboxToggle(i,idx)}/>
             : <textarea key={i} className="editor-body" value={part.content}
                 rows={Math.max(5,(part.content.match(/\n/g)||[]).length+2)}
                 onFocus={e=>{ activeTA.current={el:e.target,partIdx:i,pos:e.target.selectionStart}; }}
@@ -1565,13 +1584,18 @@ function TasksView({ state, update, isMobile }) {
   const [selectedTaskIds, setSelectedTaskIds] = useState(new Set());
   const [ctxMenu, setCtxMenu] = useState(null);
   const [tagFilter, setTagFilter] = useState('');
+  const [editTagInput, setEditTagInput] = useState('');
 
   const toggleTask = id => update('tasks', state.tasks.map(t=>t.id===id?{...t,done:!t.done}:t));
   const toggleSub = (tid,sid) => update('tasks', state.tasks.map(t=>t.id===tid?{...t,subtasks:t.subtasks.map(s=>s.id===sid?{...s,done:!s.done}:s)}:t));
   const delTask = id => { update('tasks', state.tasks.filter(t=>t.id!==id)); setSelectedTaskIds(p=>{const s=new Set(p);s.delete(id);return s;}); };
   const toggleTaskSel = (e,id) => { e.stopPropagation(); setSelectedTaskIds(p=>{const s=new Set(p);s.has(id)?s.delete(id):s.add(id);return s;}); };
   const deleteSelectedTasks = () => { update('tasks',state.tasks.filter(t=>!selectedTaskIds.has(t.id))); setSelectedTaskIds(new Set()); };
-  const addTaskTag = (id, tag) => { const c=tag.startsWith('#')?tag:'#'+tag; update('tasks',state.tasks.map(t=>t.id===id&&!(t.tags||[]).includes(c)?{...t,tags:[...(t.tags||[]),c]}:t)); };
+  const addTaskTag = (id, tag) => {
+    const c=tag.startsWith('#')?tag:'#'+tag;
+    update('tasks',state.tasks.map(t=>t.id===id&&!(t.tags||[]).includes(c)?{...t,tags:[...(t.tags||[]),c]}:t));
+    if (!state.tags.includes(c)) update('tags',[...state.tags,c]);
+  };
   const removeTaskTag = (id, tag) => update('tasks',state.tasks.map(t=>t.id===id?{...t,tags:(t.tags||[]).filter(tg=>tg!==tag)}:t));
 
   const addTask = e => {
@@ -1592,7 +1616,10 @@ function TasksView({ state, update, isMobile }) {
     e.preventDefault();
     if(!editing.title.trim()) return;
     update('tasks', state.tasks.map(t=>t.id===editing.id?{...t,title:editing.title,priority:editing.priority,due:editing.due,tags:editing.tags||[]}:t));
+    const newTags = (editing.tags||[]).filter(tg=>!state.tags.includes(tg));
+    if (newTags.length) update('tags',[...state.tags,...newTags]);
     setEditing(null);
+    setEditTagInput('');
   };
   const startEditSub = (tid,s) => setEditingSub({ tid, sid:s.id, title:s.title });
   const saveEditSub = e => {
@@ -1670,11 +1697,13 @@ function TasksView({ state, update, isMobile }) {
                         {tg}<span onClick={()=>setEditing({...editing,tags:(editing.tags||[]).filter(x=>x!==tg)})} style={{cursor:'pointer',marginLeft:3,opacity:.7}}>×</span>
                       </span>
                     ))}
-                    <select onChange={e=>{const tg=e.target.value;if(tg&&!(editing.tags||[]).includes(tg))setEditing({...editing,tags:[...(editing.tags||[]),tg]});e.target.value='';}}
-                      style={{background:'#17171b',border:'1px solid #2a2a31',borderRadius:6,color:'#9a9788',fontSize:11,padding:'3px 6px'}}>
-                      <option value=''>+tag</option>
-                      {state.tags.filter(tg=>!(editing.tags||[]).includes(tg)).map(tg=><option key={tg} value={tg}>{tg}</option>)}
-                    </select>
+                    <form onSubmit={e=>{e.preventDefault();const v=editTagInput.trim();if(!v)return;const c=v.startsWith('#')?v:'#'+v;if(!(editing.tags||[]).includes(c))setEditing({...editing,tags:[...(editing.tags||[]),c]});setEditTagInput('');}} style={{display:'inline-flex'}}>
+                      <input value={editTagInput} onChange={e=>setEditTagInput(e.target.value)} list="task-edit-tag-opts"
+                        placeholder="+tag" style={{background:'#17171b',border:'1px solid #2a2a31',borderRadius:6,color:'#9a9788',fontSize:11,padding:'3px 6px',width:68,outline:'none',fontFamily:'Manrope,sans-serif'}}/>
+                      <datalist id="task-edit-tag-opts">
+                        {state.tags.filter(tg=>!(editing.tags||[]).includes(tg)).map(tg=><option key={tg} value={tg}/>)}
+                      </datalist>
+                    </form>
                     <button className="btn-primary" type="submit" style={{padding:'4px 12px',fontSize:12}}>Save</button>
                     <button type="button" onClick={()=>setEditing(null)} style={{padding:'4px 10px',fontSize:12,background:'none',border:'1px solid #2a2a31',borderRadius:6,color:'#9a9788',cursor:'pointer'}}>Cancel</button>
                   </div>
@@ -1699,11 +1728,15 @@ function TasksView({ state, update, isMobile }) {
                   ))}
                   {/* quick add tag */}
                   {!t.done&&(
-                    <select onChange={e=>{const tg=e.target.value;if(tg)addTaskTag(t.id,tg);e.target.value='';}}
-                      style={{background:'none',border:'none',color:'#3a3a44',fontSize:11,cursor:'pointer',padding:0,outline:'none'}}>
-                      <option value=''>#</option>
-                      {state.tags.filter(tg=>!(t.tags||[]).includes(tg)).map(tg=><option key={tg} value={tg}>{tg}</option>)}
-                    </select>
+                    <form onSubmit={e=>{e.preventDefault();const inp=e.currentTarget.querySelector('input');const v=(inp.value||'').trim();if(v){addTaskTag(t.id,v);inp.value='';inp.blur();}}} style={{display:'inline-flex',alignItems:'center'}}>
+                      <input list={`qtags-${t.id}`} placeholder="#"
+                        style={{width:'1.1em',background:'none',border:'none',color:'#3a3a44',fontSize:11,padding:0,outline:'none',fontFamily:'Manrope,sans-serif',cursor:'pointer',transition:'width 150ms,color 150ms'}}
+                        onFocus={e=>{e.target.style.width='72px';e.target.style.color='#9a9788';}}
+                        onBlur={e=>{e.target.style.width='1.1em';e.target.style.color='#3a3a44';e.target.value='';}}/>
+                      <datalist id={`qtags-${t.id}`}>
+                        {state.tags.filter(tg=>!(t.tags||[]).includes(tg)).map(tg=><option key={tg} value={tg}/>)}
+                      </datalist>
+                    </form>
                   )}
                   <div style={{flex:1}}/>
                   <span style={{width:8,height:8,borderRadius:99,background:PRIO[t.priority||'none'],flexShrink:0}}/>
@@ -2513,6 +2546,19 @@ function KanbanView({ state, update, isMobile }) {
   const moveTask   = (id, colId) => update('tasks', state.tasks.map(t=>t.id===id?{...t,kanbanCol:colId}:t));
   const updateTask = (id, patch) => update('tasks', state.tasks.map(t=>t.id===id?{...t,...patch}:t));
   const deleteTask = id           => { update('tasks', state.tasks.filter(t=>t.id!==id)); if(expandedCard===id) setExpandedCard(null); };
+  const addKanbanTag = (tid, tag) => {
+    const c = tag.startsWith('#') ? tag : '#'+tag;
+    const task = state.tasks.find(t=>t.id===tid);
+    if (!task || (task.tags||[]).includes(c)) return;
+    updateTask(tid, {tags:[...(task.tags||[]),c]});
+    if (!state.tags.includes(c)) update('tags',[...state.tags,c]);
+  };
+  const addKanbanSub = (tid, title) => {
+    if (!title.trim()) return;
+    const task = state.tasks.find(t=>t.id===tid);
+    if (!task) return;
+    updateTask(tid, {subtasks:[...(task.subtasks||[]),{id:uid(),title:title.trim(),done:false}]});
+  };
 
   const addKanbanTask = colId => {
     const title = (quickAdd[colId]||'').trim();
@@ -2669,6 +2715,12 @@ function KanbanView({ state, update, isMobile }) {
                           {(t.tags||[]).map(tg=>(
                             <span key={tg} className="tag" style={{background:`${tagColor(tg)}18`,color:tagColor(tg),fontSize:10,padding:'1px 5px'}}>{tg}</span>
                           ))}
+                          {(t.subtasks||[]).length>0&&(
+                            <span style={{fontSize:10,color: t.subtasks.filter(s=>s.done).length===t.subtasks.length?'#10b981':'#9a9788',display:'flex',alignItems:'center',gap:2}}>
+                              <svg style={{width:9,height:9}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="9 11 12 14 22 4"/></svg>
+                              {t.subtasks.filter(s=>s.done).length}/{t.subtasks.length}
+                            </span>
+                          )}
                           <div style={{flex:1}}/>
                           <select value={t.kanbanCol||'todo'} onClick={e=>e.stopPropagation()} onChange={e=>moveTask(t.id,e.target.value)}
                             style={{background:'#17171b',border:'1px solid #2a2a31',borderRadius:5,color:'#9a9788',fontSize:10,padding:'2px 4px',cursor:'pointer',maxWidth:88}}>
@@ -2697,6 +2749,27 @@ function KanbanView({ state, update, isMobile }) {
                                 placeholder="Context, details, links…" rows={3}
                                 style={{width:'100%',background:'#17171b',border:'1px solid #2a2a31',borderRadius:6,color:'#c9c6b8',fontSize:12,padding:'6px 8px',outline:'none',resize:'vertical',fontFamily:'Manrope,sans-serif',lineHeight:1.5,boxSizing:'border-box'}}/>
                             </div>
+                            {/* subtasks */}
+                            <div>
+                              <div style={{fontSize:10,fontWeight:700,color:'#3a3a44',textTransform:'uppercase',letterSpacing:'.07em',marginBottom:6}}>
+                                Subtasks{(t.subtasks||[]).length>0&&<span style={{color:'#818cf8',marginLeft:5,fontWeight:600}}>{t.subtasks.filter(s=>s.done).length}/{t.subtasks.length}</span>}
+                              </div>
+                              {(t.subtasks||[]).map(s=>(
+                                <div key={s.id} style={{display:'flex',alignItems:'center',gap:6,padding:'3px 0'}}>
+                                  <span className={`tick${s.done?' on':''}`} onClick={()=>updateTask(t.id,{subtasks:t.subtasks.map(sub=>sub.id===s.id?{...sub,done:!sub.done}:sub)})} style={{width:14,height:14,borderRadius:4,flexShrink:0,cursor:'pointer'}}>
+                                    {s.done&&<svg style={{width:8,height:8}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><polyline points="20 6 9 17 4 12"/></svg>}
+                                  </span>
+                                  <span style={{flex:1,fontSize:12,color:s.done?'#3a3a44':'#c9c6b8',textDecoration:s.done?'line-through':'none'}}>{s.title}</span>
+                                </div>
+                              ))}
+                              <form onSubmit={e=>{e.preventDefault();const inp=e.currentTarget.querySelector('input');addKanbanSub(t.id,inp.value);inp.value='';}} style={{marginTop:4}}>
+                                <input placeholder="Add subtask…"
+                                  style={{width:'100%',background:'transparent',border:'none',borderBottom:'1px solid #2a2a31',color:'#9a9788',fontSize:12,padding:'3px 0',outline:'none',fontFamily:'Manrope,sans-serif',boxSizing:'border-box'}}
+                                  onFocus={e=>e.target.style.borderBottomColor='#818cf8'}
+                                  onBlur={e=>e.target.style.borderBottomColor='#2a2a31'}/>
+                              </form>
+                            </div>
+                            {/* tags */}
                             <div>
                               <div style={{fontSize:10,fontWeight:700,color:'#3a3a44',textTransform:'uppercase',letterSpacing:'.07em',marginBottom:5}}>Tags</div>
                               <div style={{display:'flex',flexWrap:'wrap',gap:5,alignItems:'center'}}>
@@ -2705,11 +2778,13 @@ function KanbanView({ state, update, isMobile }) {
                                     {tg}<span onClick={()=>updateTask(t.id,{tags:(t.tags||[]).filter(x=>x!==tg)})} style={{cursor:'pointer',opacity:.7,lineHeight:1}}>×</span>
                                   </span>
                                 ))}
-                                <select onChange={e=>{const tg=e.target.value;if(tg)updateTask(t.id,{tags:[...(t.tags||[]),tg]});e.target.value='';}}
-                                  style={{background:'#17171b',border:'1px solid #2a2a31',borderRadius:5,color:'#9a9788',fontSize:11,padding:'2px 6px',cursor:'pointer'}}>
-                                  <option value=''>+ tag</option>
-                                  {(state.tags||[]).filter(tg=>!(t.tags||[]).includes(tg)).map(tg=><option key={tg} value={tg}>{tg}</option>)}
-                                </select>
+                                <form onSubmit={e=>{e.preventDefault();const inp=e.currentTarget.querySelector('input');addKanbanTag(t.id,inp.value);inp.value='';}} style={{display:'inline-flex'}}>
+                                  <input list={`ktag-${t.id}`} placeholder="+ tag"
+                                    style={{background:'#17171b',border:'1px solid #2a2a31',borderRadius:5,color:'#9a9788',fontSize:11,padding:'2px 6px',width:64,outline:'none',fontFamily:'Manrope,sans-serif'}}/>
+                                  <datalist id={`ktag-${t.id}`}>
+                                    {(state.tags||[]).filter(tg=>!(t.tags||[]).includes(tg)).map(tg=><option key={tg} value={tg}/>)}
+                                  </datalist>
+                                </form>
                               </div>
                             </div>
                             <div>
