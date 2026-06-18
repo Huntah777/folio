@@ -1573,7 +1573,7 @@ function NotesView({ state, update, isMobile }) {
 }
 
 /* ── TasksView ── */
-function TasksView({ state, update, isMobile }) {
+function TasksView({ state, update, isMobile, pom, setPom }) {
   const [newTitle, setNewTitle] = useState('');
   const [newPrio, setNewPrio] = useState('medium');
   const [newDue, setNewDue] = useState('');
@@ -1611,11 +1611,11 @@ function TasksView({ state, update, isMobile }) {
     update('tasks',state.tasks.map(t=>t.id===tid?{...t,subtasks:[...t.subtasks,{id:uid(),title:v,done:false}]}:t));
     setSubInput({...subInput,[tid]:''});
   };
-  const startEdit = t => setEditing({ id:t.id, title:t.title, priority:t.priority||'medium', due:t.due||'', tags:t.tags||[] });
+  const startEdit = t => setEditing({ id:t.id, title:t.title, priority:t.priority||'medium', due:t.due||'', tags:t.tags||[], timeBlock:t.timeBlock??'', pomWork:t.pomWork??25, pomBreak:t.pomBreak??5 });
   const saveEdit = e => {
     e.preventDefault();
     if(!editing.title.trim()) return;
-    update('tasks', state.tasks.map(t=>t.id===editing.id?{...t,title:editing.title,priority:editing.priority,due:editing.due,tags:editing.tags||[]}:t));
+    update('tasks', state.tasks.map(t=>t.id===editing.id?{...t,title:editing.title,priority:editing.priority,due:editing.due,tags:editing.tags||[],timeBlock:editing.timeBlock?Number(editing.timeBlock):null,pomWork:Number(editing.pomWork)||25,pomBreak:Number(editing.pomBreak)||5}:t));
     const newTags = (editing.tags||[]).filter(tg=>!state.tags.includes(tg));
     if (newTags.length) update('tags',[...state.tags,...newTags]);
     setEditing(null);
@@ -1691,6 +1691,15 @@ function TasksView({ state, update, isMobile }) {
                     </select>
                     <input type="date" value={editing.due} onChange={e=>setEditing({...editing,due:e.target.value})}
                       style={{background:'#17171b',border:'1px solid #2a2a31',borderRadius:6,color:'#9a9788',fontSize:12,padding:'3px 7px',maxWidth:130}}/>
+                    <input type="number" min="1" value={editing.timeBlock} onChange={e=>setEditing({...editing,timeBlock:e.target.value})}
+                      placeholder="cap (min)" title="Time cap: max total minutes allowed on this task"
+                      style={{background:'#17171b',border:'1px solid #2a2a31',borderRadius:6,color:'#f59e0b',fontSize:12,padding:'3px 7px',width:78}}/>
+                    <input type="number" min="1" max="120" value={editing.pomWork} onChange={e=>setEditing({...editing,pomWork:e.target.value})}
+                      placeholder="work" title="Pomodoro focus duration (minutes)"
+                      style={{background:'#17171b',border:'1px solid #818cf830',borderRadius:6,color:'#818cf8',fontSize:12,padding:'3px 7px',width:56}}/>
+                    <input type="number" min="1" max="60" value={editing.pomBreak} onChange={e=>setEditing({...editing,pomBreak:e.target.value})}
+                      placeholder="break" title="Pomodoro break duration (minutes)"
+                      style={{background:'#17171b',border:'1px solid #10b98130',borderRadius:6,color:'#10b981',fontSize:12,padding:'3px 7px',width:56}}/>
                     {/* tag management in edit */}
                     {(editing.tags||[]).map(tg=>(
                       <span key={tg} className="tag" style={{background:`${tagColor(tg)}18`,color:tagColor(tg),fontSize:11,padding:'2px 7px'}}>
@@ -1741,10 +1750,29 @@ function TasksView({ state, update, isMobile }) {
                   <div style={{flex:1}}/>
                   <span style={{width:8,height:8,borderRadius:99,background:PRIO[t.priority||'none'],flexShrink:0}}/>
                   {t.due&&<span style={{fontSize:11,color:'#9a9788'}}>{t.due}</span>}
+                  {t.timeBlock&&<span style={{fontSize:10,color:'#f59e0b',display:'flex',alignItems:'center',gap:2,flexShrink:0}}
+                    title={`Time cap: ${t.timeBlock}m${t.timeSpent?` · ${Math.round(t.timeSpent/60)}m spent`:''}`}>
+                    <svg style={{width:9,height:9}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                    {t.timeBlock}m
+                  </span>}
                   <button onClick={()=>setExpanded({...expanded,[t.id]:!expanded[t.id]})} style={{background:'none',border:'none',color:expanded[t.id]?'#818cf8':'#3a3a44',cursor:'pointer',padding:0,display:'flex',alignItems:'center',gap:4}} title={t.subtasks.length>0?`${t.subtasks.filter(s=>s.done).length}/${t.subtasks.length} subtasks`:'Add subtasks'}>
                     <svg style={{width:13,height:13}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="9" y1="6" x2="20" y2="6"/><line x1="9" y1="12" x2="20" y2="12"/><line x1="9" y1="18" x2="20" y2="18"/><circle cx="4" cy="6" r="1.5" fill="currentColor" stroke="none"/><circle cx="4" cy="12" r="1.5" fill="currentColor" stroke="none"/><circle cx="4" cy="18" r="1.5" fill="currentColor" stroke="none"/></svg>
                     {t.subtasks.length>0&&<span style={{fontSize:10,color:expanded[t.id]?'#818cf8':'#3a3a44'}}>{t.subtasks.filter(s=>s.done).length}/{t.subtasks.length}</span>}
                   </button>
+                  {!t.done&&(
+                    <button onClick={()=>{
+                      if(pom?.taskId===t.id) setPom(p=>p?{...p,paused:!p.paused}:p);
+                      else setPom({taskId:t.id,phase:'work',remaining:(t.pomWork??25)*60,
+                        sessionsDone:0,workSecs:(t.pomWork??25)*60,breakSecs:(t.pomBreak??5)*60,paused:false});
+                    }} className="del-btn"
+                      title={pom?.taskId===t.id?(pom.paused?'Resume pomodoro':'Pause pomodoro'):'Start pomodoro'}
+                      style={{color:pom?.taskId===t.id?(pom.paused?'#f59e0b':'#10b981'):'#3a3a44'}}>
+                      {pom?.taskId===t.id&&!pom.paused
+                        ? <svg style={{width:13,height:13}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+                        : <svg style={{width:13,height:13}} viewBox="0 0 24 24" fill="currentColor" stroke="none"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                      }
+                    </button>
+                  )}
                   {!t.done&&(
                     <button onClick={()=>startEdit(t)} className="del-btn" style={{color:'#3a3a44'}} title="Edit task">
                       <svg style={{width:13,height:13}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
@@ -3552,6 +3580,173 @@ function SetupModal({ onClose, onConnected, onSync, syncStatus }) {
   );
 }
 
+/* ── Pomodoro ─────────────────────────────────────────────────────────────── */
+
+function beep(freq = 880, dur = 0.4) {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const o = ctx.createOscillator(); const g = ctx.createGain();
+    o.connect(g); g.connect(ctx.destination);
+    o.type = 'sine'; o.frequency.value = freq;
+    g.gain.setValueAtTime(0.25, ctx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + dur);
+    o.start(ctx.currentTime); o.stop(ctx.currentTime + dur);
+  } catch(e) {}
+}
+
+function PomodoroWidget({ pom, setPom, tasks, update, isMobile }) {
+  const task = tasks.find(t => t.id === pom?.taskId);
+
+  /* countdown */
+  useEffect(() => {
+    if (!pom || pom.paused) return;
+    const id = setInterval(() => {
+      setPom(prev => (!prev || prev.paused) ? prev : { ...prev, remaining: Math.max(0, prev.remaining - 1) });
+    }, 1000);
+    return () => clearInterval(id);
+  }, [pom?.paused, pom?.taskId, pom?.phase]);
+
+  /* phase transition when remaining reaches 0 */
+  useEffect(() => {
+    if (!pom || pom.remaining !== 0) return;
+    if (pom.phase === 'work') {
+      beep(880, 0.4);
+      if (task) {
+        const newSpent = (task.timeSpent || 0) + pom.workSecs;
+        update('tasks', tasks.map(t => t.id === task.id
+          ? { ...t, pomDone: (t.pomDone || 0) + 1, timeSpent: newSpent } : t));
+        if (task.timeBlock && newSpent / 60 >= task.timeBlock) setTimeout(() => beep(440, 0.7), 600);
+      }
+      setPom(prev => prev ? { ...prev, phase: 'break', remaining: prev.breakSecs, sessionsDone: prev.sessionsDone + 1 } : prev);
+    } else {
+      beep(660, 0.3);
+      setPom(prev => prev ? { ...prev, phase: 'work', remaining: prev.workSecs } : prev);
+    }
+  }, [pom?.remaining, pom?.phase]);
+
+  if (!pom) return null;
+
+  const fmt = s => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
+  const isWork = pom.phase === 'work';
+  const total = isWork ? pom.workSecs : pom.breakSecs;
+  const progress = total > 0 ? (total - pom.remaining) / total : 0;
+  const accent = isWork ? '#818cf8' : '#10b981';
+
+  const partialSecs = isWork ? (pom.workSecs - pom.remaining) : 0;
+  const totalSpentSecs = (task?.timeSpent || 0) + partialSecs;
+  const totalSpentMins = totalSpentSecs / 60;
+  const hasTimeBlock = !!task?.timeBlock;
+  const capRatio = hasTimeBlock ? Math.min(1, totalSpentMins / task.timeBlock) : 0;
+  const overCap = hasTimeBlock && totalSpentMins >= task.timeBlock;
+
+  const doStop = () => {
+    if (pom.phase === 'work' && task) {
+      const partial = pom.workSecs - pom.remaining;
+      if (partial > 30) update('tasks', tasks.map(t => t.id === task.id
+        ? { ...t, timeSpent: (t.timeSpent || 0) + partial } : t));
+    }
+    setPom(null);
+  };
+
+  const doSkip = () => {
+    if (pom.phase === 'work') {
+      const partial = pom.workSecs - pom.remaining;
+      if (task && partial > 30) update('tasks', tasks.map(t => t.id === task.id
+        ? { ...t, pomDone: (t.pomDone || 0) + 1, timeSpent: (t.timeSpent || 0) + partial } : t));
+      beep(880, 0.3);
+      setPom(prev => prev ? { ...prev, phase: 'break', remaining: prev.breakSecs, sessionsDone: prev.sessionsDone + 1 } : prev);
+    } else {
+      setPom(prev => prev ? { ...prev, phase: 'work', remaining: prev.workSecs } : prev);
+    }
+  };
+
+  const doTogglePause = () => setPom(prev => prev ? { ...prev, paused: !prev.paused } : prev);
+  const r = 26, circ = 2 * Math.PI * r;
+  const dots = Math.min(pom.sessionsDone, 8);
+
+  return (
+    <div style={{position:'fixed',bottom:isMobile?72:24,right:16,
+      background:'#131317',border:`1px solid ${accent}30`,borderRadius:16,
+      padding:'14px 16px',width:220,
+      boxShadow:`0 8px 32px rgba(0,0,0,.6),0 0 0 1px ${accent}18`,
+      zIndex:9000,fontFamily:'Manrope,sans-serif',userSelect:'none'}}>
+
+      {/* header row */}
+      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:10}}>
+        <span style={{fontSize:9,fontWeight:700,letterSpacing:'.12em',textTransform:'uppercase',
+          color:accent,background:`${accent}18`,padding:'2px 8px',borderRadius:99}}>
+          {isWork?'Focus':'Break'}
+        </span>
+        <div style={{display:'flex',alignItems:'center',gap:3}}>
+          {Array.from({length:dots},(_,i)=>(
+            <span key={i} style={{width:5,height:5,borderRadius:99,background:'#818cf8'}}/>
+          ))}
+          <button onClick={doStop} style={{background:'none',border:'none',color:'#3a3a44',
+            cursor:'pointer',padding:'2px',lineHeight:1,marginLeft:6}}
+            onMouseEnter={e=>e.currentTarget.style.color='#f43f5e'}
+            onMouseLeave={e=>e.currentTarget.style.color='#3a3a44'} title="End session">
+            <svg style={{width:12,height:12}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+              <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      {/* task name */}
+      <div style={{fontSize:12,color:'#f4f3ee',fontWeight:600,marginBottom:12,
+        overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}} title={task?.title}>
+        {task?.title ?? '—'}
+      </div>
+
+      {/* progress ring */}
+      <div style={{display:'flex',alignItems:'center',justifyContent:'center',marginBottom:12}}>
+        <svg width="64" height="64" viewBox="0 0 64 64">
+          <circle cx="32" cy="32" r={r} fill="none" stroke="#1f1f24" strokeWidth="5"/>
+          <circle cx="32" cy="32" r={r} fill="none" stroke={accent} strokeWidth="5"
+            strokeDasharray={circ} strokeDashoffset={circ*(1-progress)}
+            strokeLinecap="round" transform="rotate(-90 32 32)"
+            style={{transition:'stroke-dashoffset .9s linear'}}/>
+          <text x="32" y="37" textAnchor="middle" fill="#f4f3ee" fontSize="13"
+            fontFamily="Manrope,sans-serif" fontWeight="700">{fmt(pom.remaining)}</text>
+        </svg>
+      </div>
+
+      {/* controls */}
+      <div style={{display:'flex',gap:8,justifyContent:'center',marginBottom:hasTimeBlock?12:0}}>
+        <button onClick={doTogglePause}
+          style={{flex:1,background:`${accent}15`,border:`1px solid ${accent}35`,
+            borderRadius:8,color:accent,fontSize:12,padding:'7px 0',
+            cursor:'pointer',fontFamily:'Manrope,sans-serif',fontWeight:600}}>
+          {pom.paused?'▶ Resume':'⏸ Pause'}
+        </button>
+        <button onClick={doSkip}
+          style={{background:'#17171b',border:'1px solid #2a2a31',borderRadius:8,
+            color:'#9a9788',fontSize:12,padding:'7px 10px',cursor:'pointer',
+            fontFamily:'Manrope,sans-serif'}} title={isWork?'Skip to break':'Skip to focus'}>
+          ⏭
+        </button>
+      </div>
+
+      {/* time cap bar */}
+      {hasTimeBlock&&(
+        <div>
+          <div style={{display:'flex',justifyContent:'space-between',fontSize:10,
+            marginBottom:3,color:overCap?'#f43f5e':'#9a9788'}}>
+            <span>Time cap</span>
+            <span>{Math.round(totalSpentMins)}m / {task.timeBlock}m{overCap&&' ⚠'}</span>
+          </div>
+          <div style={{height:3,borderRadius:99,background:'#1f1f24',overflow:'hidden'}}>
+            <div style={{height:'100%',borderRadius:99,
+              width:`${Math.round(capRatio*100)}%`,
+              background:overCap?'#f43f5e':capRatio>0.8?'#f59e0b':'#10b981',
+              transition:'width 1s linear'}}/>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ── App ── */
 function App() {
   const [state, setStateRaw]   = useState(null);
@@ -3567,6 +3762,7 @@ function App() {
   const lastSyncRef  = useRef(0);
   stateRef.current = state;
   const [installBanner, setInstallBanner] = useState(!!window._installPrompt);
+  const [pom, setPom] = useState(null);
 
   useEffect(() => {
     const handler = () => setIsMobile(window.innerWidth <= 768);
@@ -3810,12 +4006,13 @@ function App() {
       <Sidebar state={state} update={update} syncStatus={syncStatus} onSetup={()=>setSetupOpen(true)}
         onSync={syncNow} collapsed={!sidebarOpen} onToggle={()=>setSidebarOpen(v=>!v)} onSalah={()=>setSalahOpen(true)}/>
       <div className="main">
-        <View state={state} update={update} isMobile={isMobile}/>
+        <View state={state} update={update} isMobile={isMobile} pom={pom} setPom={setPom}/>
       </div>
       <MobileNav state={state} update={update} syncStatus={syncStatus} onSetup={()=>setSetupOpen(true)} onSync={syncNow} onSalah={()=>setSalahOpen(true)}/>
       {setupOpen && <SetupModal onClose={()=>setSetupOpen(false)} onConnected={handleSyncConnected} onSync={syncNow} syncStatus={syncStatus}/>}
       {salahOpen && <SalahModal state={state} update={update} onClose={()=>setSalahOpen(false)}/>}
       {installBanner && <InstallBanner/>}
+      <PomodoroWidget pom={pom} setPom={setPom} tasks={state.tasks} update={update} isMobile={isMobile}/>
     </>
   );
 }
