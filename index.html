@@ -2387,7 +2387,7 @@ function TodayView({ state, update, isMobile }) {
               {m.attendees&&<div style={{fontSize:11.5,color:'#9a9788',wordBreak:'break-word'}}>{m.attendees}</div>}
             </div>
           ))}
-          <button onClick={()=>update('ui',{...state.ui,view:'calendar'})}
+          <button onClick={()=>update('ui',{...state.ui,view:'calendar',calDate:todayKey()})}
             style={{marginTop:12,background:'none',border:'none',color:'#10b981',fontSize:12,cursor:'pointer',padding:0}}>Open calendar →</button>
         </div>
 
@@ -2923,7 +2923,7 @@ function Sidebar({ state, update, syncStatus, onSetup, onSync, collapsed, onTogg
   const [renameVal, setRenameVal] = useState('');
   const [hoveredFolder, setHoveredFolder] = useState(null);
 
-  const nav = v => update('ui',{...state.ui,view:v,folderId:null});
+  const nav = v => update('ui',{...state.ui,view:v,folderId:null,...(v==='calendar'?{calDate:todayKey()}:{})});
   const navFolder = fid => update('ui',{...state.ui,view:'notes',folderId:fid});
 
   const newNote = () => {
@@ -3161,7 +3161,7 @@ function Sidebar({ state, update, syncStatus, onSetup, onSync, collapsed, onTogg
 /* ── MobileNav ── */
 function MobileNav({ state, update, syncStatus, onSetup, onSync, onSalah }) {
   const { view } = state.ui;
-  const nav = v => update('ui',{...state.ui,view:v});
+  const nav = v => update('ui',{...state.ui,view:v,...(v==='calendar'?{calDate:todayKey()}:{})});
   const pending = state.tasks.filter(t=>!t.done&&t.due===todayKey()).length;
   const spinning = syncStatus==='syncing' || syncStatus==='saving';
   const dotColor =
