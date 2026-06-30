@@ -2715,7 +2715,9 @@ function KanbanView({ state, update, isMobile }) {
         <h1 style={{fontFamily:'Fraunces,serif',fontSize:isMobile?22:26,fontWeight:600,color:'#f4f3ee',margin:0}}>Kanban</h1>
       </div>
 
-      <div style={{flex:1,display:'flex',gap:14,overflowX:'auto',overflowY:'hidden',padding:`0 ${isMobile?14:32}px 24px`,alignItems:'flex-start'}} className="scrollbar">
+      <div style={{flex:1,display:'flex',flexDirection:isMobile?'column':'row',gap:14,
+        overflowX:isMobile?'hidden':'auto',overflowY:isMobile?'auto':'hidden',
+        padding:`0 ${isMobile?14:32}px 24px`,alignItems:isMobile?'stretch':'flex-start'}} className="scrollbar">
         {cols.map(col => {
           const tasks = state.tasks.filter(t=>(t.kanbanCol||'todo')===col.id);
           const collapsed = collapsedCols.has(col.id);
@@ -2726,7 +2728,7 @@ function KanbanView({ state, update, isMobile }) {
             onDrop: e => onColDrop(e, col.id),
           };
           return (
-            <div key={col.id} style={{flexShrink:0,width:collapsed?46:272,display:'flex',flexDirection:'column',maxHeight:'100%',transition:'width 180ms'}}>
+            <div key={col.id} style={{flexShrink:0,width:isMobile?'100%':(collapsed?46:272),display:'flex',flexDirection:'column',maxHeight:isMobile?'none':'100%',marginBottom:isMobile?16:0,transition:'width 180ms'}}>
               {/* header */}
               {renamingCol===col.id ? (
                 <form onSubmit={saveRenameCol} style={{display:'flex',gap:4,marginBottom:2}}>
@@ -2738,9 +2740,12 @@ function KanbanView({ state, update, isMobile }) {
               ) : collapsed ? (
                 /* collapsed — still droppable */
                 <div {...dropHandlers} onClick={()=>toggleCollapse(col.id)}
-                  style={{background: isOver?`${col.color}15`:'#131317',border:`1px solid ${isOver?col.color:'#1f1f24'}`,borderRadius:8,padding:'10px 0',cursor:'pointer',display:'flex',flexDirection:'column',alignItems:'center',gap:6,marginBottom:2,transition:'all 120ms'}}>
-                  <div style={{width:8,height:8,borderRadius:99,background:col.color}}/>
-                  <span style={{fontSize:10,fontWeight:700,color:'#9a9788',writingMode:'vertical-rl',letterSpacing:'.06em'}}>{col.name}</span>
+                  style={{background: isOver?`${col.color}15`:'#131317',border:`1px solid ${isOver?col.color:'#1f1f24'}`,borderRadius:8,
+                    padding:isMobile?'10px 12px':'10px 0',cursor:'pointer',
+                    display:'flex',flexDirection:isMobile?'row':'column',alignItems:'center',
+                    justifyContent:isMobile?'flex-start':'center',gap:isMobile?8:6,marginBottom:2,transition:'all 120ms'}}>
+                  <div style={{width:8,height:8,borderRadius:99,background:col.color,flexShrink:0}}/>
+                  <span style={{fontSize:isMobile?12.5:10,fontWeight:700,color:'#9a9788',writingMode:isMobile?'horizontal-tb':'vertical-rl',letterSpacing:'.06em',flex:isMobile?1:undefined}}>{col.name}</span>
                   <span style={{fontSize:10,color:'#818cf8',fontWeight:700}}>{tasks.length}</span>
                 </div>
               ) : (
@@ -2761,7 +2766,7 @@ function KanbanView({ state, update, isMobile }) {
               {/* cards drop zone */}
               {!collapsed && (
                 <div {...dropHandlers}
-                  style={{flex:1,overflowY:'auto',background:isOver?`${col.color}06`:'#0e0e12',border:`1px solid ${isOver?col.color:'#1f1f24'}`,borderTop:'none',padding:'6px',display:'flex',flexDirection:'column',gap:5,minHeight:80,transition:'background 120ms,border-color 120ms'}} className="scrollbar">
+                  style={{flex:1,overflowY:isMobile?'visible':'auto',background:isOver?`${col.color}06`:'#0e0e12',border:`1px solid ${isOver?col.color:'#1f1f24'}`,borderTop:'none',padding:'6px',display:'flex',flexDirection:'column',gap:5,minHeight:isMobile?40:80,transition:'background 120ms,border-color 120ms'}} className={isMobile?undefined:'scrollbar'}>
                   {tasks.length===0 && (
                     <div style={{color: isOver?col.color:'#3a3a44',fontSize:12,padding:'20px 4px',textAlign:'center',transition:'color 120ms',border: isOver?`1px dashed ${col.color}40`:'1px dashed transparent',borderRadius:8}}>
                       {isOver ? 'Drop here' : 'No tasks'}
