@@ -140,6 +140,7 @@ input:focus,textarea:focus{outline:none}
 @keyframes fadeUp{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:none}}
 .fadeUp{animation:fadeUp 220ms ease both}
 @keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
+@keyframes ping{0%{transform:scale(1);opacity:.55}75%,100%{transform:scale(2.1);opacity:0}}
 .divider{border-top:1px solid #1f1f24}
 /* resize handle */
 .resize-handle{width:5px;cursor:col-resize;flex-shrink:0;background:transparent;transition:background 150ms}
@@ -1670,12 +1671,12 @@ function TasksView({ state, update, isMobile, pom, setPom }) {
 
       {/* add task */}
       <form onSubmit={addTask} style={{display:'flex',flexWrap:'wrap',gap:8,marginBottom:24,background:'#131317',border:'1px solid #1f1f24',borderRadius:10,padding:'10px 14px'}}>
-        <input className="input" value={newTitle} onChange={e=>setNewTitle(e.target.value)} placeholder="New task…" style={{flex:'1 1 160px',background:'transparent',border:'none',padding:0,fontSize:14}}/>
-        <div style={{display:'flex',gap:8,flexShrink:0,flexWrap:'wrap'}}>
+        <input className="input" value={newTitle} onChange={e=>setNewTitle(e.target.value)} placeholder="New task…" style={{flex:'1 1 160px',minWidth:0,background:'transparent',border:'none',padding:0,fontSize:14}}/>
+        <div style={{display:'flex',gap:8,flexShrink:0,flexWrap:'wrap',...(isMobile?{width:'100%'}:{})}}>
           <select value={newPrio} onChange={e=>setNewPrio(e.target.value)} style={{background:'#17171b',border:'1px solid #2a2a31',borderRadius:6,color:PRIO[newPrio],fontSize:12,padding:'4px 8px'}}>
             {Object.keys(PRIO).map(p=><option key={p} value={p}>{p}</option>)}
           </select>
-          <input type="date" value={newDue} onChange={e=>setNewDue(e.target.value)} style={{background:'#17171b',border:'1px solid #2a2a31',borderRadius:6,color:'#9a9788',fontSize:12,padding:'4px 8px',maxWidth:130}}/>
+          <input type="date" value={newDue} onChange={e=>setNewDue(e.target.value)} style={{background:'#17171b',border:'1px solid #2a2a31',borderRadius:6,color:'#9a9788',fontSize:12,padding:'4px 8px',maxWidth:isMobile?'100%':130}}/>
           <button className="btn-primary" type="submit" style={{padding:'6px 14px',fontSize:13,flexShrink:0}}>Add</button>
           {(newTitle||newDue)&&(
             <button type="button" onClick={cancelAdd} style={{padding:'6px 10px',fontSize:13,flexShrink:0,background:'none',border:'1px solid #2a2a31',borderRadius:6,color:'#9a9788',cursor:'pointer'}}>Cancel</button>
@@ -1692,14 +1693,14 @@ function TasksView({ state, update, isMobile, pom, setPom }) {
               {editing&&editing.id===t.id ? (
                 <form onSubmit={saveEdit} style={{display:'flex',flexWrap:'wrap',alignItems:'center',gap:8,padding:'8px 12px',borderRadius:8,background:'#131317',border:'1px solid #818cf8'}}>
                   <input className="input" autoFocus value={editing.title} onChange={e=>setEditing({...editing,title:e.target.value})}
-                    style={{flex:'1 1 140px',background:'transparent',border:'none',padding:0,fontSize:13.5,color:'#f4f3ee'}}/>
-                  <div style={{display:'flex',gap:6,flexShrink:0,flexWrap:'wrap'}}>
+                    style={{flex:'1 1 140px',minWidth:0,background:'transparent',border:'none',padding:0,fontSize:13.5,color:'#f4f3ee'}}/>
+                  <div style={{display:'flex',gap:6,flexShrink:0,flexWrap:'wrap',...(isMobile?{width:'100%'}:{})}}>
                     <select value={editing.priority} onChange={e=>setEditing({...editing,priority:e.target.value})}
                       style={{background:'#17171b',border:'1px solid #2a2a31',borderRadius:6,color:PRIO[editing.priority],fontSize:12,padding:'3px 7px'}}>
                       {Object.keys(PRIO).map(p=><option key={p} value={p}>{p}</option>)}
                     </select>
                     <input type="date" value={editing.due} onChange={e=>setEditing({...editing,due:e.target.value})}
-                      style={{background:'#17171b',border:'1px solid #2a2a31',borderRadius:6,color:'#9a9788',fontSize:12,padding:'3px 7px',maxWidth:130}}/>
+                      style={{background:'#17171b',border:'1px solid #2a2a31',borderRadius:6,color:'#9a9788',fontSize:12,padding:'3px 7px',maxWidth:isMobile?'100%':130}}/>
                     <input type="number" min="1" value={editing.timeBlock} onChange={e=>setEditing({...editing,timeBlock:e.target.value})}
                       placeholder="cap (min)" title="Time cap: max total minutes allowed on this task"
                       style={{background:'#17171b',border:'1px solid #2a2a31',borderRadius:6,color:'#f59e0b',fontSize:12,padding:'3px 7px',width:78}}/>
@@ -1799,7 +1800,7 @@ function TasksView({ state, update, isMobile, pom, setPom }) {
                       {editingSub&&editingSub.tid===t.id&&editingSub.sid===s.id ? (
                         <form onSubmit={saveEditSub} style={{display:'flex',alignItems:'center',gap:6,padding:'4px 8px',borderRadius:6,border:'1px solid #818cf8',marginBottom:2}}>
                           <input autoFocus value={editingSub.title} onChange={e=>setEditingSub({...editingSub,title:e.target.value})}
-                            style={{flex:1,background:'transparent',border:'none',color:'#f4f3ee',fontSize:12.5,padding:0,outline:'none'}}/>
+                            style={{flex:1,minWidth:0,background:'transparent',border:'none',color:'#f4f3ee',fontSize:12.5,padding:0,outline:'none'}}/>
                           <button type="submit" style={{background:'none',border:'none',color:'#818cf8',fontSize:11,cursor:'pointer'}}>save</button>
                           <button type="button" onClick={()=>setEditingSub(null)} style={{background:'none',border:'none',color:'#9a9788',fontSize:11,cursor:'pointer'}}>cancel</button>
                         </form>
@@ -1823,7 +1824,7 @@ function TasksView({ state, update, isMobile, pom, setPom }) {
                   ))}
                   <form onSubmit={e=>{e.preventDefault();addSub(t.id);}} style={{display:'flex',gap:6,marginTop:4}}>
                     <input value={subInput[t.id]||''} onChange={e=>setSubInput({...subInput,[t.id]:e.target.value})}
-                      placeholder="Add subtask…" style={{background:'transparent',border:'none',borderBottom:'1px solid #2a2a31',color:'#9a9788',fontSize:12,padding:'3px 0',outline:'none',flex:1}}/>
+                      placeholder="Add subtask…" style={{background:'transparent',border:'none',borderBottom:'1px solid #2a2a31',color:'#9a9788',fontSize:12,padding:'3px 0',outline:'none',flex:1,minWidth:0}}/>
                     <button type="submit" style={{background:'none',border:'none',color:'#818cf8',fontSize:12,cursor:'pointer'}}>add</button>
                   </form>
                 </div>
@@ -1901,6 +1902,7 @@ function CalendarView({ state, update, isMobile }) {
   const [editForm,   setEditForm]   = useState(BLANK_FORM);
   const [editScope,  setEditScope]  = useState('all');
   const [confirmDel, setConfirmDel] = useState(null);
+  const [nowTick, setNowTick] = useState(Date.now());
 
   useEffect(() => {
     if (notifPerm !== 'granted' || !('serviceWorker' in navigator)) {
@@ -1932,6 +1934,13 @@ function CalendarView({ state, update, isMobile }) {
   const firstDay = new Date(year,month,1).getDay();
   const daysInMonth = new Date(year,month+1,0).getDate();
   const today = todayKey();
+  const isToday = selDate === today;
+
+  useEffect(() => {
+    if (!isToday) return;
+    const id = setInterval(() => setNowTick(Date.now()), 30000);
+    return () => clearInterval(id);
+  }, [isToday]);
 
   const cells = [];
   for(let i=0;i<firstDay;i++) cells.push(null);
@@ -2129,11 +2138,46 @@ function CalendarView({ state, update, isMobile }) {
               tItems.push({type:'meeting',key:m.id,mins:h*60+mi,meeting:m});
             });
             tItems.sort((a,b)=>a.mins-b.mins);
+            let nowMins=null;
+            if(isToday){
+              const d=new Date(nowTick);
+              nowMins=d.getHours()*60+d.getMinutes();
+              tItems.push({type:'now',key:'now',mins:nowMins});
+              tItems.sort((a,b)=>a.mins-b.mins);
+            }
             if(!tItems.length)return <div style={{color:'#3a3a44',fontSize:12,padding:'8px 4px'}}>Nothing scheduled.</div>;
             return (
               <div style={{position:'relative',paddingLeft:4}}>
                 <div style={{position:'absolute',left:15,top:14,bottom:14,width:1,background:'#1f1f24',zIndex:0}}/>
-                {tItems.map(item=>{
+                {tItems.map((item,idx)=>{
+                  if(item.type==='now'){
+                    const upcoming=tItems.slice(idx+1).find(x=>x.type!=='now');
+                    let countdown=null;
+                    if(upcoming){
+                      const diff=upcoming.mins-item.mins;
+                      const h=Math.floor(diff/60), mn=diff%60;
+                      const label=upcoming.type==='prayer'?upcoming.label:upcoming.meeting.title;
+                      countdown=`${h>0?h+'h ':''}${mn}m until ${label}`;
+                    }
+                    const nowLabel=new Date(nowTick).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
+                    return(
+                      <div key="now" style={{display:'flex',alignItems:'center',gap:10,marginBottom:12,position:'relative'}}>
+                        <div style={{width:22,height:22,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,zIndex:1,position:'relative'}}>
+                          <span style={{position:'absolute',width:14,height:14,borderRadius:'50%',background:'#f43f5e',animation:'ping 1.8s cubic-bezier(0,0,.2,1) infinite'}}/>
+                          <span style={{width:9,height:9,borderRadius:'50%',background:'#f43f5e',position:'relative',boxShadow:'0 0 0 3px #131317'}}/>
+                        </div>
+                        <div style={{flex:1,minWidth:0}}>
+                          <div style={{display:'flex',alignItems:'center',gap:7,flexWrap:'wrap'}}>
+                            <span style={{fontSize:11,fontWeight:700,color:'#f43f5e',fontFamily:'"JetBrains Mono",monospace'}}>{nowLabel}</span>
+                            <span style={{fontSize:11.5,color:'#f43f5e',fontWeight:700,textTransform:'uppercase',letterSpacing:'.04em'}}>Now</span>
+                          </div>
+                          <div style={{fontSize:11,color:countdown?'#9a9788':'#3a3a44',marginTop:1}}>
+                            {countdown||'Nothing else scheduled today'}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  }
                   if(item.type==='prayer')return(
                     <div key={item.key} style={{display:'flex',alignItems:'center',gap:10,marginBottom:9,position:'relative'}}>
                       <div style={{width:22,height:22,borderRadius:'50%',background:'rgba(245,158,11,0.14)',border:'1.5px solid rgba(245,158,11,0.42)',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,zIndex:1}}>
