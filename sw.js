@@ -86,7 +86,31 @@ self.addEventListener('fetch', (event) => {
 // Calendar meeting alerts — page posts SCHEDULE_NOTIFICATIONS with a timetable
 const pendingTimers = new Map();
 
+// Pomodoro phase-end alert — independent single timer so it never clobbers
+// (or gets clobbered by) the meeting/salah schedule above
+let pomodoroTimer = null;
+
 self.addEventListener('message', (event) => {
+  if (event.data?.type === 'SCHEDULE_POMODORO') {
+    if (pomodoroTimer) { clearTimeout(pomodoroTimer); pomodoroTimer = null; }
+    const n = event.data.notification;
+    if (!n) return;
+    const delay = n.fireAt - Date.now();
+    if (delay <= 0 || delay > 4 * 60 * 60 * 1000) return; // sanity cap: 4h
+    pomodoroTimer = setTimeout(() => {
+      self.registration.showNotification(n.title, {
+        body:     n.body,
+        icon:     '/icons/icon-192.png',
+        badge:    '/icons/icon-192.png',
+        tag:      'pomodoro',
+        renotify: true,
+        data:     { url: '/' },
+      });
+      pomodoroTimer = null;
+    }, delay);
+    return;
+  }
+
   if (event.data?.type !== 'SCHEDULE_NOTIFICATIONS') return;
   pendingTimers.forEach(t => clearTimeout(t));
   pendingTimers.clear();

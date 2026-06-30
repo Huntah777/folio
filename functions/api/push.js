@@ -1,7 +1,10 @@
 /* ============================================================
    Folio — /api/push
    ------------------------------------------------------------
-   POST   /api/push  → upsert push subscription + notification schedule
+   POST   /api/push  → upsert push subscription + notification schedule (full replace)
+   PATCH  /api/push  → merge a single one-off notification (e.g. pomodoro)
+                       into the existing schedule without rebuilding it —
+                       avoids re-fetching prayer times for an unrelated change
    DELETE /api/push  → remove subscription (unsubscribe)
 
    Bindings: env.DB (D1), env.SYNC_TOKEN
@@ -32,6 +35,39 @@ export async function onRequest({ request, env }) {
       if (!subscription?.endpoint) return json({ error: 'Missing subscription' }, 400);
 
       const arr = Array.isArray(schedule) ? schedule : [];
+      const nextFireAt = arr.length ? Math.min(...arr.map(n => n.fireAt)) : 0;
+
+      await env.DB.prepare(
+        `INSERT INTO push_subs (id, subscription, schedule, next_fire_at, updated_at) VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE
+           SET subscription  = excluded.subscription,
+               schedule      = excluded.schedule,
+               next_fire_at  = excluded.next_fire_at,
+               updated_at    = excluded.updated_at`,
+      ).bind(
+        subscription.endpoint,
+        JSON.stringify(subscription),
+        JSON.stringify(arr),
+        nextFireAt,
+        Date.now(),
+      ).run();
+
+      return json({ ok: true });
+    }
+
+    if (request.method === 'PATCH') {
+      const { subscription, notification } = await request.json();
+      if (!subscription?.endpoint) return json({ error: 'Missing subscription' }, 400);
+
+      const row = await env.DB.prepare(
+        'SELECT schedule FROM push_subs WHERE id = ?'
+      ).bind(subscription.endpoint).first();
+
+      let arr = [];
+      if (row?.schedule) { try { arr = JSON.parse(row.schedule) || []; } catch {} }
+      arr = arr.filter(n => n.id !== (notification?.id || 'pomodoro'));
+      if (notification) arr.push(notification);
+
       const nextFireAt = arr.length ? Math.min(...arr.map(n => n.fireAt)) : 0;
 
       await env.DB.prepare(
