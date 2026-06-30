@@ -1641,11 +1641,20 @@ function TasksView({ state, update, isMobile, pom, setPom }) {
     { label:'No date',  items: byPrio(state.tasks.filter(t=>!t.done&&!t.due&&taskFilter(t))) },
     { label:'Done',     items: state.tasks.filter(t=>t.done&&taskFilter(t)) },
   ];
+  const visibleIds = groups.flatMap(g=>g.items.map(t=>t.id));
+  const allVisibleSelected = visibleIds.length>0 && visibleIds.every(id=>selectedTaskIds.has(id));
+  const toggleSelectAll = () => setSelectedTaskIds(allVisibleSelected ? new Set() : new Set(visibleIds));
 
   return (
     <div style={{flex:1,overflow:'auto',padding:isMobile?'20px 14px':'28px 32px'}} className="scrollbar">
       <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:allTaskTags.length?10:20}}>
         <h1 style={{fontFamily:'Fraunces,serif',fontSize:isMobile?22:26,fontWeight:600}}>Tasks</h1>
+        {visibleIds.length>0&&(
+          <button onClick={toggleSelectAll}
+            style={{background:'none',border:'1px solid #1f1f24',borderRadius:7,color:allVisibleSelected?'#818cf8':'#9a9788',padding:'5px 10px',cursor:'pointer',fontSize:isMobile?11:12,flexShrink:0}}>
+            {allVisibleSelected?'Deselect all':'Select all'}
+          </button>
+        )}
       </div>
       {allTaskTags.length>0&&(
         <div style={{display:'flex',gap:4,flexWrap:'wrap',marginBottom:18}}>
