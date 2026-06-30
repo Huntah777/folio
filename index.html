@@ -1772,10 +1772,12 @@ function TasksView({ state, update, isMobile, pom, setPom }) {
                   {!t.done&&(
                     <button onClick={()=>{
                       if(pom?.taskId===t.id) setPom(p=>p?{...p,paused:!p.paused}:p);
-                      else setPom({taskId:t.id,phase:'work',remaining:(t.pomWork??25)*60,
+                      else if(t.timeBlock) setPom({taskId:t.id,mode:'cap',phase:'work',remaining:t.timeBlock*60,
+                        sessionsDone:0,workSecs:t.timeBlock*60,breakSecs:0,paused:false});
+                      else setPom({taskId:t.id,mode:'pomodoro',phase:'work',remaining:(t.pomWork??25)*60,
                         sessionsDone:0,workSecs:(t.pomWork??25)*60,breakSecs:(t.pomBreak??5)*60,paused:false});
                     }} className="del-btn"
-                      title={pom?.taskId===t.id?(pom.paused?'Resume pomodoro':'Pause pomodoro'):'Start pomodoro'}
+                      title={pom?.taskId===t.id?(pom.paused?'Resume timer':'Pause timer'):(t.timeBlock?`Start ${t.timeBlock}m cap timer`:'Start pomodoro')}
                       style={{color:pom?.taskId===t.id?(pom.paused?'#f59e0b':'#10b981'):'#3a3a44'}}>
                       {pom?.taskId===t.id&&!pom.paused
                         ? <svg style={{width:13,height:13}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
@@ -3662,6 +3664,14 @@ function PomodoroWidget({ pom, setPom, tasks, update, isMobile }) {
   /* phase transition when remaining reaches 0 */
   useEffect(() => {
     if (!pom || pom.remaining !== 0) return;
+    if (pom.mode === 'cap') {
+      beep(440, 0.8);
+      setTimeout(() => beep(440, 0.8), 500);
+      if (task) update('tasks', tasks.map(t => t.id === task.id
+        ? { ...t, timeSpent: (t.timeSpent || 0) + pom.workSecs } : t));
+      setPom(null);
+      return;
+    }
     if (pom.phase === 'work') {
       beep(880, 0.4);
       if (task) {
@@ -3680,15 +3690,16 @@ function PomodoroWidget({ pom, setPom, tasks, update, isMobile }) {
   if (!pom) return null;
 
   const fmt = s => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
+  const isCap = pom.mode === 'cap';
   const isWork = pom.phase === 'work';
   const total = isWork ? pom.workSecs : pom.breakSecs;
   const progress = total > 0 ? (total - pom.remaining) / total : 0;
-  const accent = isWork ? '#818cf8' : '#10b981';
+  const accent = isCap ? '#f59e0b' : (isWork ? '#818cf8' : '#10b981');
 
   const partialSecs = isWork ? (pom.workSecs - pom.remaining) : 0;
   const totalSpentSecs = (task?.timeSpent || 0) + partialSecs;
   const totalSpentMins = totalSpentSecs / 60;
-  const hasTimeBlock = !!task?.timeBlock;
+  const hasTimeBlock = !!task?.timeBlock && !isCap;
   const capRatio = hasTimeBlock ? Math.min(1, totalSpentMins / task.timeBlock) : 0;
   const overCap = hasTimeBlock && totalSpentMins >= task.timeBlock;
 
@@ -3728,7 +3739,7 @@ function PomodoroWidget({ pom, setPom, tasks, update, isMobile }) {
       <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:10}}>
         <span style={{fontSize:9,fontWeight:700,letterSpacing:'.12em',textTransform:'uppercase',
           color:accent,background:`${accent}18`,padding:'2px 8px',borderRadius:99}}>
-          {isWork?'Focus':'Break'}
+          {isCap?'Time Cap':(isWork?'Focus':'Break')}
         </span>
         <div style={{display:'flex',alignItems:'center',gap:3}}>
           {Array.from({length:dots},(_,i)=>(
@@ -3772,12 +3783,14 @@ function PomodoroWidget({ pom, setPom, tasks, update, isMobile }) {
             cursor:'pointer',fontFamily:'Manrope,sans-serif',fontWeight:600}}>
           {pom.paused?'▶ Resume':'⏸ Pause'}
         </button>
-        <button onClick={doSkip}
-          style={{background:'#17171b',border:'1px solid #2a2a31',borderRadius:8,
-            color:'#9a9788',fontSize:12,padding:'7px 10px',cursor:'pointer',
-            fontFamily:'Manrope,sans-serif'}} title={isWork?'Skip to break':'Skip to focus'}>
-          ⏭
-        </button>
+        {!isCap&&(
+          <button onClick={doSkip}
+            style={{background:'#17171b',border:'1px solid #2a2a31',borderRadius:8,
+              color:'#9a9788',fontSize:12,padding:'7px 10px',cursor:'pointer',
+              fontFamily:'Manrope,sans-serif'}} title={isWork?'Skip to break':'Skip to focus'}>
+            ⏭
+          </button>
+        )}
       </div>
 
       {/* time cap bar */}
