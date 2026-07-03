@@ -794,13 +794,35 @@ function NoteEditor({ note, state, update, isMobile }) {
     setTimeout(()=>{ el.focus(); el.selectionStart=el.selectionEnd=lineStart+prefix.length+(pos-lineStart); },0);
   };
 
+  /* Toggle a block-level prefix on the current line — strips whatever prefix is
+     already there, then applies the new one (or just removes it if it was the same). */
+  const toggleLinePrefix = prefix => {
+    if (!activeTA.current) return;
+    const { el, partIdx } = activeTA.current;
+    const pos = el.selectionStart;
+    const val = el.value;
+    const lineStart = val.lastIndexOf('\n', pos - 1) + 1;
+    const lineEnd = val.indexOf('\n', pos);
+    const lineEndPos = lineEnd === -1 ? val.length : lineEnd;
+    const line = val.slice(lineStart, lineEndPos);
+    const existingM = line.match(/^(#{1,3} |[-*] (?:\[[ xX]\] )?|> )/);
+    const existingPrefix = existingM ? existingM[0] : '';
+    const rawContent = line.slice(existingPrefix.length);
+    const newLine = existingPrefix === prefix ? rawContent : prefix + rawContent;
+    const cursorDelta = newLine.length - line.length;
+    const newVal = val.slice(0, lineStart) + newLine + val.slice(lineEndPos);
+    const np = [...bodyParts]; np[partIdx] = {...np[partIdx], content: newVal};
+    upNote({body: rebuildBody(np)});
+    setTimeout(() => { el.focus(); el.selectionStart = el.selectionEnd = Math.max(lineStart, pos + cursorDelta); }, 0);
+  };
+
   const FMT = [
-    {label:'H1', title:'Heading 1', fn:()=>insertLinePrefix('# ')},
-    {label:'H2', title:'Heading 2', fn:()=>insertLinePrefix('## ')},
-    {label:'H3', title:'Heading 3', fn:()=>insertLinePrefix('### ')},
-    {label:'•',  title:'Bullet list', fn:()=>insertLinePrefix('- ')},
-    {label:'☐',  title:'Todo item', fn:()=>insertLinePrefix('- [ ] ')},
-    {label:'"',  title:'Quote', fn:()=>insertLinePrefix('> ')},
+    {label:'H1', title:'Heading 1', fn:()=>toggleLinePrefix('# ')},
+    {label:'H2', title:'Heading 2', fn:()=>toggleLinePrefix('## ')},
+    {label:'H3', title:'Heading 3', fn:()=>toggleLinePrefix('### ')},
+    {label:'•',  title:'Bullet list', fn:()=>toggleLinePrefix('- ')},
+    {label:'☐',  title:'Todo item', fn:()=>toggleLinePrefix('- [ ] ')},
+    {label:'"',  title:'Quote', fn:()=>toggleLinePrefix('> ')},
     {label:'—',  title:'Divider', fn:()=>insertLinePrefix('---\n')},
   ];
 
@@ -862,42 +884,85 @@ function NoteEditor({ note, state, update, isMobile }) {
     upNote({body: rebuildBody(np)});
   };
 
-  /* ── Tab indentation for bullet lines ── */
+  /* ── Smart keyboard handling for the note body ── */
   const handleBodyKeyDown = (e, partIdx) => {
-    if (e.key !== 'Tab') return;
-    e.preventDefault();
     const el = e.target;
     const pos = el.selectionStart;
+    const selEnd = el.selectionEnd;
     const val = el.value;
     const lineStart = val.lastIndexOf('\n', pos - 1) + 1;
     const lineEnd = val.indexOf('\n', pos);
     const lineEndPos = lineEnd === -1 ? val.length : lineEnd;
     const line = val.slice(lineStart, lineEndPos);
-    const isBullet = /^\s*-\s/.test(line);
+    // matches: (indent)(bullet char) (optional todo prefix)(content)
+    const bm = line.match(/^(\s*)([-*]) (\[[ xX]\] )?(.*)$/);
 
-    let newVal, newPos;
-    if (isBullet && e.shiftKey) {
-      // unindent: strip up to 2 leading spaces
-      const stripped = line.replace(/^ {1,2}/, '');
-      const removed = line.length - stripped.length;
-      if (removed === 0) return;
-      newVal = val.slice(0, lineStart) + stripped + val.slice(lineEndPos);
-      newPos = Math.max(lineStart, pos - removed);
-    } else if (isBullet) {
-      // leave current line untouched, insert a new indented bullet below it
-      const currentIndent = (line.match(/^(\s*)/)[1]) + '  ';
-      const subPrefix = currentIndent + '- ';
-      newVal = val.slice(0, lineEndPos) + '\n' + subPrefix + val.slice(lineEndPos);
-      newPos = lineEndPos + 1 + subPrefix.length;
-    } else {
-      // not a bullet — insert 2 spaces at cursor
-      newVal = val.slice(0, pos) + '  ' + val.slice(pos);
-      newPos = pos + 2;
+    const apply = (newContent, newPos) => {
+      const np = [...bodyParts]; np[partIdx] = {...np[partIdx], content: newContent};
+      upNote({body: rebuildBody(np)});
+      setTimeout(() => { el.selectionStart = el.selectionEnd = newPos; }, 0);
+    };
+
+    // ── Tab / Shift+Tab: indent or unindent current line ──
+    if (e.key === 'Tab') {
+      e.preventDefault();
+      if (bm) {
+        if (e.shiftKey) {
+          if (bm[1].length < 2) return;
+          apply(val.slice(0, lineStart) + line.slice(2) + val.slice(lineEndPos), Math.max(lineStart, pos - 2));
+        } else {
+          apply(val.slice(0, lineStart) + '  ' + line + val.slice(lineEndPos), pos + 2);
+        }
+      } else {
+        apply(val.slice(0, pos) + '  ' + val.slice(pos), pos + 2);
+      }
+      return;
     }
 
-    const np = [...bodyParts]; np[partIdx] = {...np[partIdx], content: newVal};
-    upNote({body: rebuildBody(np)});
-    setTimeout(() => { el.selectionStart = el.selectionEnd = newPos; }, 0);
+    // ── Enter: smart bullet/todo continuation ──
+    if (e.key === 'Enter' && !e.shiftKey && bm) {
+      e.preventDefault();
+      const indent = bm[1];
+      const todoPrefix = bm[3] || '';
+      const content = bm[4] || '';
+
+      if (!content.trim()) {
+        // Empty bullet — unindent one level, or exit list if already at root
+        if (indent.length >= 2) {
+          const newLine = indent.slice(2) + '- ' + (todoPrefix ? '[ ] ' : '');
+          apply(val.slice(0, lineStart) + newLine + val.slice(lineEndPos), lineStart + newLine.length);
+        } else {
+          // Remove the empty bullet entirely
+          apply(val.slice(0, lineStart) + val.slice(lineEndPos), lineStart);
+        }
+      } else {
+        // Continue list: new bullet at same indent + same type
+        const newBullet = '\n' + indent + '- ' + (todoPrefix ? '[ ] ' : '');
+        apply(val.slice(0, pos) + newBullet + val.slice(pos), pos + newBullet.length);
+      }
+      return;
+    }
+
+    // ── Backspace: remove empty bullet / unindent ──
+    if (e.key === 'Backspace' && bm && pos === selEnd) {
+      const prefixLen = bm[1].length + 2 + (bm[3] ? bm[3].length : 0);
+      const contentStart = lineStart + prefixLen;
+      if (pos === contentStart && !bm[4]) {
+        e.preventDefault();
+        if (bm[1].length >= 2) {
+          // Unindent first
+          const newLine = bm[1].slice(2) + '- ' + (bm[3] ? '[ ] ' : '');
+          apply(val.slice(0, lineStart) + newLine + val.slice(lineEndPos), lineStart + newLine.length);
+        } else if (lineStart > 0) {
+          // Remove the bullet line and merge with previous line
+          apply(val.slice(0, lineStart - 1) + val.slice(lineEndPos), lineStart - 1);
+        } else {
+          // First line: strip the bullet prefix
+          apply(val.slice(prefixLen), 0);
+        }
+        return;
+      }
+    }
   };
 
   /* ── image upload ── */
