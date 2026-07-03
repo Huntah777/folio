@@ -630,36 +630,68 @@ function ContextMenu({ x, y, items, onClose }) {
 
 /* ── EmojiPicker ── */
 const EMOJI_CATS = [
-  { label:'★ Quick',   emojis:'📝💡🔬📚🎯🔧🗓⭐🚀🧠🔐📌🗺🎨🛠📊📋✅🔖💼🏆🌟💬🔔📎🖊️📐🧩🪄🗒️'.split('') },
+  { label:'★ Quick',   emojis:'📝💡🔬📚🎯🔧🗓⭐🚀🧠🔐📌🗺🎨🛠📊📋✅🔖💼🏆🌟💬🔔📎🖊️📐🧩🪄🗒️' },
   { label:'😀 Faces',  emojis:'😀😁😂🥹😊😇🥰😍🤩😘😋😎🤔🤭😴🥱😪🤤🥴😵🤯🥳😅😆🤣🙂🙃😉😌😛😝😜🤗🫡😶😐😑😏😒🙄😬🤥😌😔😪😮😦😧😨😰😥😢😭😱😖😣😞😓😩😫🥺😢' },
   { label:'👋 People', emojis:'👋🤚🖐✋👌🤌🤏✌️🤞🫰🤟🤘🤙👈👉👆👇☝️👍👎✊👊🤛🤜🫳🤝🫶🙌👏🙏💪🦾🖊✍️💅🤳' },
   { label:'🐶 Animals',emojis:'🐶🐱🐭🐹🐰🦊🐻🐼🐨🐯🦁🐮🐷🐸🐵🙈🙉🙊🐔🐧🐦🦆🦅🦉🐺🐗🦋🐌🐛🦎🐍🐢🦕🦖🐙🦑🦐🐟🐬🐳🐘🦏🦛🦒🦓🐃🐄🐎🐖🐏🐑🦙🐐🦌🐕🐈🐓🦃🕊🐇🦔🐾🐉🌾🌵🌴🌳🌲🍀🌿🍃🌱🌺🌸🌼🌻🌹🌷🍄🌰' },
   { label:'🍎 Food',   emojis:'🍎🍊🍋🍌🍍🥭🍓🍇🍉🍑🍒🫐🥝🍅🫒🥥🥑🍆🥔🥕🌽🥜🧅🧄☕🍵🧋🍺🍻🥂🍷🥃🍹🧃🥤🧊🍕🍔🌮🌯🥙🧆🍜🍱🍣🍛🥘🫕🍲🥗🍿🧁🎂🍰🍩🍪🍫🍬🍭🍮🍯' },
-  { label:'⚽ Sport',  emojis:'⚽🏀🏈⚾🎾🏐🏉🎱🏓🏸🏒🥊🥋🎿⛸🛹🛷🥌🎯🎳🎮🕹🎲🎰🧩🎭🎬🎥🎞🎤🎧🎼🎵🎶🎸🥁🎹🎺🎻🪘🪗🎻🎨🖌🖍✏️' },
-  { label:'🌍 Places', emojis:'✈️🚀🛸🚁🛺🚂🚢🚤🛳🚗🚕🚙🛻🚌🚎🚑🚒🛴🛵🏍🚲🛺🏠🏡🏢🏛🏗🏘🏚🏰🏯🗼🗽⛩🕌🕍⛪🗺🌋⛰🏔🏕🏖🏝🌅🌄🌠🎇🎆🌇🌆🌃🌌🌉🌁⛅🌦🌧⛈🌩🌨❄️☃️⛄🌊🌬💨' },
+  { label:'⚽ Sport',  emojis:'⚽🏀🏈⚾🎾🏐🏉🎱🏓🏸🏒🥊🥋🎿⛸🛹🛷🥌🎯🎳🎮🕹🎲🎰🧩🎭🎬🎥🎞🎤🎧🎼🎵🎶🎸🥁🎹🎺🎻🪘🪗🎨🖌🖍✏️' },
+  { label:'🌍 Places', emojis:'✈️🚀🛸🚁🚂🚢🚤🛳🚗🚕🚙🛻🚌🚎🚑🚒🛴🛵🏍🚲🏠🏡🏢🏛🏗🏰🏯🗼🗽⛩🕌🕍⛪🗺🌋⛰🏔🏕🏖🏝🌅🌄🌠🎇🎆🌇🌆🌃🌌🌉🌁⛅🌦🌧⛈🌩🌨❄️☃️⛄🌊💨' },
   { label:'💡 Objects',emojis:'💡🔦🕯📱💻⌨️🖥🖨🖱📷📸📹🎥📞☎️📟📠📺📻🔋🔌💿📀💾📦📫📬📭📮🗃🗄🗑🔒🔓🔑🗝🔨⛏🔧🔩⚙️🛠🪛🪚🔗📏📐✂️🗂📁📂🗒🗓📊📈📉📰📜📋🔖🏷📌📍🖊✒️' },
-  { label:'💜 Symbols',emojis:'❤️🧡💛💚💙💜🖤🤍🤎❤️‍🔥💕💞💓💗💖💘💝💟✅❌⭕❓❗💯🔴🟠🟡🟢🔵🟣⚫⚪🔶🔷🔸🔹🔺🔻⬆️⬇️⬅️➡️↗️↘️↙️↖️↕️↔️🔄🔃▶️⏩⏪⏫⏬🔔🔕♻️🔅🔆📶🔱⚜️🔰🆕🆓🆙🆒🆕' },
+  { label:'💜 Symbols',emojis:'❤️🧡💛💚💙💜🖤🤍🤎💕💞💓💗💖💘💝💟✅❌⭕❓❗💯🔴🟠🟡🟢🔵🟣⚫⚪🔶🔷🔸🔹🔺🔻⬆️⬇️⬅️➡️↗️↘️↙️↖️↕️↔️🔄🔃▶️⏩⏪⏫⏬🔔🔕♻️🔅🔆📶🔱⚜️🔰🆕🆓🆙🆒' },
 ];
 
 function EmojiPicker({ onSelect, onClose }) {
-  const ref  = useRef(null);
+  const ref = useRef(null);
   const [tab, setTab] = useState(0);
+  const total = EMOJI_CATS.length;
+
+  const prev = () => setTab(t => (t - 1 + total) % total);
+  const next = () => setTab(t => (t + 1) % total);
+
   useEffect(() => {
-    const h = e => { if (!ref.current?.contains(e.target)) onClose(); };
-    setTimeout(() => document.addEventListener('mousedown', h), 0);
-    return () => document.removeEventListener('mousedown', h);
+    const onOutside = e => { if (!ref.current?.contains(e.target)) onClose(); };
+    setTimeout(() => document.addEventListener('mousedown', onOutside), 0);
+    return () => document.removeEventListener('mousedown', onOutside);
   }, []);
-  const emojis = [...EMOJI_CATS[tab].emojis]; // handle both string and array
+
+  useEffect(() => {
+    const onKey = e => {
+      if (e.key === 'ArrowLeft')  { e.preventDefault(); prev(); }
+      if (e.key === 'ArrowRight') { e.preventDefault(); next(); }
+      if (e.key === 'Escape')     { onClose(); }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, []);
+
+  const emojis = [...EMOJI_CATS[tab].emojis];
+  const navBtn = { background:'none', border:'none', color:'#9a9788', fontSize:18, cursor:'pointer', padding:'0 8px', lineHeight:1, borderRadius:5, flexShrink:0, transition:'color 100ms' };
+
   return (
     <div ref={ref} style={{position:'absolute',top:'calc(100% + 6px)',left:0,zIndex:200,background:'#17171b',border:'1px solid #2a2a31',borderRadius:12,padding:'10px',width:290,maxWidth:'calc(100vw - 20px)',boxShadow:'0 12px 40px rgba(0,0,0,.8)'}}>
-      <div style={{display:'flex',gap:2,marginBottom:8,overflowX:'auto',paddingBottom:2,scrollbarWidth:'none'}}>
-        {EMOJI_CATS.map((g,i)=>(
-          <button key={g.label} onClick={()=>setTab(i)}
-            style={{background:i===tab?'#2a2a31':'none',border:'none',borderRadius:6,color:i===tab?'#f4f3ee':'#9a9788',fontSize:10.5,padding:'3px 7px',cursor:'pointer',flexShrink:0,fontFamily:'Manrope,sans-serif',whiteSpace:'nowrap',transition:'all 100ms'}}>
-            {g.label}
-          </button>
+
+      {/* Category nav row */}
+      <div style={{display:'flex',alignItems:'center',gap:2,marginBottom:7}}>
+        <button onClick={prev} style={navBtn}
+          onMouseEnter={e=>e.currentTarget.style.color='#f4f3ee'}
+          onMouseLeave={e=>e.currentTarget.style.color='#9a9788'}>‹</button>
+        <div style={{flex:1,textAlign:'center',fontSize:11.5,fontWeight:700,color:'#f4f3ee',fontFamily:'Manrope,sans-serif',letterSpacing:'.01em',userSelect:'none'}}>
+          {EMOJI_CATS[tab].label}
+        </div>
+        <button onClick={next} style={navBtn}
+          onMouseEnter={e=>e.currentTarget.style.color='#f4f3ee'}
+          onMouseLeave={e=>e.currentTarget.style.color='#9a9788'}>›</button>
+      </div>
+
+      {/* Dot indicators */}
+      <div style={{display:'flex',justifyContent:'center',gap:4,marginBottom:8}}>
+        {EMOJI_CATS.map((_,i)=>(
+          <button key={i} onClick={()=>setTab(i)} style={{width:i===tab?14:5,height:5,borderRadius:99,background:i===tab?'#818cf8':'#2a2a31',border:'none',padding:0,cursor:'pointer',transition:'all 180ms',flexShrink:0}}/>
         ))}
       </div>
+
+      {/* Emoji grid */}
       <div style={{display:'flex',flexWrap:'wrap',maxHeight:190,overflowY:'auto',gap:1}}>
         {emojis.map((em,i)=>(
           <button key={i} onClick={()=>{onSelect(em);onClose();}}
