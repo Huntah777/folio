@@ -1,4 +1,4 @@
-const CACHE = 'folio-v4';
+const CACHE = 'folio-v5';
 
 const SHELL = [
   '/',
@@ -21,6 +21,7 @@ const SHELL = [
   '/vendor/prism-rust.min.js',
   '/vendor/prism-go.min.js',
   '/vendor/prism-bash.min.js',
+  '/vendor/prism-powershell.min.js',
   '/vendor/prism-sql.min.js',
   '/vendor/prism-json.min.js',
   '/vendor/prism-css.min.js',

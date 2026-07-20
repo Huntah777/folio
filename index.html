@@ -197,6 +197,7 @@ body.pwa-install-banner #app{padding-top:52px}
 <script src="/vendor/prism-rust.min.js"></script>
 <script src="/vendor/prism-go.min.js"></script>
 <script src="/vendor/prism-bash.min.js"></script>
+<script src="/vendor/prism-powershell.min.js"></script>
 <script src="/vendor/prism-sql.min.js"></script>
 <script src="/vendor/prism-json.min.js"></script>
 <script src="/vendor/prism-css.min.js"></script>
@@ -515,8 +516,13 @@ const Ic = {
   copy:    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>,
 };
 
-const LANGS = ['plaintext','javascript','typescript','python','rust','go','csharp','bash','sql','json','css','jsx'];
+const LANGS = ['plaintext','javascript','typescript','python','rust','go','csharp','bash','powershell','sql','json','css','jsx'];
 const safeLang = lang => (LANGS.includes(lang) ? lang : 'plaintext');
+const LANG_COLORS = {
+  plaintext:'#6e7681', javascript:'#f1e05a', typescript:'#3178c6', python:'#3572A5',
+  rust:'#dea584', go:'#00ADD8', csharp:'#178600', bash:'#89e051', powershell:'#5391FE',
+  sql:'#e38c00', json:'#cbcb41', css:'#563d7c', jsx:'#61dafb',
+};
 const TAG_COLORS = { '#getting-started':'#818cf8','#work':'#22d3ee','#personal':'#10b981','#ideas':'#f59e0b','#meeting':'#f43f5e' };
 const tagColor = t => {
   if (TAG_COLORS[t]) return TAG_COLORS[t];
@@ -554,6 +560,7 @@ function CodeBlock({ value='', lang='javascript', onChange, onLangChange }) {
   const gutW = Math.max(36, String(lineCount).length * 9 + 20);
 
   const langSafe = safeLang(lang);
+  const langColor = LANG_COLORS[langSafe] || LANG_COLORS.plaintext;
   const highlighted = useMemo(() => {
     if (!window.Prism || !Prism.languages[langSafe]) return value.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
     return Prism.highlight(value, Prism.languages[langSafe], langSafe);
@@ -567,16 +574,17 @@ function CodeBlock({ value='', lang='javascript', onChange, onLangChange }) {
   return (
     <div style={{marginTop:4}}>
       <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:6}}>
+        <span style={{width:8,height:8,borderRadius:99,background:langColor,flexShrink:0}}/>
         <select value={lang} onChange={e=>onLangChange(e.target.value)}
-          style={{background:'#17171b',border:'1px solid #2a2a31',borderRadius:6,color:'#9a9788',fontSize:11,padding:'3px 8px',fontFamily:'Manrope,sans-serif',cursor:'pointer'}}>
-          {LANGS.map(l=><option key={l} value={l}>{l}</option>)}
+          style={{background:'#17171b',border:`1px solid ${langColor}55`,borderRadius:6,color:langColor,fontSize:11,padding:'3px 8px',fontFamily:'Manrope,sans-serif',cursor:'pointer'}}>
+          {LANGS.map(l=><option key={l} value={l} style={{color:LANG_COLORS[l],background:'#17171b'}}>{l}</option>)}
         </select>
         <button onClick={()=>navigator.clipboard.writeText(value)} style={{background:'none',border:'none',color:'#9a9788',cursor:'pointer',display:'flex',alignItems:'center',gap:3,fontSize:11}}>
           <svg style={{width:12,height:12}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
           copy
         </button>
       </div>
-      <div className="code-wrap" style={{height:h,display:'flex'}}>
+      <div className="code-wrap" style={{height:h,display:'flex',borderTop:`2px solid ${langColor}`}}>
         <div ref={gutRef} style={{width:gutW,flexShrink:0,overflowY:'hidden',padding:'12px 8px 12px 10px',textAlign:'right',fontFamily:'"JetBrains Mono",monospace',fontSize:'12.5px',lineHeight:'1.6',color:'#3a3a44',userSelect:'none',background:'#0d0d10',borderRight:'1px solid #1f1f24'}}>
           {Array.from({length:lineCount},(_,i)=><div key={i}>{i+1}</div>)}
         </div>
