@@ -52,10 +52,10 @@ tailwind.config = {
 <style>
 /* ── theme tokens ── */
 :root{
-  --bg-app:var(--bg-app); --bg-sidebar:var(--bg-sidebar); --bg-surface:var(--bg-surface); --bg-surface-2:#101012; --bg-surface-3:#141418; --modal-bg:var(--modal-bg);
-  --border:var(--border); --border-strong:var(--border-strong);
-  --text-primary:var(--text-primary); --text-secondary:var(--text-secondary); --text-tertiary:var(--text-tertiary); --text-quaternary:var(--text-quaternary); --text-muted:var(--text-muted);
-  --accent:var(--accent); --accent-strong:var(--accent-strong); --success:var(--success); --warning:var(--warning); --danger:var(--danger);
+  --bg-app:#0a0a0b; --bg-sidebar:#0d0d10; --bg-surface:#17171b; --bg-surface-2:#101012; --bg-surface-3:#141418; --modal-bg:#131317;
+  --border:#1f1f24; --border-strong:#2a2a31;
+  --text-primary:#f4f3ee; --text-secondary:#9a9788; --text-tertiary:#c9c6b8; --text-quaternary:#e6e4dc; --text-muted:#3a3a44;
+  --accent:#818cf8; --accent-strong:#6366f1; --success:#10b981; --warning:#f59e0b; --danger:#f43f5e;
 }
 :root[data-theme="ghibli"]{
   --bg-app:#f2e4c9; --bg-sidebar:#e9d7b3; --bg-surface:#fbf3e2; --bg-surface-2:#f5e8ca; --bg-surface-3:#f0e0bd; --modal-bg:#fbf3e2;
@@ -70,6 +70,8 @@ html,body{height:100%;background:var(--bg-app);color:var(--text-primary);font-fa
 ::-webkit-scrollbar-track{background:transparent}
 
 /* layout */
+#app-bg-image{position:fixed;inset:0;z-index:-2;background:var(--app-bg-image,none) center/cover no-repeat;background-color:var(--bg-app)}
+#app-bg-scrim{position:fixed;inset:0;z-index:-1;background:var(--app-bg-scrim,transparent)}
 #app{display:flex;height:100vh;overflow:hidden}
 .sidebar{width:232px;min-width:232px;background:var(--bg-sidebar);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden}
 .main{flex:1;overflow:hidden;display:flex;flex-direction:column}
@@ -456,6 +458,18 @@ function applyTheme(id) {
   document.documentElement.dataset.theme = id;
   const meta = document.querySelector('meta[name="theme-color"]');
   if (meta) meta.setAttribute('content', THEMES[id]?.swatch[0] || '#0a0a0b');
+}
+
+/* ── background image/gif (device-local — never synced through Sync/Cache/SEED) ── */
+const BG_KEY = 'folio_background';
+const BackgroundPref = {
+  get() { try { return JSON.parse(localStorage.getItem(BG_KEY)); } catch { return null; } }, // {url, source:'url'|'unsplash', attribution:{name,profileUrl}|null} | null
+  set(pref) { try { pref ? localStorage.setItem(BG_KEY, JSON.stringify(pref)) : localStorage.removeItem(BG_KEY); } catch {} },
+};
+function applyBackground(pref) {
+  const root = document.documentElement.style;
+  root.setProperty('--app-bg-image', pref?.url ? `url("${pref.url}")` : 'none');
+  root.setProperty('--app-bg-scrim', pref?.url ? 'color-mix(in srgb, var(--bg-app) 55%, transparent)' : 'transparent');
 }
 
 /* ── seed ── */
@@ -3537,7 +3551,7 @@ function Sidebar({ state, update, syncStatus, onSetup, onSync, collapsed, onTogg
               <circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2"/>
             </svg>
           </button>
-          <button onClick={onTheme} title="Theme"
+          <button onClick={onTheme} title="Appearance"
             style={{background:'#16161d',border:'1px solid #252529',cursor:'pointer',color:'#4a4a54',padding:0,borderRadius:7,display:'flex',alignItems:'center',justifyContent:'center',transition:'all 120ms',width:28,height:28,flexShrink:0}}
             onMouseEnter={e=>{e.currentTarget.style.background='rgba(129,140,248,0.15)';e.currentTarget.style.borderColor='rgba(129,140,248,0.35)';e.currentTarget.style.color='var(--accent)'}}
             onMouseLeave={e=>{e.currentTarget.style.background='#16161d';e.currentTarget.style.borderColor='#252529';e.currentTarget.style.color='#4a4a54'}}>
@@ -3686,7 +3700,7 @@ function Sidebar({ state, update, syncStatus, onSetup, onSync, collapsed, onTogg
               <circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2"/>
             </svg>
           </button>
-          <button onClick={onTheme} title="Theme"
+          <button onClick={onTheme} title="Appearance"
             style={{background:'#16161d',border:'1px solid #252529',cursor:'pointer',color:'#4a4a54',padding:0,borderRadius:7,display:'flex',alignItems:'center',justifyContent:'center',transition:'all 120ms',width:28,height:28,flexShrink:0}}
             onMouseEnter={e=>{e.currentTarget.style.background='rgba(129,140,248,0.15)';e.currentTarget.style.borderColor='rgba(129,140,248,0.35)';e.currentTarget.style.color='var(--accent)'}}
             onMouseLeave={e=>{e.currentTarget.style.background='#16161d';e.currentTarget.style.borderColor='#252529';e.currentTarget.style.color='#4a4a54'}}>
@@ -3750,14 +3764,14 @@ function MobileNav({ state, update, syncStatus, onSetup, onSync, onSalah, onThem
         </span>
         Salah
       </button>
-      <button onClick={onTheme} style={navBtnStyle(false)} title="Theme">
+      <button onClick={onTheme} style={navBtnStyle(false)} title="Appearance">
         <span style={{width:20,height:20,display:'flex',alignItems:'center',justifyContent:'center'}}>
           <svg style={{width:15,height:15}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
             <circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 0 0 18c1 0 1.5-.5 1.5-1.4 0-.4-.15-.75-.4-1.05-.25-.3-.4-.65-.4-1.05 0-.9.7-1.5 1.6-1.5H16a3 3 0 0 0 3-3c0-4.4-3.6-8-7-8Z"/>
             <circle cx="8.5" cy="10.5" r="1" fill="currentColor" stroke="none"/><circle cx="12" cy="7.5" r="1" fill="currentColor" stroke="none"/><circle cx="15.5" cy="10.5" r="1" fill="currentColor" stroke="none"/>
           </svg>
         </span>
-        Theme
+        Style
       </button>
       <button onClick={onSetup} style={navBtnStyle(false)} title="Sync">
         <span style={{width:20,height:20,display:'flex',alignItems:'center',justifyContent:'center',position:'relative'}}>
@@ -3932,30 +3946,134 @@ function SalahModal({ state, update, onClose }) {
 }
 
 /* ── ThemeModal ── */
-function ThemeModal({ theme, onChange, onClose }) {
+function UnsplashCredit({ attribution }) {
+  if (!attribution?.name) return null;
+  const utm = 'utm_source=folio&utm_medium=referral';
+  return (
+    <div style={{position:'fixed',bottom:10,right:12,zIndex:40,fontSize:11,color:'rgba(255,255,255,.75)',textShadow:'0 1px 3px rgba(0,0,0,.6)',fontFamily:'Manrope,sans-serif'}}>
+      Photo by{' '}
+      <a href={`${attribution.profileUrl}?${utm}`} target="_blank" rel="noopener noreferrer" style={{color:'inherit',fontWeight:600}}>{attribution.name}</a>
+      {' '}on{' '}
+      <a href={`https://unsplash.com/?${utm}`} target="_blank" rel="noopener noreferrer" style={{color:'inherit',fontWeight:600}}>Unsplash</a>
+    </div>
+  );
+}
+
+function BackgroundSection({ background, onChange }) {
+  const [urlInput, setUrlInput] = useState(background?.source==='url' ? background.url : '');
+  const [query, setQuery]       = useState('');
+  const [results, setResults]   = useState([]);
+  const [searching, setSearching] = useState(false);
+  const [searchMsg, setSearchMsg] = useState(null);
+
+  const applyUrl = () => {
+    const url = urlInput.trim();
+    if (!url) return;
+    onChange({ url, source:'url', attribution:null });
+  };
+  const runSearch = async e => {
+    e.preventDefault();
+    if (!query.trim()) return;
+    if (!Sync.configured()) { setSearchMsg('Set up sync first — the Unsplash proxy uses the same token.'); return; }
+    setSearching(true); setSearchMsg(null);
+    try {
+      const r = await fetch(`/api/unsplash?q=${encodeURIComponent(query.trim())}`, {
+        headers: { Authorization: `Bearer ${Sync.getToken()}` },
+      });
+      const data = await r.json();
+      if (data.error === 'not_configured') { setSearchMsg('Add an Unsplash key to enable search — pasting a link still works.'); setResults([]); }
+      else if (data.error) { setSearchMsg('Search failed — try again.'); setResults([]); }
+      else { setResults(data.results || []); if (!data.results?.length) setSearchMsg('No results.'); }
+    } catch { setSearchMsg('Search failed — try again.'); }
+    setSearching(false);
+  };
+  const pickResult = r => {
+    onChange({ url:r.fullUrl, source:'unsplash', attribution:r.photographer });
+    if (r.downloadLocation && Sync.configured()) {
+      fetch('/api/unsplash', {
+        method:'POST',
+        headers: { Authorization:`Bearer ${Sync.getToken()}`, 'Content-Type':'application/json' },
+        body: JSON.stringify({ downloadLocation:r.downloadLocation }),
+      }).catch(()=>{});
+    }
+  };
+
+  return (
+    <div style={{display:'flex',flexDirection:'column',gap:16}}>
+      {/* paste a link */}
+      <div>
+        <div style={{fontSize:11,fontWeight:700,letterSpacing:'.06em',color:'var(--text-muted)',textTransform:'uppercase',marginBottom:8}}>Paste a link</div>
+        <div style={{display:'flex',gap:8}}>
+          <input value={urlInput} onChange={e=>setUrlInput(e.target.value)} placeholder="https://images.unsplash.com/… or a .gif link"
+            className="input" style={{flex:1}}/>
+          <button className="btn-primary" onClick={applyUrl}>Apply</button>
+        </div>
+      </div>
+
+      {/* unsplash search */}
+      <div>
+        <div style={{fontSize:11,fontWeight:700,letterSpacing:'.06em',color:'var(--text-muted)',textTransform:'uppercase',marginBottom:8}}>Search Unsplash</div>
+        <form onSubmit={runSearch} style={{display:'flex',gap:8,marginBottom:10}}>
+          <input value={query} onChange={e=>setQuery(e.target.value)} placeholder="cozy cafe, forest, rain…" className="input" style={{flex:1}}/>
+          <button className="btn-ghost" type="submit" disabled={searching}>{searching?'Searching…':'Search'}</button>
+        </form>
+        {searchMsg && <div style={{fontSize:12,color:'var(--text-secondary)',marginBottom:10}}>{searchMsg}</div>}
+        {results.length > 0 && (
+          <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(90px,1fr))',gap:8,maxHeight:220,overflowY:'auto'}} className="scrollbar">
+            {results.map(r=>(
+              <div key={r.id} onClick={()=>pickResult(r)} title={r.photographer?.name}
+                style={{cursor:'pointer',borderRadius:8,overflow:'hidden',border:'1.5px solid var(--border)',aspectRatio:'1',backgroundImage:`url(${r.thumbUrl})`,backgroundSize:'cover',backgroundPosition:'center',transition:'border-color 120ms'}}
+                onMouseEnter={e=>e.currentTarget.style.borderColor='var(--accent)'}
+                onMouseLeave={e=>e.currentTarget.style.borderColor='var(--border)'}/>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {background?.url && (
+        <button className="btn-ghost" onClick={()=>onChange(null)} style={{alignSelf:'flex-start'}}>Remove background</button>
+      )}
+    </div>
+  );
+}
+
+function AppearanceModal({ theme, onChangeTheme, background, onChangeBackground, onClose }) {
   return (
     <div className="modal-bg" onClick={e=>{if(e.target===e.currentTarget)onClose();}}>
-      <div className="modal fadeUp">
-        <div style={{padding:'20px 24px',borderBottom:'1px solid var(--border)',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+      <div className="modal fadeUp" style={{maxHeight:'90vh',overflowY:'auto'}}>
+        <div style={{padding:'20px 24px',borderBottom:'1px solid var(--border)',display:'flex',justifyContent:'space-between',alignItems:'center',position:'sticky',top:0,background:'var(--modal-bg)',zIndex:1}}>
           <div>
-            <div style={{fontFamily:'Fraunces,serif',fontSize:17,fontWeight:600}}>Theme</div>
+            <div style={{fontFamily:'Fraunces,serif',fontSize:17,fontWeight:600}}>Appearance</div>
             <div style={{fontSize:12,color:'var(--text-secondary)',marginTop:2}}>Applies to this device only — not synced</div>
           </div>
           <button onClick={onClose} style={{background:'none',border:'none',color:'var(--text-secondary)',cursor:'pointer',fontSize:20,lineHeight:1}}>×</button>
         </div>
-        <div style={{padding:'20px 24px',display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(140px,1fr))',gap:12}}>
-          {Object.entries(THEMES).map(([id,t])=>(
-            <div key={id} onClick={()=>onChange(id)}
-              style={{cursor:'pointer',borderRadius:12,border:`1.5px solid ${theme===id?'var(--accent)':'var(--border)'}`,overflow:'hidden',transition:'border-color 120ms'}}>
-              <div style={{display:'flex',height:56}}>
-                {t.swatch.map((c,i)=>(<div key={i} style={{flex:1,background:c}}/>))}
-              </div>
-              <div style={{padding:'8px 10px',display:'flex',alignItems:'center',justifyContent:'space-between',background:'var(--bg-surface)'}}>
-                <span style={{fontSize:12.5,fontWeight:600,color:'var(--text-primary)'}}>{t.label}</span>
-                {theme===id && <span style={{color:'var(--accent)',fontSize:13}}>✓</span>}
-              </div>
+
+        <div style={{padding:'20px 24px',display:'flex',flexDirection:'column',gap:22}}>
+          <div>
+            <div style={{fontSize:11,fontWeight:700,letterSpacing:'.06em',color:'var(--text-muted)',textTransform:'uppercase',marginBottom:10}}>Theme</div>
+            <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(140px,1fr))',gap:12}}>
+              {Object.entries(THEMES).map(([id,t])=>(
+                <div key={id} onClick={()=>onChangeTheme(id)}
+                  style={{cursor:'pointer',borderRadius:12,border:`1.5px solid ${theme===id?'var(--accent)':'var(--border)'}`,overflow:'hidden',transition:'border-color 120ms'}}>
+                  <div style={{display:'flex',height:56}}>
+                    {t.swatch.map((c,i)=>(<div key={i} style={{flex:1,background:c}}/>))}
+                  </div>
+                  <div style={{padding:'8px 10px',display:'flex',alignItems:'center',justifyContent:'space-between',background:'var(--bg-surface)'}}>
+                    <span style={{fontSize:12.5,fontWeight:600,color:'var(--text-primary)'}}>{t.label}</span>
+                    {theme===id && <span style={{color:'var(--accent)',fontSize:13}}>✓</span>}
+                  </div>
+                </div>
+              ))}
             </div>
-          ))}
+          </div>
+
+          <div className="divider"/>
+
+          <div>
+            <div style={{fontSize:11,fontWeight:700,letterSpacing:'.06em',color:'var(--text-muted)',textTransform:'uppercase',marginBottom:10}}>Background</div>
+            <BackgroundSection background={background} onChange={onChangeBackground}/>
+          </div>
         </div>
       </div>
     </div>
@@ -4423,6 +4541,7 @@ function App() {
   const [salahOpen, setSalahOpen]   = useState(false);
   const [themeOpen, setThemeOpen]   = useState(false);
   const [theme, setTheme]           = useState(() => ThemePref.get());
+  const [background, setBackground] = useState(() => BackgroundPref.get());
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
   const saveTimer    = useRef(null);
@@ -4443,6 +4562,10 @@ function App() {
   /* ── theme: device-local, applied via data-theme attribute + CSS vars ── */
   useEffect(() => { applyTheme(theme); }, [theme]);
   const changeTheme = id => { ThemePref.set(id); setTheme(id); };
+
+  /* ── background image/gif: device-local, applied via CSS vars ── */
+  useEffect(() => { applyBackground(background); }, [background]);
+  const changeBackground = pref => { BackgroundPref.set(pref); setBackground(pref); };
 
   useEffect(() => {
     const onReady = () => setInstallBanner(true);
@@ -4676,7 +4799,9 @@ function App() {
   const View  = views[state.ui.view] || TodayView;
 
   return (
-    <>
+    <div style={{isolation:'isolate',display:'flex',height:'100%'}}>
+      <div id="app-bg-image"/>
+      <div id="app-bg-scrim"/>
       <Sidebar state={state} update={update} syncStatus={syncStatus} onSetup={()=>setSetupOpen(true)}
         onSync={syncNow} collapsed={!sidebarOpen} onToggle={()=>setSidebarOpen(v=>!v)} onSalah={()=>setSalahOpen(true)} onTheme={()=>setThemeOpen(true)}/>
       <div className="main">
@@ -4685,10 +4810,11 @@ function App() {
       <MobileNav state={state} update={update} syncStatus={syncStatus} onSetup={()=>setSetupOpen(true)} onSync={syncNow} onSalah={()=>setSalahOpen(true)} onTheme={()=>setThemeOpen(true)}/>
       {setupOpen && <SetupModal onClose={()=>setSetupOpen(false)} onConnected={handleSyncConnected} onSync={syncNow} syncStatus={syncStatus}/>}
       {salahOpen && <SalahModal state={state} update={update} onClose={()=>setSalahOpen(false)}/>}
-      {themeOpen && <ThemeModal theme={theme} onChange={changeTheme} onClose={()=>setThemeOpen(false)}/>}
+      {themeOpen && <AppearanceModal theme={theme} onChangeTheme={changeTheme} background={background} onChangeBackground={changeBackground} onClose={()=>setThemeOpen(false)}/>}
+      {background?.source==='unsplash' && background?.attribution && <UnsplashCredit attribution={background.attribution}/>}
       {installBanner && <InstallBanner/>}
       <PomodoroWidget pom={pom} setPom={setPom} tasks={state.tasks} update={update} isMobile={isMobile}/>
-    </>
+    </div>
   );
 }
 
