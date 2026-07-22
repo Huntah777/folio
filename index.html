@@ -4799,7 +4799,7 @@ function App() {
   const View  = views[state.ui.view] || TodayView;
 
   return (
-    <div style={{isolation:'isolate',display:'flex',height:'100%'}}>
+    <div style={{isolation:'isolate',display:'flex',width:'100%',height:'100%',minWidth:0,overflow:'hidden'}}>
       <div id="app-bg-image"/>
       <div id="app-bg-scrim"/>
       <Sidebar state={state} update={update} syncStatus={syncStatus} onSetup={()=>setSetupOpen(true)}
