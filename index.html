@@ -3729,19 +3729,27 @@ function MobileNav({ state, update, syncStatus, onSetup, onSync, onSalah, onThem
     syncStatus==='offline' ? 'var(--danger)' :
     syncStatus==='unauth'  ? 'var(--warning)' : null;
   const navBtnStyle = active => ({
-    flex:1,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',
-    gap:2,background:'none',border:'none',cursor:'pointer',
+    flex:1,minWidth:0,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',
+    gap:2,background:'none',border:'none',cursor:'pointer',overflow:'hidden',
     color:active?'var(--accent)':'var(--text-muted)',
     fontSize:9,fontFamily:'Manrope,sans-serif',fontWeight:700,
-    letterSpacing:'.04em',textTransform:'uppercase',
+    letterSpacing:'.02em',textTransform:'uppercase',whiteSpace:'nowrap',textOverflow:'ellipsis',
+    transition:'color 110ms',position:'relative',padding:'6px 2px',
+  });
+  /* icon-only utility buttons (prayer/appearance/sync) — fixed width, no label,
+     kept out of the flex:1 label row so primary tabs always have room to breathe */
+  const navUtilStyle = extra => ({
+    flex:'0 0 30px',width:30,display:'flex',alignItems:'center',justifyContent:'center',
+    background:'none',border:'none',cursor:'pointer',color:'var(--text-muted)',
     transition:'color 110ms',position:'relative',padding:'6px 0',
+    ...extra,
   });
   return (
     <div className="mobile-nav">
       {[
         {id:'today',   label:'Today',  icon:Ic.today},
         {id:'notes',   label:'Notes',  icon:Ic.notes},
-        {id:'journal', label:'Journal',icon:Ic.journal},
+        {id:'journal', label:'Log',    icon:Ic.journal},
         {id:'tasks',   label:'Tasks',  icon:Ic.tasks},
         {id:'kanban',  label:'Kanban', icon:Ic.kanban},
         {id:'calendar',label:'Cal',    icon:Ic.cal},
@@ -3756,32 +3764,25 @@ function MobileNav({ state, update, syncStatus, onSetup, onSync, onSalah, onThem
           )}
         </button>
       ))}
-      <button onClick={onSalah} style={{...navBtnStyle(false),color:state.salah?.enabled?'var(--warning)':'var(--text-secondary)',background:state.salah?.enabled?'rgba(245,158,11,0.12)':'rgba(255,255,255,0.03)',borderTop:state.salah?.enabled?'2px solid rgba(245,158,11,0.5)':'2px solid transparent'}} title="Prayer times">
-        <span style={{width:20,height:20,display:'flex',alignItems:'center',justifyContent:'center'}}>
+      <div style={{display:'flex',flexShrink:0,borderLeft:'1px solid var(--border)'}}>
+        <button onClick={onSalah} style={navUtilStyle({color:state.salah?.enabled?'var(--warning)':'var(--text-muted)'})} title="Prayer times">
           <svg style={{width:15,height:15}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
             <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9z"/>
           </svg>
-        </span>
-        Salah
-      </button>
-      <button onClick={onTheme} style={navBtnStyle(false)} title="Appearance">
-        <span style={{width:20,height:20,display:'flex',alignItems:'center',justifyContent:'center'}}>
+        </button>
+        <button onClick={onTheme} style={navUtilStyle()} title="Appearance">
           <svg style={{width:15,height:15}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
             <circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 0 0 18c1 0 1.5-.5 1.5-1.4 0-.4-.15-.75-.4-1.05-.25-.3-.4-.65-.4-1.05 0-.9.7-1.5 1.6-1.5H16a3 3 0 0 0 3-3c0-4.4-3.6-8-7-8Z"/>
             <circle cx="8.5" cy="10.5" r="1" fill="currentColor" stroke="none"/><circle cx="12" cy="7.5" r="1" fill="currentColor" stroke="none"/><circle cx="15.5" cy="10.5" r="1" fill="currentColor" stroke="none"/>
           </svg>
-        </span>
-        Style
-      </button>
-      <button onClick={onSetup} style={navBtnStyle(false)} title="Sync">
-        <span style={{width:20,height:20,display:'flex',alignItems:'center',justifyContent:'center',position:'relative'}}>
+        </button>
+        <button onClick={onSetup} style={navUtilStyle()} title="Sync">
           <svg style={{width:15,height:15,animation:spinning?'spin 0.8s linear infinite':'none'}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
             <path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/>
           </svg>
-          {dotColor && <span style={{position:'absolute',top:-1,right:-1,width:6,height:6,borderRadius:99,background:dotColor,border:'1.5px solid var(--bg-sidebar)'}}/>}
-        </span>
-        Sync
-      </button>
+          {dotColor && <span style={{position:'absolute',top:4,right:4,width:6,height:6,borderRadius:99,background:dotColor,border:'1.5px solid var(--bg-sidebar)'}}/>}
+        </button>
+      </div>
     </div>
   );
 }

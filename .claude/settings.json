@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl -sf http://localhost:8788 -o /dev/null -w \"%{http_code}\\\\n\")",
+      "Bash(SCRATCH=/private/tmp/claude-501/-Users-abdul-malikadeyi-Documents-projects-folio/192377c3-f35d-470a-a6c6-d78cb6d56930/scratchpad node /private/tmp/claude-501/-Users-abdul-malikadeyi-Documents-projects-folio/192377c3-f35d-470a-a6c6-d78cb6d56930/scratchpad/full_scan.js)",
+      "Bash(lsof -i :8788 -sTCP:LISTEN)",
+      "Bash(node -e ' *)",
+      "Bash(SCRATCH=/private/tmp/claude-501/-Users-abdul-malikadeyi-Documents-projects-folio/192377c3-f35d-470a-a6c6-d78cb6d56930/scratchpad node /private/tmp/claude-501/-Users-abdul-malikadeyi-Documents-projects-folio/192377c3-f35d-470a-a6c6-d78cb6d56930/scratchpad/tiny_nav_zoom.js)"
+    ]
+  }
+}
