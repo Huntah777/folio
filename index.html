@@ -504,6 +504,7 @@ const Ic = {
   tasks:   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>,
   cal:     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>,
   tags:    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82Z"/><line x1="7" y1="7" x2="7.01" y2="7" strokeWidth="3"/></svg>,
+  journal: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2Z"/><line x1="9" y1="7" x2="15" y2="7"/><line x1="9" y1="11" x2="13" y2="11"/></svg>,
   plus:    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>,
   x:       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>,
   trash:   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>,
@@ -523,7 +524,7 @@ const LANG_COLORS = {
   rust:'#dea584', go:'#00ADD8', csharp:'#178600', bash:'#89e051', powershell:'#5391FE',
   sql:'#e38c00', json:'#cbcb41', css:'#563d7c', jsx:'#61dafb',
 };
-const TAG_COLORS = { '#getting-started':'#818cf8','#work':'#22d3ee','#personal':'#10b981','#ideas':'#f59e0b','#meeting':'#f43f5e' };
+const TAG_COLORS = { '#getting-started':'#818cf8','#work':'#22d3ee','#personal':'#10b981','#ideas':'#f59e0b','#meeting':'#f43f5e','#gratitude':'#fbbf24','#reflection':'#38bdf8','#goals':'#c084fc' };
 const tagColor = t => {
   if (TAG_COLORS[t]) return TAG_COLORS[t];
   let h = 0;
@@ -531,6 +532,45 @@ const tagColor = t => {
   return `hsl(${Math.abs(h) % 360},65%,62%)`;
 };
 const PRIO = { high:'#f43f5e', medium:'#f59e0b', low:'#22d3ee', none:'#3a3a44' };
+
+/* ── journal prompts — each category carries its own sticky tag, auto-applied on save ── */
+const JOURNAL_CATEGORIES = [
+  { tag:'#gratitude', label:'Gratitude', icon:'🙏', prompts:[
+    "What are three things you're grateful for today?",
+    'Who made your day a little better, and how?',
+    'What small moment today are you thankful for?',
+    "What's something about your life you often take for granted?",
+    'What challenge are you secretly grateful for?',
+    'What made you smile today?',
+    'What comfort did you enjoy today that not everyone has?',
+  ]},
+  { tag:'#reflection', label:'Reflection', icon:'💭', prompts:[
+    'What went well today, and what would you do differently?',
+    'What did today teach you about yourself?',
+    "What's been on your mind lately?",
+    'What moment today do you want to remember?',
+    "What's one thing you'd tell yourself this morning?",
+    'What drained your energy today, and why?',
+    'What are you avoiding right now?',
+  ]},
+  { tag:'#goals', label:'Goals', icon:'🎯', prompts:[
+    "What's one step you can take tomorrow toward a goal that matters to you?",
+    'What progress have you made this week, even if small?',
+    "What's standing between you and your next goal?",
+    'What would make this month feel like a success?',
+    'What goal deserves more of your attention right now?',
+    'What would you do differently if you knew you could not fail?',
+    "What's a habit you want to build, and why?",
+  ]},
+];
+const JOURNAL_TAGS = JOURNAL_CATEGORIES.map(c => c.tag);
+const dayIndex = len => {
+  const d = new Date();
+  const start = new Date(d.getFullYear(), 0, 0);
+  const doy = Math.floor((d - start) / 86400000);
+  return doy % len;
+};
+const promptForToday = cat => cat.prompts[dayIndex(cat.prompts.length)];
 
 /* ── MarkdownView ── */
 function MarkdownView({ content, onCheckboxToggle }) {
@@ -1479,6 +1519,7 @@ function NotesView({ state, update, isMobile }) {
   const noteId = state.ui.noteId;
 
   const filtered = useMemo(() => state.notes.filter(n => {
+    if (n.tags.some(t => JOURNAL_TAGS.includes(t))) return false;
     const q = search.toLowerCase();
     const dateStr = n.created ? new Date(n.created).toLocaleDateString('en-US',{month:'long',day:'numeric',year:'numeric'}).toLowerCase() : '';
     const matchQ = !q || n.title.toLowerCase().includes(q) || (n.body||'').toLowerCase().includes(q) || dateStr.includes(q);
@@ -1531,7 +1572,7 @@ function NotesView({ state, update, isMobile }) {
   const clearSel  = () => setSelectedIds(new Set());
 
   const selectedNote = state.notes.find(n=>n.id===noteId);
-  const allTags = [...new Set(state.notes.flatMap(n=>n.tags))];
+  const allTags = [...new Set(state.notes.flatMap(n=>n.tags))].filter(t=>!JOURNAL_TAGS.includes(t));
 
   /* Mobile: full-screen editor with back button */
   if (isMobile && noteId && selectedNote) {
@@ -2687,9 +2728,121 @@ function TodayView({ state, update, isMobile }) {
   );
 }
 
+/* ── JournalView ── */
+function JournalView({ state, update, isMobile }) {
+  const [drafts, setDrafts] = useState({});
+  const [search, setSearch] = useState('');
+
+  const todaysByTag = useMemo(() => {
+    const map = {};
+    JOURNAL_CATEGORIES.forEach(cat => {
+      map[cat.tag] = state.notes.find(n => n.tags.includes(cat.tag) && fmtKey(new Date(n.created)) === todayKey());
+    });
+    return map;
+  }, [state.notes]);
+
+  const saveEntry = cat => {
+    const text = (drafts[cat.tag] || '').trim();
+    if (!text) return;
+    const n = { id:uid(), emoji:cat.icon, title:promptForToday(cat), body:text, tags:[cat.tag], links:[], images:[], folderId:null, created:Date.now(), updated:Date.now() };
+    update('notes', notes => [n, ...notes]);
+    setDrafts(d => ({ ...d, [cat.tag]: '' }));
+  };
+
+  const editEntry = (note, body) => {
+    update('notes', notes => notes.map(n => n.id===note.id ? { ...n, body, updated:Date.now() } : n));
+  };
+
+  return (
+    <div style={{flex:1,overflowY:'auto',overflowX:'hidden',padding:isMobile?'20px 16px':'32px 36px'}} className="scrollbar">
+      <h1 style={{fontFamily:'Fraunces,serif',fontSize:isMobile?22:28,fontWeight:600,marginBottom:4}}>Journal</h1>
+      <div style={{color:'#9a9788',fontSize:13,marginBottom:isMobile?20:28}}>
+        {new Date().toLocaleDateString('en-GB',{weekday:'long',day:'numeric',month:'long',year:'numeric'})}
+      </div>
+
+      <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr':'repeat(auto-fit,minmax(320px,1fr))',gap:16,maxWidth:1100,marginBottom:32}}>
+        {JOURNAL_CATEGORIES.map(cat => {
+          const entry = todaysByTag[cat.tag];
+          const color = tagColor(cat.tag);
+          return (
+            <div key={cat.tag} className="card" style={{padding:'18px 20px',borderTop:`2px solid ${color}`}}>
+              <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:10}}>
+                <span style={{fontSize:15}}>{cat.icon}</span>
+                <span style={{fontSize:11,fontWeight:700,letterSpacing:'.08em',color,textTransform:'uppercase'}}>{cat.label}</span>
+                <span className="tag" style={{marginLeft:'auto',background:`${color}1f`,color,fontSize:10.5,cursor:'default'}}>{cat.tag}</span>
+              </div>
+              <div style={{fontSize:14,color:'#f4f3ee',fontFamily:'Fraunces,serif',lineHeight:1.4,marginBottom:12}}>
+                {entry ? entry.title : promptForToday(cat)}
+              </div>
+              {entry ? (
+                <>
+                  <textarea value={entry.body} onChange={e=>editEntry(entry, e.target.value)}
+                    placeholder="Your reply…" rows={4}
+                    style={{width:'100%',background:'#17171b',border:'1px solid #1f1f24',borderRadius:8,color:'#e6e4dc',fontSize:13,lineHeight:1.6,padding:'10px 12px',fontFamily:'Manrope,sans-serif',resize:'vertical',outline:'none'}}/>
+                  <button onClick={()=>update('ui',{...state.ui,view:'notes',noteId:entry.id})}
+                    style={{marginTop:10,background:'none',border:'none',color,fontSize:12,cursor:'pointer',padding:0}}>Open in Notes →</button>
+                </>
+              ) : (
+                <>
+                  <textarea value={drafts[cat.tag]||''} onChange={e=>setDrafts(d=>({...d,[cat.tag]:e.target.value}))}
+                    placeholder="Your reply…" rows={4}
+                    style={{width:'100%',background:'#17171b',border:'1px solid #1f1f24',borderRadius:8,color:'#e6e4dc',fontSize:13,lineHeight:1.6,padding:'10px 12px',fontFamily:'Manrope,sans-serif',resize:'vertical',outline:'none'}}/>
+                  <button className="btn-primary" onClick={()=>saveEntry(cat)} disabled={!(drafts[cat.tag]||'').trim()}
+                    style={{marginTop:10,background:color,opacity:(drafts[cat.tag]||'').trim()?1:0.4,cursor:(drafts[cat.tag]||'').trim()?'pointer':'default'}}>Save entry</button>
+                </>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      <div style={{maxWidth:1100,marginBottom:16}}>
+        <input className="input" value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search journal entries…" style={{width:'100%'}}/>
+      </div>
+
+      {(() => {
+        const q = search.trim().toLowerCase();
+        const journalNotes = state.notes.filter(n => n.tags.some(t=>JOURNAL_TAGS.includes(t)));
+        const list = q
+          ? journalNotes.filter(n => n.title.toLowerCase().includes(q) || (n.body||'').toLowerCase().includes(q))
+              .sort((a,b)=>b.created-a.created)
+          : journalNotes.filter(n => !Object.values(todaysByTag).some(e=>e&&e.id===n.id))
+              .sort((a,b)=>b.created-a.created).slice(0,8);
+        return (
+          <div className="card" style={{padding:'18px 20px',maxWidth:1100}}>
+            <div style={{fontSize:11,fontWeight:700,letterSpacing:'.08em',color:'#9a9788',textTransform:'uppercase',marginBottom:12}}>
+              {q ? `Search results (${list.length})` : 'Past entries'}
+            </div>
+            {list.length===0 && <div style={{color:'#3a3a44',fontSize:13}}>{q ? 'No matching entries.' : 'No past entries yet.'}</div>}
+            <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr':'repeat(2,1fr)',gap:10}}>
+              {list.map(n => {
+                const t = n.tags.find(x=>JOURNAL_TAGS.includes(x));
+                const color = tagColor(t);
+                return (
+                  <div key={n.id} style={{background:'#17171b',border:'1px solid #1f1f24',borderRadius:9,padding:'12px 14px',cursor:'pointer',transition:'border-color 120ms',overflow:'hidden'}}
+                    onClick={()=>update('ui',{...state.ui,view:'notes',noteId:n.id})}
+                    onMouseEnter={e=>e.currentTarget.style.borderColor='#2a2a31'}
+                    onMouseLeave={e=>e.currentTarget.style.borderColor='#1f1f24'}>
+                    <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:4,overflow:'hidden'}}>
+                      <span style={{fontSize:10,fontWeight:700,color,textTransform:'uppercase',letterSpacing:'.05em',flexShrink:0}}>{t}</span>
+                      <span style={{fontSize:11,color:'#3a3a44',flexShrink:0}}>· {fmtKey(new Date(n.created))}</span>
+                    </div>
+                    <div style={{fontSize:13,fontWeight:600,color:'#f4f3ee',marginBottom:3,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{n.title}</div>
+                    <div style={{fontSize:11.5,color:'#9a9788',display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical',overflow:'hidden',wordBreak:'break-word'}}>{(n.body||'').slice(0,120)}</div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })()}
+    </div>
+  );
+}
+
 /* ── TagsView ── */
 function TagsView({ state, update, isMobile }) {
-  const allTags = [...new Set(state.notes.flatMap(n=>n.tags))];
+  const allTags = [...new Set(state.notes.flatMap(n=>n.tags))].filter(t=>!JOURNAL_TAGS.includes(t));
   return (
     <div style={{flex:1,overflow:'auto',padding:isMobile?'18px 16px':'28px 32px'}} className="scrollbar">
       <h1 style={{fontFamily:'Fraunces,serif',fontSize:isMobile?22:26,fontWeight:600,marginBottom:24}}>Tags</h1>
@@ -3211,6 +3364,7 @@ function Sidebar({ state, update, syncStatus, onSetup, onSync, collapsed, onTogg
   const navItems = [
     {id:'today',    label:'Today',    icon:Ic.today},
     {id:'notes',    label:'Notes',    icon:Ic.notes},
+    {id:'journal',  label:'Journal',  icon:Ic.journal},
     {id:'tasks',    label:'Tasks',    icon:Ic.tasks},
     {id:'kanban',   label:'Kanban',   icon:Ic.kanban},
     {id:'calendar', label:'Calendar', icon:Ic.cal},
@@ -4339,7 +4493,7 @@ function App() {
     </div>
   );
 
-  const views = { today:TodayView, notes:NotesView, tasks:TasksView, kanban:KanbanView, calendar:CalendarView, tags:TagsView };
+  const views = { today:TodayView, notes:NotesView, journal:JournalView, tasks:TasksView, kanban:KanbanView, calendar:CalendarView, tags:TagsView };
   const View  = views[state.ui.view] || TodayView;
 
   return (
