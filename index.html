@@ -2859,6 +2859,7 @@ function JournalView({ state, update, isMobile }) {
   const [composerText, setComposerText]   = useState('');
   const [composerMood, setComposerMood]   = useState(null);
   const [composerTags, setComposerTags]   = useState(() => entries[0]?.tags || []);
+  const [usePrompt, setUsePrompt]         = useState(true);
   const [editingId, setEditingId]         = useState(null);
   const [editText, setEditText]           = useState('');
   const [editMood, setEditMood]           = useState(null);
@@ -2888,9 +2889,9 @@ function JournalView({ state, update, isMobile }) {
 
   const addEntry = () => {
     if (!composerText.trim()) return;
-    const entry = { id:uid(), date:todayKey(), created:Date.now(), updated:Date.now(), body:composerText.trim(), prompt, mood:composerMood, tags:composerTags };
+    const entry = { id:uid(), date:todayKey(), created:Date.now(), updated:Date.now(), body:composerText.trim(), prompt:usePrompt?prompt:null, mood:composerMood, tags:composerTags };
     update('journal', [entry, ...entries]);
-    setComposerText(''); setComposerMood(null);
+    setComposerText(''); setComposerMood(null); setUsePrompt(true);
   };
   const startEdit = e => { setEditingId(e.id); setEditText(e.body); setEditMood(e.mood); setEditTags(e.tags||[]); };
   const saveEdit = () => {
@@ -2931,8 +2932,14 @@ function JournalView({ state, update, isMobile }) {
 
       {/* composer */}
       <div className="card" style={{padding:'16px 18px',maxWidth:900,marginBottom:26,display:'flex',flexDirection:'column',gap:12}}>
+        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:10}}>
+          <span style={{fontSize:11.5,color:'var(--text-muted)'}}>{usePrompt ? 'Replying to today’s prompt' : 'Writing freely'}</span>
+          <span onClick={()=>setUsePrompt(v=>!v)} style={{fontSize:11.5,color:'var(--accent)',cursor:'pointer',userSelect:'none'}}>
+            {usePrompt ? 'Skip prompt' : 'Use today’s prompt'}
+          </span>
+        </div>
         <textarea value={composerText} onChange={e=>setComposerText(e.target.value)}
-          placeholder={prompt} rows={3}
+          placeholder={usePrompt ? prompt : 'Write whatever’s on your mind…'} rows={3}
           style={{background:'transparent',border:'none',outline:'none',resize:'vertical',fontFamily:'Manrope,sans-serif',fontSize:14,color:'var(--text-primary)',lineHeight:1.6,width:'100%'}}/>
         <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:10}}>
           <div style={{display:'flex',alignItems:'center',gap:14,flexWrap:'wrap'}}>
