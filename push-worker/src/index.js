@@ -124,32 +124,49 @@ async function handleScheduled(env) {
       const sub      = JSON.parse(row.subscription);
       const schedule = JSON.parse(row.schedule || '[]');
 
-      const due    = schedule.filter(n => n.fireAt >= now - lookBack && n.fireAt <= now + 30_000);
-      const remain = schedule.filter(n => !due.some(d => d.id === n.id));
+      const due = schedule.filter(n => n.fireAt >= now - lookBack && n.fireAt <= now + 30_000);
 
       if (!due.length) return;
 
       let expired = false;
+      const failedIds = new Set();
 
       await Promise.all(due.map(async n => {
         if (expired) return;
-        const status = await sendPush(sub, {
-          title:  n.title,
-          body:   n.body || '',
-          id:     n.id,
-          type:   n.type   ?? 'meeting',
-          prayer: n.prayer ?? null,
-        }, env.VAPID_PRIVATE_KEY, env.VAPID_SUBJECT);
+        try {
+          const status = await sendPush(sub, {
+            title:  n.title,
+            body:   n.body || '',
+            id:     n.id,
+            type:   n.type   ?? 'meeting',
+            prayer: n.prayer ?? null,
+          }, env.VAPID_PRIVATE_KEY, env.VAPID_SUBJECT);
 
-        console.log(`push → ${row.id} [${n.title}] → HTTP ${status}`);
+          console.log(`push → ${row.id} [${n.title}] → HTTP ${status}`);
 
-        if (status === 410 || status === 404) {
-          writes.push(env.DB.prepare('DELETE FROM push_subs WHERE id = ?').bind(row.id));
-          expired = true;
+          if (status === 410 || status === 404) {
+            writes.push(env.DB.prepare('DELETE FROM push_subs WHERE id = ?').bind(row.id));
+            expired = true;
+          }
+        } catch (e) {
+          // don't let one failed send abort the whole row's schedule cleanup below —
+          // that would resend the notifications that DID succeed in this same batch
+          // on the next tick. Keep this one in the schedule so it's retried instead.
+          console.error(`push send failed for ${row.id} [${n.title}]:`, e.message);
+          failedIds.add(n.id);
         }
       }));
 
       if (!expired) {
+        const remain = schedule.filter(n => {
+          if (failedIds.has(n.id)) return true;               // retry next tick
+          if (due.some(d => d.id === n.id)) return false;      // sent successfully, drop
+          if (n.fireAt < now - lookBack) {                     // missed the window and will
+            console.warn(`push: pruning stale notification ${n.id} for ${row.id}`); // never re-enter `due` — prune instead
+            return false;                                      // of leaving a zombie entry
+          }
+          return true;                                         // still pending, keep
+        });
         const nextFireAt = remain.length ? Math.min(...remain.map(n => n.fireAt)) : 0;
         writes.push(
           env.DB.prepare('UPDATE push_subs SET schedule = ?, next_fire_at = ? WHERE id = ?')

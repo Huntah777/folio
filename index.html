@@ -224,6 +224,8 @@ const { useState, useEffect, useRef, useMemo, useCallback } = React;
 
 /* ── utils ── */
 const uid = () => Math.random().toString(36).slice(2,9);
+/* decode a URI-encoded [url:title|url] token part, tolerating older unencoded values already in storage */
+const decodeUrlPart = s => { try { return decodeURIComponent(s); } catch { return s; } };
 const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 const DAY_SHORT = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 const fmtKey = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
@@ -276,8 +278,8 @@ function renderMd(text) {
     if (/^\s*[-*] /.test(ln)) {
       out.push('<ul class="md-ul">');
       while (i < lines.length && /^\s*[-*] /.test(lines[i])) {
-        const lm = lines[i].match(/^(\s*)[-*] (\[x\] |\[ \] )?(.+)/i);
-        if (!lm) break;
+        const lm = lines[i].match(/^(\s*)[-*] (\[x\] |\[ \] )?(.*)/i);
+        if (!lm) { i++; break; }
         const depth = Math.floor(lm[1].length / 2);
         const isDone = lm[2] && /x/i.test(lm[2]);
         const isTodo = !!lm[2];
@@ -425,13 +427,14 @@ const Sync = {
     if (!r.ok) throw new Error(`HTTP_${r.status}`);
     return r.json();
   },
-  async save(state) {
+  async save(state, opts={}) {
     const token = this.getToken();
     if (!token) throw new Error('NO_TOKEN');
     const r = await fetch(ENDPOINT, {
       method: 'PUT',
       headers: { Authorization:`Bearer ${token}`, 'Content-Type':'application/json' },
       body: JSON.stringify(state),
+      ...(opts.keepalive ? { keepalive: true } : {}),
     });
     if (r.status === 401) throw new Error('UNAUTHORIZED');
     if (!r.ok) throw new Error(`HTTP_${r.status}`);
@@ -921,7 +924,7 @@ function NoteEditor({ note, state, update, isMobile }) {
       else if(m[5]!==undefined)
         parts.push({type:'image',id:m[5]});
       else
-        parts.push({type:'link',title:m[3]||'',url:m[4]||''});
+        parts.push({type:'link',title:decodeUrlPart(m[3]||''),url:decodeUrlPart(m[4]||'')});
       last=m.index+m[0].length;
     }
     if(last<rest.length) parts.push({type:'text',content:rest.slice(last)});
@@ -939,11 +942,16 @@ function NoteEditor({ note, state, update, isMobile }) {
 
   const upNote = patch => update('notes', state.notes.map(n => n.id===note.id ? {...n,...patch,updated:Date.now()} : n));
   const removeTag = t => upNote({ tags: note.tags.filter(x=>x!==t) });
-  const addTag = t => { const clean=t.startsWith('#')?t:'#'+t; if(!note.tags.includes(clean)) upNote({tags:[...note.tags,clean]}); };
+  const addTag = t => {
+    const clean = t.trim().replace(/^#*/,'#');
+    if (clean.length <= 1) return;
+    if (!note.tags.includes(clean)) upNote({tags:[...note.tags,clean]});
+    if (!state.tags.includes(clean)) update('tags',[...state.tags,clean]);
+  };
 
   const rebuildBody = np => np.map(p=>{
     if(p.type==='code') return '```'+p.lang+'\n'+p.content+'\n```';
-    if(p.type==='link') return '[url:'+p.title+'|'+p.url+']';
+    if(p.type==='link') return '[url:'+encodeURIComponent(p.title)+'|'+encodeURIComponent(p.url)+']';
     if(p.type==='image') return '[img:'+p.id+']';
     return p.content;
   }).join('');
@@ -972,10 +980,11 @@ function NoteEditor({ note, state, update, isMobile }) {
     const lineEnd = val.indexOf('\n', pos);
     const lineEndPos = lineEnd === -1 ? val.length : lineEnd;
     const line = val.slice(lineStart, lineEndPos);
-    const existingM = line.match(/^(#{1,3} |[-*] (?:\[[ xX]\] )?|> )/);
-    const existingPrefix = existingM ? existingM[0] : '';
-    const rawContent = line.slice(existingPrefix.length);
-    const newLine = existingPrefix === prefix ? rawContent : prefix + rawContent;
+    const existingM = line.match(/^(\s*)(#{1,3} |[-*] (?:\[[ xX]\] )?|> )?/);
+    const indent = existingM[1];
+    const existingPrefix = existingM[2] || '';
+    const rawContent = line.slice(indent.length + existingPrefix.length);
+    const newLine = indent + (existingPrefix === prefix ? rawContent : prefix + rawContent);
     const cursorDelta = newLine.length - line.length;
     const newVal = val.slice(0, lineStart) + newLine + val.slice(lineEndPos);
     const np = [...bodyParts]; np[partIdx] = {...np[partIdx], content: newVal};
@@ -1096,7 +1105,7 @@ function NoteEditor({ note, state, update, isMobile }) {
       if (!content.trim()) {
         // Empty bullet — unindent one level, or exit list if already at root
         if (indent.length >= 2) {
-          const newLine = indent.slice(2) + '- ' + (todoPrefix ? '[ ] ' : '');
+          const newLine = indent.slice(2) + bm[2] + ' ' + (todoPrefix ? '[ ] ' : '');
           apply(val.slice(0, lineStart) + newLine + val.slice(lineEndPos), lineStart + newLine.length);
         } else {
           // Remove the empty bullet entirely
@@ -1104,7 +1113,7 @@ function NoteEditor({ note, state, update, isMobile }) {
         }
       } else {
         // Continue list: new bullet at same indent + same type
-        const newBullet = '\n' + indent + '- ' + (todoPrefix ? '[ ] ' : '');
+        const newBullet = '\n' + indent + bm[2] + ' ' + (todoPrefix ? '[ ] ' : '');
         apply(val.slice(0, pos) + newBullet + val.slice(pos), pos + newBullet.length);
       }
       return;
@@ -1118,7 +1127,7 @@ function NoteEditor({ note, state, update, isMobile }) {
         e.preventDefault();
         if (bm[1].length >= 2) {
           // Unindent first
-          const newLine = bm[1].slice(2) + '- ' + (bm[3] ? '[ ] ' : '');
+          const newLine = bm[1].slice(2) + bm[2] + ' ' + (bm[3] ? '[ ] ' : '');
           apply(val.slice(0, lineStart) + newLine + val.slice(lineEndPos), lineStart + newLine.length);
         } else if (lineStart > 0) {
           // Remove the bullet line and merge with previous line
@@ -1195,7 +1204,7 @@ function NoteEditor({ note, state, update, isMobile }) {
     const title = wlTitle.trim() || (() => { try { return new URL(url).hostname; } catch { return url; } })();
     insertAtCursor(
       {type:'link', title, url},
-      (note.body||'')+'\n\n[url:'+title+'|'+url+']'
+      (note.body||'')+'\n\n[url:'+encodeURIComponent(title)+'|'+encodeURIComponent(url)+']'
     );
     setWlUrl(''); setWlTitle(''); setShowWebLink(false);
   };
@@ -2034,8 +2043,9 @@ function TasksView({ state, update, isMobile, pom, setPom }) {
                   </button>
                   {!t.done&&(
                     <button onClick={()=>{
-                      if(pom?.taskId===t.id) pomPlayClick(pom,setPom,t);
-                      else if(t.timeBlock){
+                      if(pom?.taskId===t.id) { pomPlayClick(pom,setPom,t); return; }
+                      if(pom) pomStop(pom,setPom,state.tasks,update,state.tasks.find(x=>x.id===pom.taskId));
+                      if(t.timeBlock){
                         const capSecs=t.timeBlock*60, endsAt=Date.now()+capSecs*1000;
                         const next={taskId:t.id,mode:'cap',phase:'work',remaining:capSecs,endsAt,
                           sessionsDone:0,workSecs:capSecs,breakSecs:0,paused:false,awaitingStart:false};
@@ -2148,7 +2158,11 @@ function occursOnDay(m, d) {
   if (r === 'none')    return false;
   if (r === 'daily')   return true;
   if (r === 'weekly')  return (m.recurrenceDays||[]).includes(d.getDay());
-  if (r === 'monthly') return d.getDate() === parseKey(m.date).getDate();
+  if (r === 'monthly') {
+    const targetDay = parseKey(m.date).getDate();
+    const daysInMonth = new Date(d.getFullYear(), d.getMonth()+1, 0).getDate();
+    return d.getDate() === Math.min(targetDay, daysInMonth);
+  }
   return false;
 }
 
@@ -4950,7 +4964,7 @@ function App() {
     const flush = () => {
       if (!pendingFlush.current) return;
       clearTimeout(saveTimer.current);
-      Sync.save(pendingFlush.current).catch(() => {});
+      Sync.save(pendingFlush.current, { keepalive: true }).catch(() => {});
       pendingFlush.current = null;
     };
     const onVisibility = () => { if (document.visibilityState === 'hidden') flush(); };
@@ -4968,9 +4982,14 @@ function App() {
     if (syncingRef.current) return;
     syncingRef.current = true;
     clearTimeout(saveTimer.current);
-    pendingFlush.current = null;
+    const pending = pendingFlush.current;
     setSyncStatus('syncing');
     try {
+      if (pending) {
+        await Sync.save(pending);
+        /* only clear it if a newer edit hasn't replaced it while we were awaiting */
+        if (pendingFlush.current === pending) pendingFlush.current = null;
+      }
       const remote = await Sync.load();
       const current = stateRef.current;
       const merged = hydrate(remote || {});

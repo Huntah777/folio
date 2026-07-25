@@ -57,6 +57,11 @@ export async function onRequest({ request, env }) {
     if (request.method === 'POST') {
       const { downloadLocation } = await request.json();
       if (!downloadLocation) return json({ error: 'Missing downloadLocation' }, 400);
+      // must be an api.unsplash.com URL — otherwise this endpoint could be used to leak
+      // UNSPLASH_ACCESS_KEY to an attacker-controlled host via the client_id query param
+      let host;
+      try { host = new URL(downloadLocation).hostname; } catch { return json({ error: 'Invalid downloadLocation' }, 400); }
+      if (host !== 'api.unsplash.com') return json({ error: 'Invalid downloadLocation' }, 400);
       const sep = downloadLocation.includes('?') ? '&' : '?';
       await fetch(`${downloadLocation}${sep}client_id=${env.UNSPLASH_ACCESS_KEY}`).catch(() => {});
       return json({ ok: true });
