@@ -4,3 +4,4 @@ node_modules/
 *.local
 wrangler.toml
 push-worker/wrangler.toml
+.fake
