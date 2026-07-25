@@ -447,6 +447,33 @@ const Cache = {
   write(s) { try { localStorage.setItem(STORE,JSON.stringify(s)); } catch {} },
 };
 
+/* ── per-item last-write-wins merge with soft-delete tombstones ──
+   Used for notes/tasks/meetings/journal during sync merges. For every id seen in any
+   of the four inputs, whichever has the LATEST timestamp wins: a newer edit beats an
+   older tombstone (so editing something after an unaware device deleted it effectively
+   undeletes it — expected last-write-wins behavior, not a bug), and a newer tombstone
+   beats an older edit (so a delete that's genuinely the most recent action sticks).
+   Tombstones older than TOMBSTONE_TTL_MS are pruned so they don't grow unbounded. */
+const TOMBSTONE_TTL_MS = 90 * 24 * 60 * 60 * 1000; // 90 days
+function mergeById(localItems, remoteItems, localTombstones, remoteTombstones) {
+  const winners = new Map();
+  const consider = (id, ts, kind, value) => {
+    const cur = winners.get(id);
+    if (!cur || ts >= cur.ts) winners.set(id, { ts, kind, value }); // local wins exact ties (processed 2nd)
+  };
+  (remoteItems||[]).forEach(it => consider(it.id, it.updated||0, 'item', it));
+  (localItems||[]).forEach(it => consider(it.id, it.updated||0, 'item', it));
+  (remoteTombstones||[]).forEach(t => consider(t.id, t.deletedAt||0, 'tomb', t));
+  (localTombstones||[]).forEach(t => consider(t.id, t.deletedAt||0, 'tomb', t));
+  const items = [], tombstones = [];
+  const now = Date.now();
+  for (const w of winners.values()) {
+    if (w.kind === 'item') items.push(w.value);
+    else if (now - (w.value.deletedAt||0) <= TOMBSTONE_TTL_MS) tombstones.push(w.value);
+  }
+  return { items, tombstones };
+}
+
 /* ── themes (device-local — never synced through Sync/Cache/SEED) ── */
 const THEME_KEY = 'folio_theme';
 const THEMES = {
@@ -502,6 +529,12 @@ const SEED = () => ({
   meetings: [],
   folders: [],
   journal: [],
+  /* tombstones — {id, deletedAt} records so a stale save from another device can't
+     resurrect something deleted elsewhere; see mergeById() */
+  notesDeleted: [],
+  tasksDeleted: [],
+  meetingsDeleted: [],
+  journalDeleted: [],
   kanbanCols: [
     {id:'todo',      name:'To Do',       color:'#818cf8'},
     {id:'inprogress',name:'In Progress', color:'#f59e0b'},
@@ -1589,6 +1622,7 @@ function NoteEditor({ note, state, update, isMobile }) {
             if(confirm('Delete this note?')){
               const id = note.id;
               update('notes', prev => (prev||state.notes).filter(n=>n.id!==id));
+              update('notesDeleted', prev => [...(prev||[]), { id, deletedAt: Date.now() }]);
               update('ui', {...state.ui, noteId:null});
             }
           }}
@@ -1651,6 +1685,7 @@ function NotesView({ state, update, isMobile }) {
   };
   const deleteNote = id => {
     update('notes', state.notes.filter(n=>n.id!==id));
+    update('notesDeleted', [...(state.notesDeleted||[]), { id, deletedAt: Date.now() }]);
     if (noteId===id) update('ui',{...state.ui,noteId:null});
     setSelectedIds(prev=>{ const s=new Set(prev); s.delete(id); return s; });
   };
@@ -1660,6 +1695,7 @@ function NotesView({ state, update, isMobile }) {
   };
   const deleteSelected = () => {
     update('notes', state.notes.filter(n=>!selectedIds.has(n.id)));
+    update('notesDeleted', [...(state.notesDeleted||[]), ...[...selectedIds].map(id => ({ id, deletedAt: Date.now() }))]);
     if (selectedIds.has(noteId)) update('ui',{...state.ui,noteId:null});
     setSelectedIds(new Set());
   };
@@ -1859,36 +1895,44 @@ function TasksView({ state, update, isMobile, pom, setPom }) {
   const [tagFilter, setTagFilter] = useState('');
   const [editTagInput, setEditTagInput] = useState('');
 
-  const toggleTask = id => update('tasks', state.tasks.map(t=>t.id===id?{...t,done:!t.done}:t));
-  const toggleSub = (tid,sid) => update('tasks', state.tasks.map(t=>t.id===tid?{...t,subtasks:t.subtasks.map(s=>s.id===sid?{...s,done:!s.done}:s)}:t));
-  const delTask = id => { update('tasks', state.tasks.filter(t=>t.id!==id)); setSelectedTaskIds(p=>{const s=new Set(p);s.delete(id);return s;}); };
+  const toggleTask = id => update('tasks', state.tasks.map(t=>t.id===id?{...t,done:!t.done,updated:Date.now()}:t));
+  const toggleSub = (tid,sid) => update('tasks', state.tasks.map(t=>t.id===tid?{...t,subtasks:t.subtasks.map(s=>s.id===sid?{...s,done:!s.done}:s),updated:Date.now()}:t));
+  const delTask = id => {
+    update('tasks', state.tasks.filter(t=>t.id!==id));
+    update('tasksDeleted', [...(state.tasksDeleted||[]), { id, deletedAt: Date.now() }]);
+    setSelectedTaskIds(p=>{const s=new Set(p);s.delete(id);return s;});
+  };
   const toggleTaskSel = (e,id) => { e.stopPropagation(); setSelectedTaskIds(p=>{const s=new Set(p);s.has(id)?s.delete(id):s.add(id);return s;}); };
-  const deleteSelectedTasks = () => { update('tasks',state.tasks.filter(t=>!selectedTaskIds.has(t.id))); setSelectedTaskIds(new Set()); };
+  const deleteSelectedTasks = () => {
+    update('tasks',state.tasks.filter(t=>!selectedTaskIds.has(t.id)));
+    update('tasksDeleted', [...(state.tasksDeleted||[]), ...[...selectedTaskIds].map(id => ({ id, deletedAt: Date.now() }))]);
+    setSelectedTaskIds(new Set());
+  };
   const addTaskTag = (id, tag) => {
     const c=tag.startsWith('#')?tag:'#'+tag;
-    update('tasks',state.tasks.map(t=>t.id===id&&!(t.tags||[]).includes(c)?{...t,tags:[...(t.tags||[]),c]}:t));
+    update('tasks',state.tasks.map(t=>t.id===id&&!(t.tags||[]).includes(c)?{...t,tags:[...(t.tags||[]),c],updated:Date.now()}:t));
     if (!state.tags.includes(c)) update('tags',[...state.tags,c]);
   };
-  const removeTaskTag = (id, tag) => update('tasks',state.tasks.map(t=>t.id===id?{...t,tags:(t.tags||[]).filter(tg=>tg!==tag)}:t));
+  const removeTaskTag = (id, tag) => update('tasks',state.tasks.map(t=>t.id===id?{...t,tags:(t.tags||[]).filter(tg=>tg!==tag),updated:Date.now()}:t));
 
   const addTask = e => {
     e.preventDefault();
     if(!newTitle.trim()) return;
-    update('tasks',[{id:uid(),title:newTitle,done:false,priority:newPrio,due:newDue,tags:[],subtasks:[],kanbanCol:'todo',created:Date.now()},...state.tasks]);
+    update('tasks',[{id:uid(),title:newTitle,done:false,priority:newPrio,due:newDue,tags:[],subtasks:[],kanbanCol:'todo',created:Date.now(),updated:Date.now()},...state.tasks]);
     setNewTitle(''); setNewDue(''); setNewPrio('medium');
   };
   const cancelAdd = () => { setNewTitle(''); setNewDue(''); setNewPrio('medium'); };
   const addSub = (tid) => {
     const v = subInput[tid]||'';
     if(!v.trim()) return;
-    update('tasks',state.tasks.map(t=>t.id===tid?{...t,subtasks:[...t.subtasks,{id:uid(),title:v,done:false}]}:t));
+    update('tasks',state.tasks.map(t=>t.id===tid?{...t,subtasks:[...t.subtasks,{id:uid(),title:v,done:false}],updated:Date.now()}:t));
     setSubInput({...subInput,[tid]:''});
   };
   const startEdit = t => setEditing({ id:t.id, title:t.title, priority:t.priority||'medium', due:t.due||'', tags:t.tags||[], timeBlock:t.timeBlock??'', pomWork:t.pomWork??25, pomBreak:t.pomBreak??5 });
   const saveEdit = e => {
     e.preventDefault();
     if(!editing.title.trim()) return;
-    update('tasks', state.tasks.map(t=>t.id===editing.id?{...t,title:editing.title,priority:editing.priority,due:editing.due,tags:editing.tags||[],timeBlock:editing.timeBlock?Number(editing.timeBlock):null,pomWork:Number(editing.pomWork)||25,pomBreak:Number(editing.pomBreak)||5}:t));
+    update('tasks', state.tasks.map(t=>t.id===editing.id?{...t,title:editing.title,priority:editing.priority,due:editing.due,tags:editing.tags||[],timeBlock:editing.timeBlock?Number(editing.timeBlock):null,pomWork:Number(editing.pomWork)||25,pomBreak:Number(editing.pomBreak)||5,updated:Date.now()}:t));
     const newTags = (editing.tags||[]).filter(tg=>!state.tags.includes(tg));
     if (newTags.length) update('tags',[...state.tags,...newTags]);
     setEditing(null);
@@ -1898,10 +1942,10 @@ function TasksView({ state, update, isMobile, pom, setPom }) {
   const saveEditSub = e => {
     e.preventDefault();
     if(!editingSub.title.trim()) return;
-    update('tasks', state.tasks.map(t=>t.id===editingSub.tid?{...t,subtasks:t.subtasks.map(s=>s.id===editingSub.sid?{...s,title:editingSub.title}:s)}:t));
+    update('tasks', state.tasks.map(t=>t.id===editingSub.tid?{...t,subtasks:t.subtasks.map(s=>s.id===editingSub.sid?{...s,title:editingSub.title}:s),updated:Date.now()}:t));
     setEditingSub(null);
   };
-  const delSub = (tid,sid) => update('tasks', state.tasks.map(t=>t.id===tid?{...t,subtasks:t.subtasks.filter(s=>s.id!==sid)}:t));
+  const delSub = (tid,sid) => update('tasks', state.tasks.map(t=>t.id===tid?{...t,subtasks:t.subtasks.filter(s=>s.id!==sid),updated:Date.now()}:t));
 
   const PRIO_ORDER = { high:0, medium:1, low:2, none:3 };
   const byPrio = arr => [...arr].sort((a,b)=>(PRIO_ORDER[a.priority||'none']??3)-(PRIO_ORDER[b.priority||'none']??3));
@@ -2255,6 +2299,7 @@ function CalendarView({ state, update, isMobile }) {
       recurrence: form.recurrence,
       recurrenceDays: form.recurrence==='weekly' ? form.recurrenceDays : [],
       recurrenceEnd: form.recurrence!=='none' ? form.recurrenceEnd : '',
+      updated: Date.now(),
     };
     update('meetings',[...state.meetings, m]);
     setShowModal(false);
@@ -2265,7 +2310,7 @@ function CalendarView({ state, update, isMobile }) {
     const body = `## Attendees\n${m.attendees||'—'}\n\n## Agenda\n- \n\n## Notes\n\n## Action Items\n- [ ] ${recLine}`;
     const n = { id:uid(), emoji:'🗓', title:`${m.title} — ${selDate}`, body, tags:['#meeting'], links:[], images:[], created:Date.now(), updated:Date.now() };
     update('notes',[n,...state.notes]);
-    update('meetings',state.meetings.map(x=>x.id===m.id?{...x,noteId:n.id}:x));
+    update('meetings',state.meetings.map(x=>x.id===m.id?{...x,noteId:n.id,updated:Date.now()}:x));
     update('ui',{...state.ui,view:'notes',noteId:n.id});
   };
 
@@ -2292,20 +2337,25 @@ function CalendarView({ state, update, isMobile }) {
       recurrenceEnd:editForm.recurrence!=='none'?editForm.recurrenceEnd:'',
     };
     if (isRecurring && editScope==='one' && !m.exceptionDate) {
-      const exception = {...m,...updates, id:uid(), exceptionDate:selDate, editedFrom:m.editedFrom||m.id, recurrence:'none', recurrenceDays:[], recurrenceEnd:''};
+      const exception = {...m,...updates, id:uid(), exceptionDate:selDate, editedFrom:m.editedFrom||m.id, recurrence:'none', recurrenceDays:[], recurrenceEnd:'', updated:Date.now()};
       const origId = m.editedFrom || m.id;
-      const updated = state.meetings.map(x=>x.id===origId?{...x,exceptions:[...(x.exceptions||[]),selDate]}:x);
-      update('meetings',[...updated, exception]);
+      const updatedList = state.meetings.map(x=>x.id===origId?{...x,exceptions:[...(x.exceptions||[]),selDate],updated:Date.now()}:x);
+      update('meetings',[...updatedList, exception]);
     } else {
-      update('meetings', state.meetings.map(x=>x.id===m.id?{...x,...updates}:x));
+      update('meetings', state.meetings.map(x=>x.id===m.id?{...x,...updates,updated:Date.now()}:x));
     }
     setEditModal(null);
   };
 
+  const tombstoneMeetings = ids => update('meetingsDeleted', [...(state.meetingsDeleted||[]), ...ids.map(id => ({ id, deletedAt: Date.now() }))]);
+
   const handleDeleteClick = m => {
     const isRecurring = (m.recurrence && m.recurrence !== 'none') || m.exceptionDate;
     if (!isRecurring) {
-      if (confirm(`Delete "${m.title}"?`)) update('meetings', state.meetings.filter(x=>x.id!==m.id));
+      if (confirm(`Delete "${m.title}"?`)) {
+        update('meetings', state.meetings.filter(x=>x.id!==m.id));
+        tombstoneMeetings([m.id]);
+      }
       return;
     }
     setConfirmDel(m.id === confirmDel ? null : m.id);
@@ -2314,15 +2364,18 @@ function CalendarView({ state, update, isMobile }) {
   const doDeleteOne = m => {
     if (m.exceptionDate) {
       update('meetings', state.meetings.filter(x=>x.id!==m.id));
+      tombstoneMeetings([m.id]);
     } else {
-      update('meetings', state.meetings.map(x=>x.id===m.id?{...x,exceptions:[...(x.exceptions||[]),selDate]}:x));
+      update('meetings', state.meetings.map(x=>x.id===m.id?{...x,exceptions:[...(x.exceptions||[]),selDate],updated:Date.now()}:x));
     }
     setConfirmDel(null);
   };
 
   const doDeleteAll = m => {
     const origId = m.editedFrom || m.id;
+    const removedIds = state.meetings.filter(x=>x.id===origId || x.editedFrom===origId).map(x=>x.id);
     update('meetings', state.meetings.filter(x=>x.id!==origId && x.editedFrom!==origId));
+    tombstoneMeetings(removedIds);
     setConfirmDel(null);
   };
 
@@ -2719,7 +2772,7 @@ function TodayView({ state, update, isMobile }) {
   const recent = [...state.notes].sort((a,b)=>b.updated-a.updated).slice(0,4);
   const pinned = [...state.notes].filter(n=>n.pinned).sort((a,b)=>b.updated-a.updated);
 
-  const toggleTask = id => update('tasks',state.tasks.map(t=>t.id===id?{...t,done:!t.done}:t));
+  const toggleTask = id => update('tasks',state.tasks.map(t=>t.id===id?{...t,done:!t.done,updated:Date.now()}:t));
   const todaySalahTimes = useSalahTimes(todayKey(), state.salah);
 
   return (
@@ -2934,7 +2987,10 @@ function JournalView({ state, update, isMobile }) {
     update('journal', entries.map(e=>e.id===editingId?{...e,body:editText.trim(),mood:editMood,tags:editTags,updated:Date.now()}:e));
     setEditingId(null);
   };
-  const deleteEntry = id => update('journal', entries.filter(e=>e.id!==id));
+  const deleteEntry = id => {
+    update('journal', entries.filter(e=>e.id!==id));
+    update('journalDeleted', [...(state.journalDeleted||[]), { id, deletedAt: Date.now() }]);
+  };
 
   const cardLabel = { fontSize:11,fontWeight:700,letterSpacing:'.08em',textTransform:'uppercase',marginBottom:10 };
 
@@ -3136,9 +3192,13 @@ function KanbanView({ state, update, isMobile }) {
   const [draggingId,  setDraggingId]  = useState(null);  // for card opacity
   const [dragOverCol, setDragOverCol] = useState(null);  // column highlight
 
-  const moveTask   = (id, colId) => update('tasks', state.tasks.map(t=>t.id===id?{...t,kanbanCol:colId}:t));
-  const updateTask = (id, patch) => update('tasks', state.tasks.map(t=>t.id===id?{...t,...patch}:t));
-  const deleteTask = id           => { update('tasks', state.tasks.filter(t=>t.id!==id)); if(expandedCard===id) setExpandedCard(null); };
+  const moveTask   = (id, colId) => update('tasks', state.tasks.map(t=>t.id===id?{...t,kanbanCol:colId,updated:Date.now()}:t));
+  const updateTask = (id, patch) => update('tasks', state.tasks.map(t=>t.id===id?{...t,...patch,updated:Date.now()}:t));
+  const deleteTask = id => {
+    update('tasks', state.tasks.filter(t=>t.id!==id));
+    update('tasksDeleted', [...(state.tasksDeleted||[]), { id, deletedAt: Date.now() }]);
+    if(expandedCard===id) setExpandedCard(null);
+  };
   const addKanbanTag = (tid, tag) => {
     const c = tag.startsWith('#') ? tag : '#'+tag;
     const task = state.tasks.find(t=>t.id===tid);
@@ -3156,7 +3216,7 @@ function KanbanView({ state, update, isMobile }) {
   const addKanbanTask = colId => {
     const title = (quickAdd[colId]||'').trim();
     if (!title) return;
-    update('tasks', [{id:uid(),title,done:false,priority:'medium',due:'',subtasks:[],created:Date.now(),kanbanCol:colId},...state.tasks]);
+    update('tasks', [{id:uid(),title,done:false,priority:'medium',due:'',subtasks:[],created:Date.now(),updated:Date.now(),kanbanCol:colId},...state.tasks]);
     setQuickAdd({...quickAdd,[colId]:''});
   };
 
@@ -3168,7 +3228,7 @@ function KanbanView({ state, update, isMobile }) {
   };
   const deleteCol = id => {
     update('kanbanCols', cols.filter(c=>c.id!==id));
-    update('tasks', state.tasks.map(t=>t.kanbanCol===id?{...t,kanbanCol:'todo'}:t));
+    update('tasks', state.tasks.map(t=>t.kanbanCol===id?{...t,kanbanCol:'todo',updated:Date.now()}:t));
   };
   const saveRenameCol = e => {
     e.preventDefault();
@@ -4854,6 +4914,26 @@ function App() {
     return merged;
   };
 
+  /* ── merge a local snapshot against a freshly-pulled remote one ──
+     Per-item last-write-wins for notes/tasks/meetings/journal (via mergeById, which
+     also folds in tombstones so deletions survive a stale save from another device),
+     simple "keep local-only extras" for folders (no delete-tracking needed there),
+     and a plain union for tags (flat strings, no delete concept at all). */
+  const mergeState = (local, remote) => {
+    const merged = hydrate(remote);
+    ['notes','tasks','meetings','journal'].forEach(key => {
+      const tKey = key + 'Deleted';
+      const { items, tombstones } = mergeById(local?.[key], remote?.[key], local?.[tKey], remote?.[tKey]);
+      merged[key] = items;
+      merged[tKey] = tombstones;
+    });
+    const remoteFolderIds = new Set((remote?.folders||[]).map(x => x.id));
+    const folderExtras = (local?.folders||[]).filter(x => !remoteFolderIds.has(x.id));
+    if (folderExtras.length) merged.folders = [...merged.folders, ...folderExtras];
+    merged.tags = [...new Set([...(remote?.tags||[]), ...(local?.tags||[])])];
+    return merged;
+  };
+
   /* ── initial load ── */
   useEffect(() => { (async () => {
     const cache = Cache.read();
@@ -4875,15 +4955,10 @@ function App() {
         await Sync.save(seeded);
         setStateRaw(seeded);
       } else {
-        // Remote wins for conflicts, but preserve local-only items not yet synced to D1
-        const merged = hydrate(remote);
-        let hasExtras = false;
-        ['notes','tasks','meetings','folders'].forEach(key => {
-          const remoteIds = new Set((remote[key]||[]).map(x => x.id));
-          const extras = (cache?.[key]||[]).filter(x => !remoteIds.has(x.id));
-          if (extras.length) { merged[key] = [...merged[key], ...extras]; hasExtras = true; }
-        });
-        if (hasExtras) Sync.save(merged).catch(() => {});
+        // Per-item last-write-wins merge (with tombstones for deletes) between the local
+        // cache and the freshly-pulled remote copy
+        const merged = mergeState(cache, remote);
+        Sync.save(merged).catch(() => {});
         setStateRaw(merged);
       }
       setSyncStatus('synced');
@@ -4910,14 +4985,8 @@ function App() {
       await Sync.save(hydrated);
       setStateRaw(hydrated);
     } else if (!remoteEmpty) {
-      const merged = hydrate(remote);
-      let hasExtras = false;
-      ['notes','tasks','meetings','folders'].forEach(key => {
-        const remoteIds = new Set((remote[key]||[]).map(x => x.id));
-        const extras = (cache?.[key]||[]).filter(x => !remoteIds.has(x.id));
-        if (extras.length) { merged[key] = [...merged[key], ...extras]; hasExtras = true; }
-      });
-      if (hasExtras) await Sync.save(merged);
+      const merged = mergeState(cache, remote);
+      await Sync.save(merged);
       setStateRaw(merged);
     }
     setSyncStatus('synced');
@@ -4992,14 +5061,8 @@ function App() {
       }
       const remote = await Sync.load();
       const current = stateRef.current;
-      const merged = hydrate(remote || {});
-      let hasExtras = false;
-      ['notes','tasks','meetings','folders'].forEach(key => {
-        const remoteIds = new Set(((remote||{})[key]||[]).map(x => x.id));
-        const extras = (current?.[key]||[]).filter(x => !remoteIds.has(x.id));
-        if (extras.length) { merged[key] = [...merged[key], ...extras]; hasExtras = true; }
-      });
-      if (hasExtras) await Sync.save(merged);
+      const merged = mergeState(current, remote || {});
+      await Sync.save(merged);
       Cache.write(merged);
       setStateRaw(merged);
       lastSyncRef.current = Date.now();
