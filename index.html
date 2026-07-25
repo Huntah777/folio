@@ -472,6 +472,26 @@ function applyBackground(pref) {
   root.setProperty('--app-bg-scrim', pref?.url ? 'color-mix(in srgb, var(--bg-app) 55%, transparent)' : 'transparent');
 }
 
+/* ── section cover banners, Notion-style — synced via state.banners like notes/tasks ── */
+/* legacy device-local key from before banners synced; read once to migrate, never written again */
+const BANNERS_KEY = 'folio_banners';
+const LegacyBannerPrefs = {
+  get() { try { return JSON.parse(localStorage.getItem(BANNERS_KEY)) || {}; } catch { return {}; } },
+};
+const SECTION_LABELS = { today:'Today', notes:'Notes', journal:'Journal', tasks:'Tasks', kanban:'Kanban', calendar:'Calendar', tags:'Tags' };
+const BANNER_GRADIENTS = [
+  'linear-gradient(135deg,#667eea,#764ba2)',
+  'linear-gradient(135deg,#f093fb,#f5576c)',
+  'linear-gradient(135deg,#4facfe,#00f2fe)',
+  'linear-gradient(135deg,#43e97b,#38f9d7)',
+  'linear-gradient(135deg,#fa709a,#fee140)',
+  'linear-gradient(135deg,#30cfd0,#330867)',
+  'linear-gradient(135deg,#a8edea,#fed6e3)',
+  'linear-gradient(135deg,#ff9a9e,#fecfef)',
+  'linear-gradient(135deg,#0f2027,#203a43,#2c5364)',
+  'linear-gradient(135deg,#232526,#414345)',
+];
+
 /* ── seed ── */
 const SEED = () => ({
   notes: [],
@@ -487,6 +507,7 @@ const SEED = () => ({
   ],
   tags: ['#getting-started','#work','#personal','#ideas','#meeting'],
   salah: { enabled:false, lat:null, lng:null, method:'mwl', asr:'standard', prayers:{fajr:true,sunrise:false,dhuhr:true,asr:true,maghrib:true,isha:true} },
+  banners: {},
   ui: { view:'today', noteId: null, calDate: todayKey(), filterTag:'', folderId: null },
 });
 
@@ -560,6 +581,7 @@ const Ic = {
   code:    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>,
   img:     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>,
   copy:    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>,
+  move:    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><polyline points="5 9 2 12 5 15"/><polyline points="9 5 12 2 15 5"/><polyline points="15 19 12 22 9 19"/><polyline points="19 9 22 12 19 15"/><line x1="2" y1="12" x2="22" y2="12"/><line x1="12" y1="2" x2="12" y2="22"/></svg>,
 };
 
 const LANGS = ['plaintext','javascript','typescript','python','rust','go','csharp','bash','powershell','sql','json','css','jsx'];
@@ -4061,6 +4083,191 @@ function BackgroundSection({ background, onChange }) {
   );
 }
 
+/* ── BannerPickerModal — cover picker for section banners, mirrors BackgroundSection ── */
+function BannerPickerModal({ sectionId, banner, onChange, onClose }) {
+  const [urlInput, setUrlInput]   = useState(banner?.type==='image' ? banner.url : '');
+  const [query, setQuery]         = useState('');
+  const [results, setResults]     = useState([]);
+  const [searching, setSearching] = useState(false);
+  const [searchMsg, setSearchMsg] = useState(null);
+
+  const applyUrl = () => {
+    const url = urlInput.trim();
+    if (!url) return;
+    onChange({ type:'image', url, source:'url', attribution:null, positionY:50 });
+  };
+  const runSearch = async e => {
+    e.preventDefault();
+    if (!query.trim()) return;
+    if (!Sync.configured()) { setSearchMsg('Set up sync first — the Unsplash proxy uses the same token.'); return; }
+    setSearching(true); setSearchMsg(null);
+    try {
+      const r = await fetch(`/api/unsplash?q=${encodeURIComponent(query.trim())}`, {
+        headers: { Authorization: `Bearer ${Sync.getToken()}` },
+      });
+      const data = await r.json();
+      if (data.error === 'not_configured') { setSearchMsg('Add an Unsplash key to enable search — pasting a link still works.'); setResults([]); }
+      else if (data.error) { setSearchMsg('Search failed — try again.'); setResults([]); }
+      else { setResults(data.results || []); if (!data.results?.length) setSearchMsg('No results.'); }
+    } catch { setSearchMsg('Search failed — try again.'); }
+    setSearching(false);
+  };
+  const pickResult = r => {
+    onChange({ type:'image', url:r.fullUrl, source:'unsplash', attribution:r.photographer, positionY:50 });
+    if (r.downloadLocation && Sync.configured()) {
+      fetch('/api/unsplash', {
+        method:'POST',
+        headers: { Authorization:`Bearer ${Sync.getToken()}`, 'Content-Type':'application/json' },
+        body: JSON.stringify({ downloadLocation:r.downloadLocation }),
+      }).catch(()=>{});
+    }
+  };
+
+  return (
+    <div className="modal-bg" onClick={e=>{if(e.target===e.currentTarget)onClose();}}>
+      <div className="modal fadeUp" style={{maxHeight:'90vh',overflowY:'auto',width:480,maxWidth:'95vw'}}>
+        <div style={{padding:'20px 24px',borderBottom:'1px solid var(--border)',display:'flex',justifyContent:'space-between',alignItems:'center',position:'sticky',top:0,background:'var(--modal-bg)',zIndex:1}}>
+          <div style={{fontFamily:'Fraunces,serif',fontSize:17,fontWeight:600}}>Change cover — {SECTION_LABELS[sectionId]||sectionId}</div>
+          <button onClick={onClose} style={{background:'none',border:'none',color:'var(--text-secondary)',cursor:'pointer',fontSize:20,lineHeight:1}}>×</button>
+        </div>
+
+        <div style={{padding:'20px 24px',display:'flex',flexDirection:'column',gap:18}}>
+          <div>
+            <div style={{fontSize:11,fontWeight:700,letterSpacing:'.06em',color:'var(--text-muted)',textTransform:'uppercase',marginBottom:8}}>Gradients</div>
+            <div style={{display:'grid',gridTemplateColumns:'repeat(5,1fr)',gap:8}}>
+              {BANNER_GRADIENTS.map((g,i)=>(
+                <div key={i} onClick={()=>onChange({type:'gradient',value:g})} title="Use this gradient"
+                  style={{aspectRatio:'1',borderRadius:8,cursor:'pointer',background:g,border:banner?.type==='gradient'&&banner.value===g?'2px solid var(--accent)':'2px solid transparent',transition:'border-color 120ms'}}/>
+              ))}
+            </div>
+          </div>
+
+          <div className="divider"/>
+
+          <div>
+            <div style={{fontSize:11,fontWeight:700,letterSpacing:'.06em',color:'var(--text-muted)',textTransform:'uppercase',marginBottom:8}}>Paste a link</div>
+            <div style={{display:'flex',gap:8}}>
+              <input value={urlInput} onChange={e=>setUrlInput(e.target.value)} placeholder="https://images.unsplash.com/… or a .gif link"
+                className="input" style={{flex:1}}/>
+              <button className="btn-primary" onClick={applyUrl}>Apply</button>
+            </div>
+          </div>
+
+          <div>
+            <div style={{fontSize:11,fontWeight:700,letterSpacing:'.06em',color:'var(--text-muted)',textTransform:'uppercase',marginBottom:8}}>Search Unsplash</div>
+            <form onSubmit={runSearch} style={{display:'flex',gap:8,marginBottom:10}}>
+              <input value={query} onChange={e=>setQuery(e.target.value)} placeholder="mountains, minimal, coffee…" className="input" style={{flex:1}}/>
+              <button className="btn-ghost" type="submit" disabled={searching}>{searching?'Searching…':'Search'}</button>
+            </form>
+            {searchMsg && <div style={{fontSize:12,color:'var(--text-secondary)',marginBottom:10}}>{searchMsg}</div>}
+            {results.length > 0 && (
+              <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(90px,1fr))',gap:8,maxHeight:220,overflowY:'auto'}} className="scrollbar">
+                {results.map(r=>(
+                  <div key={r.id} onClick={()=>pickResult(r)} title={r.photographer?.name}
+                    style={{cursor:'pointer',borderRadius:8,overflow:'hidden',border:'1.5px solid var(--border)',aspectRatio:'16/10',backgroundImage:`url(${r.thumbUrl})`,backgroundSize:'cover',backgroundPosition:'center',transition:'border-color 120ms'}}
+                    onMouseEnter={e=>e.currentTarget.style.borderColor='var(--accent)'}
+                    onMouseLeave={e=>e.currentTarget.style.borderColor='var(--border)'}/>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {banner && (
+            <button className="btn-ghost" onClick={()=>onChange(null)} style={{alignSelf:'flex-start'}}>Remove cover</button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ── SectionBanner — Notion-style cover banner shown above each main nav section ── */
+function SectionBanner({ sectionId, banner, onChange, isMobile }) {
+  const [hover, setHover]                 = useState(false);
+  const [pickerOpen, setPickerOpen]       = useState(false);
+  const [repositioning, setRepositioning] = useState(false);
+  const [dragY, setDragY]                 = useState(banner?.positionY ?? 50);
+  const dragRef = useRef(null);
+
+  useEffect(() => { setDragY(banner?.positionY ?? 50); setRepositioning(false); setHover(false); }, [sectionId]);
+
+  const pillBtn = { background:'rgba(0,0,0,.55)', color:'#fff', border:'none', borderRadius:6, padding:'6px 10px', fontSize:12, cursor:'pointer', display:'flex', alignItems:'center', gap:5, backdropFilter:'blur(4px)', fontFamily:'Manrope,sans-serif' };
+
+  const startDrag = e => {
+    if (!repositioning || banner?.type !== 'image') return;
+    e.preventDefault();
+    const rectH = dragRef.current.offsetHeight;
+    const startY = e.clientY;
+    const startPos = dragY;
+    const onMove = mv => {
+      const deltaPct = ((mv.clientY - startY) / rectH) * 100;
+      setDragY(Math.max(0, Math.min(100, startPos - deltaPct)));
+    };
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+    document.body.style.cursor = 'grabbing';
+    document.body.style.userSelect = 'none';
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  };
+
+  const closeAndChange = v => { onChange(v); setPickerOpen(false); };
+
+  if (!banner) {
+    return (
+      <div style={{height:isMobile?30:38,flexShrink:0,display:'flex',alignItems:'center',padding:isMobile?'0 16px':'0 36px'}}
+        onMouseEnter={()=>setHover(true)} onMouseLeave={()=>setHover(false)}>
+        <button onClick={()=>setPickerOpen(true)}
+          style={{background:'var(--bg-surface)',border:'1px solid var(--border)',borderRadius:6,color:'var(--text-secondary)',fontSize:12,padding:'5px 10px',cursor:'pointer',display:'flex',alignItems:'center',gap:5,opacity:(hover||isMobile)?1:0,transition:'opacity 120ms',fontFamily:'Manrope,sans-serif'}}>
+          <span style={{width:13,height:13,display:'flex'}}>{Ic.img}</span> Add cover
+        </button>
+        {pickerOpen && <BannerPickerModal sectionId={sectionId} banner={banner} onChange={closeAndChange} onClose={()=>setPickerOpen(false)}/>}
+      </div>
+    );
+  }
+
+  return (
+    <div ref={dragRef} onMouseEnter={()=>setHover(true)} onMouseLeave={()=>setHover(false)} onMouseDown={startDrag}
+      style={{
+        position:'relative', height:isMobile?120:200, flexShrink:0, overflow:'hidden',
+        backgroundImage: banner.type==='gradient' ? banner.value : banner.type==='image' ? `url("${banner.url}")` : undefined,
+        backgroundSize:'cover', backgroundRepeat:'no-repeat',
+        backgroundPosition: banner.type==='image' ? `center ${repositioning?dragY:(banner.positionY??50)}%` : 'center',
+        cursor: repositioning ? 'grab' : 'default',
+      }}>
+      {(hover || isMobile) && !repositioning && (
+        <div style={{position:'absolute',right:isMobile?12:20,bottom:12,display:'flex',gap:6}}>
+          {banner.type==='image' && (
+            <button onClick={()=>setRepositioning(true)} style={pillBtn}>
+              <span style={{width:12,height:12,display:'flex'}}>{Ic.move}</span> Reposition
+            </button>
+          )}
+          <button onClick={()=>setPickerOpen(true)} style={pillBtn}>Change cover</button>
+          <button onClick={()=>onChange(null)} style={pillBtn} title="Remove cover">
+            <span style={{width:12,height:12,display:'flex'}}>{Ic.x}</span>
+          </button>
+        </div>
+      )}
+      {repositioning && (
+        <div style={{position:'absolute',left:'50%',bottom:12,transform:'translateX(-50%)',display:'flex',gap:8}}>
+          <button onClick={()=>{setDragY(banner.positionY??50);setRepositioning(false);}} style={pillBtn}>Cancel</button>
+          <button onClick={()=>{onChange({...banner,positionY:dragY});setRepositioning(false);}} style={{...pillBtn,background:'var(--accent)'}}>Save position</button>
+        </div>
+      )}
+      {banner.source==='unsplash' && banner.attribution?.name && !repositioning && (
+        <div style={{position:'absolute',left:isMobile?12:20,bottom:12,fontSize:10.5,color:'rgba(255,255,255,.8)',textShadow:'0 1px 3px rgba(0,0,0,.6)',fontFamily:'Manrope,sans-serif'}}>
+          Photo by {banner.attribution.name} on Unsplash
+        </div>
+      )}
+      {pickerOpen && <BannerPickerModal sectionId={sectionId} banner={banner} onChange={closeAndChange} onClose={()=>setPickerOpen(false)}/>}
+    </div>
+  );
+}
+
 function AppearanceModal({ theme, onChangeTheme, background, onChangeBackground, onClose }) {
   return (
     <div className="modal-bg" onClick={e=>{if(e.target===e.currentTarget)onClose();}}>
@@ -4591,6 +4798,15 @@ function App() {
   useEffect(() => { applyBackground(background); }, [background]);
   const changeBackground = pref => { BackgroundPref.set(pref); setBackground(pref); };
 
+  /* ── section cover banners: synced via state.banners, one per main nav section ── */
+  const changeBanner = (sectionId, val) => {
+    update('banners', prev => {
+      const next = { ...(prev || {}) };
+      if (val == null) delete next[sectionId]; else next[sectionId] = val;
+      return next;
+    });
+  };
+
   useEffect(() => {
     const onReady = () => setInstallBanner(true);
     const onDone  = () => setInstallBanner(false);
@@ -4616,6 +4832,11 @@ function App() {
   const hydrate = d => {
     const merged = { ...SEED(), ...d, ui:{ ...SEED().ui, ...(d?.ui||{}) } };
     if (startView) merged.ui = { ...merged.ui, view: startView };
+    /* one-time migration: banners used to live in a device-local key before they synced */
+    if (!merged.banners || Object.keys(merged.banners).length === 0) {
+      const legacy = LegacyBannerPrefs.get();
+      if (legacy && Object.keys(legacy).length) merged.banners = legacy;
+    }
     return merged;
   };
 
@@ -4623,7 +4844,7 @@ function App() {
   useEffect(() => { (async () => {
     const cache = Cache.read();
     if (!Sync.configured()) {
-      setStateRaw(cache?.notes ? hydrate(cache) : SEED());
+      setStateRaw(hydrate(cache));
       setSyncStatus('local');
       return;
     }
@@ -4632,12 +4853,13 @@ function App() {
       const remoteEmpty  = !remote?.notes || remote.notes.length === 0;
       const cacheHasData = cache?.notes?.length > 0;
       if (remoteEmpty && cacheHasData) {
-        await Sync.save(cache);
-        setStateRaw(hydrate(cache));
+        const hydrated = hydrate(cache);
+        await Sync.save(hydrated);
+        setStateRaw(hydrated);
       } else if (remoteEmpty) {
-        const seed = SEED();
-        await Sync.save(seed);
-        setStateRaw(seed);
+        const seeded = hydrate(SEED());
+        await Sync.save(seeded);
+        setStateRaw(seeded);
       } else {
         // Remote wins for conflicts, but preserve local-only items not yet synced to D1
         const merged = hydrate(remote);
@@ -4654,11 +4876,11 @@ function App() {
     } catch(e) {
       if (e.message === 'UNAUTHORIZED') {
         Sync.setToken(null);
-        setStateRaw(cache?.notes ? hydrate(cache) : SEED());
+        setStateRaw(hydrate(cache));
         setSyncStatus('unauth');
         setSetupOpen(true);
       } else {
-        setStateRaw(cache?.notes ? hydrate(cache) : SEED());
+        setStateRaw(hydrate(cache));
         setSyncStatus('offline');
       }
     }
@@ -4670,8 +4892,9 @@ function App() {
     const remoteEmpty = !remote?.notes || remote.notes.length === 0;
     const cacheHasData = cache?.notes?.length > 0;
     if (remoteEmpty && cacheHasData) {
-      await Sync.save(cache);
-      setStateRaw(hydrate(cache));
+      const hydrated = hydrate(cache);
+      await Sync.save(hydrated);
+      setStateRaw(hydrated);
     } else if (!remoteEmpty) {
       const merged = hydrate(remote);
       let hasExtras = false;
@@ -4829,7 +5052,10 @@ function App() {
       <Sidebar state={state} update={update} syncStatus={syncStatus} onSetup={()=>setSetupOpen(true)}
         onSync={syncNow} collapsed={!sidebarOpen} onToggle={()=>setSidebarOpen(v=>!v)} onSalah={()=>setSalahOpen(true)} onTheme={()=>setThemeOpen(true)}/>
       <div className="main">
-        <View state={state} update={update} isMobile={isMobile} pom={pom} setPom={setPom}/>
+        <SectionBanner sectionId={state.ui.view} banner={state.banners?.[state.ui.view]} onChange={v=>changeBanner(state.ui.view,v)} isMobile={isMobile}/>
+        <div style={{flex:1,minHeight:0,overflow:'hidden',display:'flex',flexDirection:'column'}}>
+          <View state={state} update={update} isMobile={isMobile} pom={pom} setPom={setPom}/>
+        </div>
       </div>
       <MobileNav state={state} update={update} syncStatus={syncStatus} onSetup={()=>setSetupOpen(true)} onSync={syncNow} onSalah={()=>setSalahOpen(true)} onTheme={()=>setThemeOpen(true)}/>
       {setupOpen && <SetupModal onClose={()=>setSetupOpen(false)} onConnected={handleSyncConnected} onSync={syncNow} syncStatus={syncStatus}/>}
