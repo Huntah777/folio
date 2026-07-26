@@ -3630,10 +3630,8 @@ function Sidebar({ state, update, syncStatus, onSetup, onSync, collapsed, onTogg
     return (
       <div className="sidebar sidebar-collapsed" style={{alignItems:'center'}}>
         <div style={{padding:'14px 0 12px',borderBottom:'1px solid var(--border)',width:'100%',display:'flex',justifyContent:'center',flexShrink:0}}>
-          <div style={{width:28,height:28,borderRadius:7,background:'linear-gradient(135deg,var(--accent),var(--accent-strong))',display:'flex',alignItems:'center',justifyContent:'center',boxShadow:'0 4px 12px rgba(99,102,241,.4)',cursor:'pointer'}}
-            onClick={onToggle} title="Expand sidebar">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.5" strokeLinecap="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><polyline points="14 2 14 8 20 8"/></svg>
-          </div>
+          <img src="/folio-icon.svg" alt="" onClick={onToggle} title="Expand sidebar"
+            style={{width:28,height:28,borderRadius:7,flexShrink:0,cursor:'pointer',boxShadow:'0 4px 12px rgba(0,0,0,.45)'}}/>
         </div>
         <div style={{padding:'8px 0',width:'100%',display:'flex',flexDirection:'column',alignItems:'center',gap:2,flexShrink:0}}>
           {navItems.map(({id,label,icon})=>(
@@ -3689,14 +3687,7 @@ function Sidebar({ state, update, syncStatus, onSetup, onSync, collapsed, onTogg
       {/* logo + collapse */}
       <div style={{padding:'18px 14px 12px',borderBottom:'1px solid var(--border)',flexShrink:0}}>
         <div style={{display:'flex',alignItems:'center',gap:9}}>
-          <svg width="30" height="30" viewBox="0 0 512 512" style={{borderRadius:7,flexShrink:0}} xmlns="http://www.w3.org/2000/svg">
-            <rect width="512" height="512" rx="112" fill="#16213e"/>
-            <rect width="512" height="512" rx="112" fill="none" stroke="#1e2d52" strokeWidth="3"/>
-            <rect x="172" y="136" width="60" height="240" rx="10" fill="#a78bfa"/>
-            <rect x="172" y="136" width="192" height="60" rx="10" fill="#a78bfa"/>
-            <rect x="172" y="226" width="140" height="52" rx="10" fill="#a78bfa" opacity="0.72"/>
-            <rect x="332" y="332" width="32" height="32" rx="8" fill="#7c3aed" opacity="0.7"/>
-          </svg>
+          <img src="/folio-icon.svg" alt="" style={{width:30,height:30,borderRadius:7,flexShrink:0}}/>
           <span style={{fontFamily:'Fraunces,serif',fontSize:17,fontWeight:600,color:'var(--text-primary)',flex:1}}>Folio</span>
           <button onClick={onToggle} title="Collapse sidebar"
             style={{background:'none',border:'none',color:'var(--text-muted)',cursor:'pointer',padding:'2px 5px',borderRadius:5,fontSize:15,lineHeight:1,flexShrink:0,transition:'color 110ms'}}
@@ -5117,9 +5108,7 @@ function App() {
 
   if (!state) return (
     <div style={{display:'flex',height:'100vh',alignItems:'center',justifyContent:'center',flexDirection:'column',gap:10,color:'var(--text-muted)'}}>
-      <div style={{width:30,height:30,borderRadius:8,background:'linear-gradient(135deg,var(--accent),var(--accent-strong))',display:'flex',alignItems:'center',justifyContent:'center'}}>
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><polyline points="14 2 14 8 20 8"/></svg>
-      </div>
+      <img src="/folio-icon.svg" alt="" style={{width:30,height:30,borderRadius:7}}/>
       <span style={{fontSize:13,fontFamily:'Manrope,sans-serif'}}>Loading Folio…</span>
     </div>
   );

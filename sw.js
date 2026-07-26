@@ -1,4 +1,4 @@
-const CACHE = 'folio-v11';
+const CACHE = 'folio-v12';
 
 const SHELL = [
   '/',
