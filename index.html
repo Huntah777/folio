@@ -268,6 +268,24 @@ function weekLabel(startKey, endKey) {
   return `${full(s)} – ${full(e)}`;
 }
 
+/* Parses a typed DD/MM/YYYY (day first, matching the en-GB formatting used
+   throughout the app) into a Date, or null if it isn't one. Separator is
+   flexible (/, -, or .) and day/month accept one or two digits, but the
+   rollover check is what actually matters: `new Date(1999,1,30)` doesn't
+   throw, it silently becomes March 2nd, which would otherwise send someone
+   who mistypes a date to a different day than the one they typed. */
+function parseTypedDateDMY(str) {
+  const m = String(str).trim().match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})$/);
+  if (!m) return null;
+  const d = Number(m[1]), mo = Number(m[2]);
+  let y = Number(m[3]);
+  if (m[3].length === 2) y += y < 50 ? 2000 : 1900; // '99' -> 1999, '25' -> 2025
+  if (mo < 1 || mo > 12 || d < 1 || d > 31) return null;
+  const dt = new Date(y, mo - 1, d);
+  if (dt.getFullYear() !== y || dt.getMonth() !== mo - 1 || dt.getDate() !== d) return null;
+  return dt;
+}
+
 /* ── security ── */
 const MAX_IMAGE_BYTES = 2 * 1024 * 1024; /* 2 MB per uploaded image */
 const MAX_PDF_BYTES   = 25 * 1024 * 1024; /* 25 MB per PDF — matches /api/files */
@@ -1271,11 +1289,22 @@ function JournalDatePicker({ value, onChange, onClose }) {
   const ref = useRef(null);
   const init = value ? parseKey(value) : new Date();
   const [view, setView] = useState(new Date(init.getFullYear(), init.getMonth(), 1));
+  const [typed, setTyped]       = useState('');
+  const [typedErr, setTypedErr] = useState(false);
   useEffect(() => {
     const h = e => { if (!ref.current?.contains(e.target)) onClose(); };
     setTimeout(() => document.addEventListener('mousedown', h), 0);
     return () => document.removeEventListener('mousedown', h);
   }, []);
+  /* Typing a date jumps straight there — clicking « » to walk from "now" back
+     to, say, 1999 is dozens of clicks. Same DD/MM/YYYY order the app already
+     displays dates in (en-GB), so it matches what you see everywhere else. */
+  const submitTyped = () => {
+    const dt = parseTypedDateDMY(typed);
+    if (!dt) { setTypedErr(true); return; }
+    onChange(fmtKey(dt));
+    onClose();
+  };
   const yr = view.getFullYear(), mo = view.getMonth();
   const firstDow = new Date(yr, mo, 1).getDay();
   const days     = new Date(yr, mo + 1, 0).getDate();
@@ -1283,6 +1312,13 @@ function JournalDatePicker({ value, onChange, onClose }) {
   const navBtn = { background:'none', border:'none', color:'var(--text-secondary)', fontSize:15, cursor:'pointer', lineHeight:1, padding:'0 4px', borderRadius:5 };
   return (
     <div ref={ref} style={{position:'absolute',top:'calc(100% + 4px)',left:0,zIndex:200,background:'var(--bg-surface)',border:'1px solid var(--border-strong)',borderRadius:12,padding:'12px 12px 10px',width:224,boxShadow:'0 12px 40px rgba(0,0,0,.8)'}}>
+      <form onSubmit={e=>{e.preventDefault();submitTyped();}} style={{display:'flex',gap:6,marginBottom:10}}>
+        <input value={typed} onChange={e=>{setTyped(e.target.value);setTypedErr(false);}}
+          placeholder="DD/MM/YYYY" inputMode="numeric" autoFocus
+          style={{flex:1,minWidth:0,background:'var(--bg-base)',border:`1px solid ${typedErr?'var(--danger)':'var(--border-strong)'}`,borderRadius:6,padding:'6px 8px',color:'var(--text-primary)',fontSize:12,outline:'none',fontFamily:'"JetBrains Mono",monospace'}}/>
+        <button type="submit" style={{background:'var(--accent)',border:'none',borderRadius:6,color:'#fff',padding:'0 10px',fontSize:11,fontWeight:600,cursor:'pointer',flexShrink:0}}>Go</button>
+      </form>
+      {typedErr && <div style={{fontSize:10.5,color:'var(--danger)',marginTop:-6,marginBottom:8}}>Enter a valid date as DD/MM/YYYY</div>}
       <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:8}}>
         <div style={{display:'flex'}}>
           <button onClick={()=>setView(new Date(yr-1,mo,1))} title="Previous year" style={navBtn} onMouseEnter={e=>e.currentTarget.style.color='var(--text-primary)'} onMouseLeave={e=>e.currentTarget.style.color='var(--text-secondary)'}>«</button>
