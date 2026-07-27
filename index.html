@@ -333,11 +333,16 @@ async function buildSchedule(meetings, salah) {
   }
 
   if (salah?.enabled && salah.lat != null) {
-    const timesArr = await Promise.all(
-      checkDays.map(day => fetchAlAdhan(fmtKey(day), salah.lat, salah.lng, salah.method, salah.asr))
+    /* The 14-day window spans at most two months, so this is one or two
+       requests — and normally zero, since the month is already cached. It used
+       to be 14 separate per-day calls every time the schedule was rebuilt. */
+    const months = [...new Set(checkDays.map(d => fmtKey(d).slice(0, 7)))];
+    const loaded = await Promise.all(
+      months.map(mKey => loadSalahMonth(`${mKey}-01`, salah).catch(() => null))
     );
-    checkDays.forEach((day, i) => {
-      const pt = timesArr[i]; if (!pt) return;
+    const days = Object.assign({}, ...loaded.map(r => r?.days || {}));
+    checkDays.forEach((day) => {
+      const pt = salahDayFrom(days, fmtKey(day), salah); if (!pt) return;
       for (const p of PRAYER_NAMES) {
         if (salah.prayers?.[p] === false) continue;
         const t = pt[p]; if (!t || t === '--:--') continue;
@@ -415,22 +420,41 @@ const STORE     = 'folio_v1';
 const TOKEN_KEY = 'folio_token';
 const ENDPOINT  = '/api/state';
 
+/* The server merges every PUT into the stored blob (functions/api/state.js), so
+   a save can no longer clobber another device's concurrent edit. This client
+   still merges too — on load, to reconcile the offline cache against remote. */
 const Sync = {
+  _etag: null,       /* last seen server version, for conditional GETs */
   getToken() { try { const t = localStorage.getItem(TOKEN_KEY); return t ? t.trim() : null; } catch { return null; } },
-  setToken(t) { try { const v = t ? String(t).trim() : ''; v ? localStorage.setItem(TOKEN_KEY,v) : localStorage.removeItem(TOKEN_KEY); } catch {} },
+  /* Changing the token can point at a different store, so drop the cached
+     version with it — otherwise a stale If-None-Match could draw a 304 for
+     state this client has never actually seen. */
+  setToken(t) { this._etag = null; try { const v = t ? String(t).trim() : ''; v ? localStorage.setItem(TOKEN_KEY,v) : localStorage.removeItem(TOKEN_KEY); } catch {} },
   configured() { return !!this.getToken(); },
-  async load() {
+  /* Returns null when the server reports the state is unchanged (304), so a
+     foreground wake on an idle account costs one tiny request instead of
+     re-downloading (and re-applying) megabytes of notes on mobile data. */
+  async load({ conditional = false } = {}) {
     const token = this.getToken();
     if (!token) throw new Error('NO_TOKEN');
-    const r = await fetch(ENDPOINT, { headers: { Authorization:`Bearer ${token}` } });
+    const headers = { Authorization:`Bearer ${token}` };
+    if (conditional && this._etag) headers['If-None-Match'] = this._etag;
+    const r = await fetch(ENDPOINT, { headers, cache: 'no-store' });
     if (r.status === 401) throw new Error('UNAUTHORIZED');
+    if (r.status === 304) return null;
     if (!r.ok) throw new Error(`HTTP_${r.status}`);
+    this._etag = r.headers.get('ETag') || this._etag;
     return r.json();
   },
+  /* wantMerged asks the server to echo the merged blob back. Worth it on an
+     explicit sync (it folds in whatever another device wrote without a second
+     round-trip); wasteful on the routine debounced save, which would otherwise
+     re-download every note-with-image on every keystroke pause. */
   async save(state, opts={}) {
     const token = this.getToken();
     if (!token) throw new Error('NO_TOKEN');
-    const r = await fetch(ENDPOINT, {
+    const url = ENDPOINT + (opts.wantMerged ? '?return=merged' : '');
+    const r = await fetch(url, {
       method: 'PUT',
       headers: { Authorization:`Bearer ${token}`, 'Content-Type':'application/json' },
       body: JSON.stringify(state),
@@ -438,6 +462,8 @@ const Sync = {
     });
     if (r.status === 401) throw new Error('UNAUTHORIZED');
     if (!r.ok) throw new Error(`HTTP_${r.status}`);
+    /* Track the version we just created so the next conditional GET is accurate. */
+    this._etag = r.headers.get('ETag') || this._etag;
     return r.json().catch(()=>({}));
   },
 };
@@ -542,7 +568,10 @@ const SEED = () => ({
     {id:'done',      name:'Done',        color:'#10b981'},
   ],
   tags: ['#getting-started','#work','#personal','#ideas','#meeting'],
-  salah: { enabled:false, lat:null, lng:null, method:'mwl', asr:'standard', prayers:{fajr:true,sunrise:false,dhuhr:true,asr:true,maghrib:true,isha:true} },
+  salah: { enabled:false, lat:null, lng:null, method:'mwl', asr:'standard',
+           prayers:{fajr:true,sunrise:false,dhuhr:true,asr:true,maghrib:true,isha:true},
+           /* per-prayer minute adjustments — see salahOffsets() */
+           offsets:{fajr:0,sunrise:0,dhuhr:0,asr:0,maghrib:0,isha:0} },
   banners: {},
   ui: { view:'today', noteId: null, calDate: todayKey(), filterTag:'', folderId: null },
 });
@@ -558,44 +587,178 @@ const SALAH_METHODS = {
 };
 const PRAYER_NAMES  = ['fajr','sunrise','dhuhr','asr','maghrib','isha'];
 const PRAYER_LABELS = { fajr:'Fajr', sunrise:'Sunrise (Shuruq)', dhuhr:'Dhuhr', asr:'Asr', maghrib:'Maghrib', isha:'Isha' };
-const SALAH_CACHE_PFX = 'folio_salah_';
+/* Aladhan returns capitalised keys; Folio uses lowercase internally. */
+const ALADHAN_KEY = { fajr:'Fajr', sunrise:'Sunrise', dhuhr:'Dhuhr', asr:'Asr', maghrib:'Maghrib', isha:'Isha' };
 
-async function fetchAlAdhan(dateKey, lat, lon, method, asrJuristic) {
-  const m      = (SALAH_METHODS[method] || SALAH_METHODS.mwl).id;
-  const school = asrJuristic === 'hanafi' ? 1 : 0;
-  const cacheKey = `${SALAH_CACHE_PFX}${dateKey}_${Number(lat).toFixed(3)}_${Number(lon).toFixed(3)}_m${m}_s${school}`;
-  try {
-    const cached = localStorage.getItem(cacheKey);
-    if (cached) return JSON.parse(cached);
-  } catch {}
-  const [y, mo, d] = dateKey.split('-');
-  try {
-    const r = await fetch(
-      `https://api.aladhan.com/v1/timings/${d}-${mo}-${y}?latitude=${lat}&longitude=${lon}&method=${m}&school=${school}`
-    );
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    const json = await r.json();
-    const t = json.data.timings;
-    const strip = s => (s || '--:--').split(' ')[0];
-    const result = {
-      fajr: strip(t.Fajr), sunrise: strip(t.Sunrise), dhuhr: strip(t.Dhuhr),
-      asr: strip(t.Asr), maghrib: strip(t.Maghrib), isha: strip(t.Isha),
-    };
-    try { localStorage.setItem(cacheKey, JSON.stringify(result)); } catch {}
-    return result;
-  } catch { return null; }
+const SALAH_MONTH_PFX = 'folio_salah_cal_';
+/* Keys from the superseded one-request-per-day scheme: folio_salah_<date>_… */
+const SALAH_LEGACY_DAY_RE = /^folio_salah_\d{4}-\d{2}-\d{2}_/;
+/* Budgeted so a dead network resolves to a definite error in ~17s rather than
+   hanging: two tries, each hard-capped, one short backoff. */
+const SALAH_TIMEOUT_MS    = 8000;
+const SALAH_ATTEMPTS      = 2;
+/* A month's timetable is fixed, but re-validate daily so a changed method or a
+   corrected upstream table doesn't sit stale for weeks. */
+const SALAH_REVALIDATE_MS = 24 * 60 * 60 * 1000;
+const SALAH_OFFSET_LIMIT  = 60;
+
+const salahMethodId = m => (SALAH_METHODS[m] || SALAH_METHODS.mwl).id;
+const salahSchoolId = a => (a === 'hanafi' ? 1 : 0);
+
+/* Per-prayer adjustment in minutes — e.g. praying Dhuhr with a jama'ah that
+   starts 5 minutes after the calculated time. Applied to the API response
+   rather than through Aladhan's `tune` parameter, so changing an offset never
+   invalidates a cached timetable. */
+function salahOffsets(salah) {
+  const out = {};
+  for (const p of PRAYER_NAMES) {
+    const v = Number(salah?.offsets?.[p]);
+    out[p] = Number.isFinite(v) ? Math.max(-SALAH_OFFSET_LIMIT, Math.min(SALAH_OFFSET_LIMIT, Math.round(v))) : 0;
+  }
+  return out;
 }
 
+/* Aladhan returns "HH:MM (TZ)" → "HH:MM" with the offset applied. Clamped into
+   the day: an offset is meant to be a nudge, and letting one spill past
+   midnight would silently move a prayer to the wrong date. */
+function salahHM(raw, offsetMin) {
+  if (!raw) return null;
+  const [h, m] = String(raw).split(' ')[0].split(':').map(Number);
+  if (!Number.isFinite(h) || !Number.isFinite(m)) return null;
+  const mins = Math.max(0, Math.min(24 * 60 - 1, h * 60 + m + (Number(offsetMin) || 0)));
+  return `${String(Math.floor(mins / 60)).padStart(2,'0')}:${String(mins % 60).padStart(2,'0')}`;
+}
+
+/* Aladhan's monthly calendar → { 'YYYY-MM-DD': rawTimings }. One request covers
+   a whole month, so ordinary day-to-day use needs no network at all and a blip
+   on any given morning can't leave the app without prayer times. */
+function parseSalahCalendar(payload) {
+  const days = {};
+  for (const entry of payload?.data || []) {
+    /* gregorian.date is DD-MM-YYYY */
+    const [d, mo, y] = String(entry?.date?.gregorian?.date || '').split('-');
+    if (!y || !mo || !d || !entry?.timings) continue;
+    days[`${y}-${mo}-${d}`] = entry.timings;
+  }
+  return days;
+}
+
+const monthCacheKey = (lat, lon, y, mo, m, s) =>
+  `${SALAH_MONTH_PFX}${y}-${String(mo).padStart(2,'0')}_${Number(lat).toFixed(3)}_${Number(lon).toFixed(3)}_m${m}_s${s}`;
+
+/* Drop timetables for other months/locations so localStorage doesn't grow
+   without bound, and sweep away the old per-day keys. */
+function pruneSalahCache(keepKeys) {
+  try {
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+      const k = localStorage.key(i);
+      if (!k) continue;
+      if (SALAH_LEGACY_DAY_RE.test(k)) { localStorage.removeItem(k); continue; }
+      if (k.startsWith(SALAH_MONTH_PFX) && !keepKeys.includes(k)) localStorage.removeItem(k);
+    }
+  } catch {}
+}
+
+/* One month of prayer times, with a hard timeout and a retry. fetch() alone has
+   no timeout: a request that never settles is what leaves the UI saying
+   "fetching…" forever with nothing to act on. */
+async function fetchSalahMonth({ lat, lon, y, mo, method, school }) {
+  let lastErr = new Error('unreachable');
+  for (let attempt = 0; attempt < SALAH_ATTEMPTS; attempt++) {
+    if (attempt) await new Promise(r => setTimeout(r, 800 * 2 ** (attempt - 1)));
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), SALAH_TIMEOUT_MS);
+    try {
+      const r = await fetch(
+        `https://api.aladhan.com/v1/calendar/${y}/${mo}?latitude=${lat}&longitude=${lon}&method=${method}&school=${school}`,
+        { signal: ctl.signal },
+      );
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const days = parseSalahCalendar(await r.json());
+      if (!Object.keys(days).length) throw new Error('empty timetable');
+      return days;
+    } catch (e) {
+      lastErr = e?.name === 'AbortError' ? new Error('timed out') : e;
+    } finally { clearTimeout(timer); }
+  }
+  throw lastErr;
+}
+
+/* Resolve the month covering `dateKey`, preferring cache. Returns
+   { days, at, source } or throws when there's nothing usable at all. */
+async function loadSalahMonth(dateKey, { lat, lng, method, asr }, { force = false } = {}) {
+  if (!Number.isFinite(Number(lat)) || !Number.isFinite(Number(lng))) throw new Error('No location set');
+  const [y, mo] = dateKey.split('-').map(Number);
+  const m = salahMethodId(method), s = salahSchoolId(asr);
+  const key = monthCacheKey(lat, lng, y, mo, m, s);
+
+  let cached = null;
+  try { cached = JSON.parse(localStorage.getItem(key) || 'null'); } catch {}
+  const fresh = cached?.days && Date.now() - (cached.at || 0) < SALAH_REVALIDATE_MS;
+  if (fresh && !force) return { days: cached.days, at: cached.at, source: 'cache' };
+
+  try {
+    const days = await fetchSalahMonth({ lat, lon: lng, y, mo, method: m, school: s });
+    const at = Date.now();
+    try { localStorage.setItem(key, JSON.stringify({ at, days })); } catch {}
+    /* Keep the current month too, so paging across a month boundary and back
+       doesn't evict the timetable today's own reminders are built from. */
+    const [ty, tmo] = todayKey().split('-').map(Number);
+    pruneSalahCache([key, monthCacheKey(lat, lng, ty, tmo, m, s)]);
+    return { days, at, source: 'live' };
+  } catch (e) {
+    /* A stale timetable is far better than none — prayer times for a fixed
+       location barely move day to day, and the month is already downloaded. */
+    if (cached?.days) return { days: cached.days, at: cached.at || 0, source: 'stale', error: e.message };
+    throw e;
+  }
+}
+
+/* Pull one day out of an already-loaded month, applying the user's offsets. */
+function salahDayFrom(days, dateKey, salah) {
+  const raw = days?.[dateKey];
+  if (!raw) return null;
+  const offsets = salahOffsets(salah);
+  const out = {};
+  for (const p of PRAYER_NAMES) out[p] = salahHM(raw[ALADHAN_KEY[p]], offsets[p]) || '--:--';
+  return out;
+}
+
+/* Prayer times for one day, plus a status the UI can always say something
+   definite about: what happened, when, and whether it came from the network or
+   the cache. A bare "loading" with no resolution was the old failure mode. */
 function useSalahTimes(dateKey, salah) {
-  const [times, setTimes] = React.useState(null);
-  React.useEffect(() => {
-    if (!salah?.enabled || salah.lat == null || salah.lng == null) { setTimes(null); return; }
-    let cancelled = false;
-    fetchAlAdhan(dateKey, salah.lat, salah.lng, salah.method, salah.asr)
-      .then(t => { if (!cancelled) setTimes(t); });
-    return () => { cancelled = true; };
-  }, [dateKey, salah?.lat, salah?.lng, salah?.method, salah?.asr, salah?.enabled]);
-  return times;
+  const [times, setTimes]   = React.useState(null);
+  const [status, setStatus] = React.useState({ state:'idle', at:0, source:null, message:null });
+  const reqSeq = React.useRef(0);
+
+  const load = React.useCallback(async (force = false) => {
+    if (!salah?.enabled || salah.lat == null || salah.lng == null) {
+      setTimes(null); setStatus({ state:'idle', at:0, source:null, message:null });
+      return;
+    }
+    const seq = ++reqSeq.current;
+    const live = () => seq === reqSeq.current; /* a newer request supersedes this one */
+    setStatus(st => ({ ...st, state:'loading', message:null }));
+    try {
+      const { days, at, source, error } = await loadSalahMonth(dateKey, salah, { force });
+      if (!live()) return;
+      setTimes(salahDayFrom(days, dateKey, salah));
+      setStatus(source === 'stale'
+        ? { state:'stale', at, source:'cache', message:error }
+        : { state:'ok', at, source, message:null });
+    } catch (e) {
+      if (!live()) return;
+      setTimes(null);
+      setStatus({ state:'error', at:Date.now(), source:null, message:e.message });
+    }
+  }, [dateKey, salah?.enabled, salah?.lat, salah?.lng, salah?.method, salah?.asr,
+      /* offsets are applied locally — re-derive without refetching */
+      JSON.stringify(salah?.offsets || {})]);
+
+  React.useEffect(() => { load(false); }, [load]);
+
+  return { times, status, retry: () => load(true) };
 }
 
 /* ── icons ── */
@@ -2260,7 +2423,7 @@ function CalendarView({ state, update, isMobile }) {
 
   const calDate = state.ui.calDate ? parseKey(state.ui.calDate) : new Date();
   const selDate = state.ui.calDate || todayKey();
-  const selSalahTimes = useSalahTimes(selDate, state.salah);
+  const { times: selSalahTimes } = useSalahTimes(selDate, state.salah);
 
   const year = calDate.getFullYear(), month = calDate.getMonth();
   const firstDay = new Date(year,month,1).getDay();
@@ -2773,7 +2936,7 @@ function TodayView({ state, update, isMobile }) {
   const pinned = [...state.notes].filter(n=>n.pinned).sort((a,b)=>b.updated-a.updated);
 
   const toggleTask = id => update('tasks',state.tasks.map(t=>t.id===id?{...t,done:!t.done,updated:Date.now()}:t));
-  const todaySalahTimes = useSalahTimes(todayKey(), state.salah);
+  const { times: todaySalahTimes, status: todaySalahStatus, retry: retrySalah } = useSalahTimes(todayKey(), state.salah);
 
   return (
     <div style={{flex:1,overflowY:'auto',overflowX:'hidden',padding:isMobile?'20px 16px':'32px 36px'}} className="scrollbar">
@@ -2815,14 +2978,32 @@ function TodayView({ state, update, isMobile }) {
         </div>
 
         {/* prayer times */}
-        {state.salah?.enabled && state.salah?.lat !== null && todaySalahTimes && (()=>{
+        {state.salah?.enabled && state.salah?.lat !== null && (()=>{
           const pt = todaySalahTimes;
           const shown = PRAYER_NAMES.filter(p=>state.salah.prayers?.[p]!==false);
           if (!shown.length) return null;
-          return (
+          const st = todaySalahStatus?.state;
+          /* Nothing cached and nothing fetched yet — say so rather than
+             silently rendering no card at all. */
+          if (!pt && st !== 'error') return (
             <div className="card" style={{padding:'18px 20px'}}>
               <div style={{fontSize:11,fontWeight:700,letterSpacing:'.08em',color:'var(--warning)',textTransform:'uppercase',marginBottom:12}}>Prayer Times</div>
-              {shown.map(p=>(
+              <div style={{fontSize:12,color:'var(--text-muted)'}}>Loading timetable…</div>
+            </div>
+          );
+          return (
+            <div className="card" style={{padding:'18px 20px'}}>
+              <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:8,marginBottom:12}}>
+                <div style={{fontSize:11,fontWeight:700,letterSpacing:'.08em',color:'var(--warning)',textTransform:'uppercase'}}>Prayer Times</div>
+                {(st==='stale'||st==='error') && (
+                  <button onClick={retrySalah} title={todaySalahStatus?.message||''}
+                    style={{background:'none',border:'none',padding:0,cursor:'pointer',fontSize:10,color:st==='error'?'var(--danger)':'var(--warning)'}}>
+                    {st==='error' ? 'unavailable · retry' : 'offline · retry'}
+                  </button>
+                )}
+              </div>
+              {!pt && <div style={{fontSize:12,color:'var(--text-muted)'}}>No timetable available offline yet.</div>}
+              {pt && shown.map(p=>(
                 <div key={p} style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'5px 0',borderBottom:'1px solid #1f1f2420'}}>
                   <span style={{fontSize:13,color:'var(--text-tertiary)'}}>{PRAYER_LABELS[p]}</span>
                   <span style={{fontSize:13,fontWeight:600,color:'var(--text-primary)',fontFamily:'"JetBrains Mono",monospace'}}>{pt[p]}</span>
@@ -3906,33 +4087,67 @@ function SalahModal({ state, update, onClose }) {
   const [method,   setMethod]   = useState(s.method || 'mwl');
   const [asr,      setAsr]      = useState(s.asr || 'standard');
   const [prayers,  setPrayers]  = useState({fajr:true,sunrise:false,dhuhr:true,asr:true,maghrib:true,isha:true,...(s.prayers||{})});
+  const [offsets,  setOffsets]  = useState(() => salahOffsets(s));
   const [locMsg,   setLocMsg]   = useState('');
   const [preview,  setPreview]  = useState(null);
+  const [previewState, setPreviewState] = useState('idle'); /* idle | loading | ok | stale | error */
+  const previewSeq = useRef(0);
 
-  const tz = -(new Date().getTimezoneOffset()/60);
-
-  /* auto-preview whenever inputs change */
+  /* Auto-preview whenever the inputs that affect the timetable change. This
+     doubles as validation: it's what proves a coordinate actually resolves to
+     prayer times before Save writes it to synced state (and to every other
+     device). Offsets are applied locally, so they never trigger a refetch. */
   useEffect(()=>{
     const la=parseFloat(lat), lo=parseFloat(lng);
-    if (!isNaN(la) && !isNaN(lo)) {
-      fetchAlAdhan(todayKey(),la,lo,method,asr).then(t=>setPreview(t));
-    } else setPreview(null);
+    if (isNaN(la) || isNaN(lo)) { setPreview(null); setPreviewState('idle'); return; }
+    const seq = ++previewSeq.current;
+    setPreviewState('loading');
+    (async () => {
+      try {
+        const { days, source } = await loadSalahMonth(todayKey(), { lat:la, lng:lo, method, asr });
+        if (seq !== previewSeq.current) return;
+        setPreview(days);
+        setPreviewState(source === 'stale' ? 'stale' : 'ok');
+      } catch {
+        if (seq !== previewSeq.current) return;
+        setPreview(null); setPreviewState('error');
+      }
+    })();
   },[lat,lng,method,asr]);
 
+  /* Re-derived rather than refetched, so nudging an offset is instant. */
+  const previewTimes = useMemo(
+    () => preview ? salahDayFrom(preview, todayKey(), { offsets }) : null,
+    [preview, offsets],
+  );
+
   const detectLocation = () => {
-    if (!navigator.geolocation){setLocMsg('Geolocation not supported');return;}
+    if (!navigator.geolocation){setLocMsg('✗ Geolocation not supported');return;}
     setLocMsg('Detecting location…');
     navigator.geolocation.getCurrentPosition(
       pos=>{setLat(pos.coords.latitude.toFixed(6));setLng(pos.coords.longitude.toFixed(6));setLocMsg('✓ Location detected');},
-      err=>{setLocMsg('✗ '+err.message);},
-      {timeout:10000}
+      err=>{setLocMsg('✗ '+(err?.code===1?'Location blocked — enter coordinates manually':err.message));},
+      {timeout:10000, maximumAge:5*60000}
     );
+  };
+
+  const setOffset = (p, v) => {
+    const n = Number(v);
+    setOffsets(o => ({ ...o, [p]: Number.isFinite(n) ? Math.max(-SALAH_OFFSET_LIMIT, Math.min(SALAH_OFFSET_LIMIT, Math.round(n))) : 0 }));
   };
 
   const save = () => {
     const la=parseFloat(lat), lo=parseFloat(lng);
-    if (enabled && (isNaN(la)||isNaN(lo))){setLocMsg('✗ Enter valid latitude and longitude first');return;}
-    update('salah',{enabled, lat:isNaN(la)?null:la, lng:isNaN(lo)?null:lo, method, asr, prayers});
+    if (enabled) {
+      if (isNaN(la)||isNaN(lo)) { setLocMsg('✗ Enter valid latitude and longitude first'); return; }
+      if (Math.abs(la)>90 || Math.abs(lo)>180) { setLocMsg('✗ Coordinates out of range'); return; }
+      /* Don't commit a location that hasn't produced a timetable — it would be
+         pushed to every device and to the notification schedule before anyone
+         knew whether it works. */
+      if (previewState==='error') { setLocMsg('✗ No prayer times for those coordinates — check them and retry'); return; }
+      if (previewState==='loading') { setLocMsg('Still checking those coordinates…'); return; }
+    }
+    update('salah',{enabled, lat:isNaN(la)?null:la, lng:isNaN(lo)?null:lo, method, asr, prayers, offsets});
     onClose();
   };
 
@@ -4030,20 +4245,43 @@ function SalahModal({ state, update, onClose }) {
               </div>
             </div>
 
-            {/* live preview */}
-            {preview && (
-              <div style={{background:'var(--bg-surface)',border:'1px solid var(--border)',borderRadius:10,padding:'14px 16px'}}>
-                <div style={{fontSize:10,fontWeight:700,letterSpacing:'.08em',color:'var(--warning)',textTransform:'uppercase',marginBottom:10}}>
-                  Today's times (preview)
-                </div>
+            {/* per-prayer offsets — e.g. a jama'ah that starts a few minutes late */}
+            <div>
+              <label style={{fontSize:12,color:'var(--text-secondary)',display:'block',marginBottom:4}}>Adjustments</label>
+              <div style={{fontSize:11,color:'var(--text-muted)',marginBottom:8}}>Minutes to shift each prayer — for a jama'ah that starts after the calculated time.</div>
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:6}}>
                 {PRAYER_NAMES.filter(p=>prayers[p]).map(p=>(
-                  <div key={p} style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'4px 0',borderBottom:'1px solid #1f1f2415'}}>
-                    <span style={{fontSize:12,color:'var(--text-tertiary)'}}>{PRAYER_LABELS[p]}</span>
-                    <span style={{fontSize:12,fontWeight:600,color:'var(--text-primary)',fontFamily:'"JetBrains Mono",monospace'}}>{preview[p]}</span>
+                  <div key={p} style={{display:'flex',alignItems:'center',gap:8,padding:'5px 10px',background:'var(--bg-surface)',borderRadius:7,border:'1px solid var(--border)'}}>
+                    <span style={{fontSize:12,color:'var(--text-tertiary)',flex:1,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{PRAYER_LABELS[p]}</span>
+                    <input type="number" step="1" min={-SALAH_OFFSET_LIMIT} max={SALAH_OFFSET_LIMIT}
+                      value={offsets[p] ?? 0} onChange={e=>setOffset(p, e.target.value)}
+                      style={{width:52,background:'var(--bg-base)',border:'1px solid var(--border-strong)',borderRadius:6,color:'var(--text-primary)',fontSize:12,padding:'3px 6px',fontFamily:'"JetBrains Mono",monospace',outline:'none',textAlign:'right'}}/>
                   </div>
                 ))}
               </div>
-            )}
+            </div>
+
+            {/* live preview — also the check that these coordinates actually work */}
+            <div style={{background:'var(--bg-surface)',border:'1px solid var(--border)',borderRadius:10,padding:'14px 16px'}}>
+              <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:8,marginBottom:10}}>
+                <div style={{fontSize:10,fontWeight:700,letterSpacing:'.08em',color:'var(--warning)',textTransform:'uppercase'}}>
+                  Today's times (preview)
+                </div>
+                {previewState==='loading' && <span style={{fontSize:10,color:'var(--text-muted)'}}>checking…</span>}
+                {previewState==='stale'   && <span style={{fontSize:10,color:'var(--warning)'}}>offline · cached</span>}
+              </div>
+              {previewState==='idle' && <div style={{fontSize:12,color:'var(--text-muted)'}}>Set a location to preview.</div>}
+              {previewState==='error' && <div style={{fontSize:12,color:'var(--danger)'}}>Couldn't load prayer times for those coordinates.</div>}
+              {previewTimes && PRAYER_NAMES.filter(p=>prayers[p]).map(p=>(
+                <div key={p} style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'4px 0',borderBottom:'1px solid #1f1f2415'}}>
+                  <span style={{fontSize:12,color:'var(--text-tertiary)'}}>
+                    {PRAYER_LABELS[p]}
+                    {offsets[p] ? <span style={{color:'var(--text-muted)',marginLeft:6}}>{offsets[p]>0?`+${offsets[p]}`:offsets[p]}m</span> : null}
+                  </span>
+                  <span style={{fontSize:12,fontWeight:600,color:'var(--text-primary)',fontFamily:'"JetBrains Mono",monospace'}}>{previewTimes[p]}</span>
+                </div>
+              ))}
+            </div>
           </>)}
 
           <div style={{display:'flex',gap:8,justifyContent:'flex-end',paddingTop:4}}>
@@ -4893,9 +5131,17 @@ function App() {
   const urlView = new URLSearchParams(location.search).get('view');
   const startView = VALID_VIEWS.includes(urlView) ? urlView : null;
 
-  /* Merge new SEED keys in when DB shape evolves */
+  /* Merge new SEED keys in when DB shape evolves. ui and salah are merged a
+     level deeper so newly-added sub-keys (e.g. salah.offsets) reach state
+     saved before they existed. */
   const hydrate = d => {
-    const merged = { ...SEED(), ...d, ui:{ ...SEED().ui, ...(d?.ui||{}) } };
+    const seed = SEED();
+    const merged = {
+      ...seed, ...d,
+      ui:    { ...seed.ui,    ...(d?.ui    || {}) },
+      salah: { ...seed.salah, ...(d?.salah || {}),
+               offsets: { ...seed.salah.offsets, ...(d?.salah?.offsets || {}) } },
+    };
     if (startView) merged.ui = { ...merged.ui, view: startView };
     /* one-time migration: banners used to live in a device-local key before they synced */
     if (!merged.banners || Object.keys(merged.banners).length === 0) {
@@ -5045,15 +5291,15 @@ function App() {
     const pending = pendingFlush.current;
     setSyncStatus('syncing');
     try {
-      if (pending) {
-        await Sync.save(pending);
-        /* only clear it if a newer edit hasn't replaced it while we were awaiting */
-        if (pendingFlush.current === pending) pendingFlush.current = null;
-      }
-      const remote = await Sync.load();
-      const current = stateRef.current;
-      const merged = mergeState(current, remote || {});
-      await Sync.save(merged);
+      /* One authoritative round-trip: the server merges what we send into the
+         stored blob and hands back the result. The old load → merge-locally →
+         save sequence had a race in the gap — another device writing between
+         our GET and PUT was silently overwritten.
+         Any pending debounced write is subsumed by this one: it's an older
+         snapshot of the very state we're about to push. */
+      const res = await Sync.save(stateRef.current, { wantMerged: true });
+      if (pendingFlush.current === pending) pendingFlush.current = null;
+      const merged = hydrate(res?.data || stateRef.current);
       Cache.write(merged);
       setStateRaw(merged);
       lastSyncRef.current = Date.now();
@@ -5065,13 +5311,37 @@ function App() {
     }
   }, []);
 
+  /* ── cheap "has anything changed?" pull, for waking the app ──
+     A conditional GET costs one 304 when nothing moved, where a full syncNow
+     would upload the entire state. Only escalates to a real sync when there
+     are unsaved local edits or the server actually has something newer. */
+  const pullIfChanged = useCallback(async () => {
+    if (!Sync.configured() || syncingRef.current) return;
+    if (pendingFlush.current) { syncNow(); return; }
+    syncingRef.current = true;
+    try {
+      const remote = await Sync.load({ conditional: true });
+      lastSyncRef.current = Date.now();
+      if (remote) {
+        const merged = mergeState(stateRef.current, remote);
+        Cache.write(merged);
+        setStateRaw(merged);
+      }
+      setSyncStatus('synced');
+    } catch (e) {
+      setSyncStatus(e.message === 'UNAUTHORIZED' ? 'unauth' : 'offline');
+    } finally {
+      syncingRef.current = false;
+    }
+  }, [syncNow]);
+
   /* ── auto-pull when app comes to foreground (critical for iPad PWA) ── */
   useEffect(() => {
     const onVisible = () => {
       if (document.visibilityState !== 'visible') return;
       if (!Sync.configured()) return;
       if (Date.now() - lastSyncRef.current < 30000) return; /* throttle: 30s minimum */
-      syncNow();
+      pullIfChanged();
     };
     document.addEventListener('visibilitychange', onVisible);
     window.addEventListener('focus', onVisible);
@@ -5079,7 +5349,7 @@ function App() {
       document.removeEventListener('visibilitychange', onVisible);
       window.removeEventListener('focus', onVisible);
     };
-  }, [syncNow]);
+  }, [pullIfChanged]);
 
   /* ── update: write localStorage immediately, debounce D1 by 1.5s ── */
   const update = useCallback((key, val) => {
