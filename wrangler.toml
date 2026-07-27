@@ -6,3 +6,10 @@ pages_build_output_dir = "."
 binding = "DB"
 database_name = "folio-db"
 database_id = "c0d1bd3a-e24b-4e8b-af38-b69028465b57"
+
+# PDF attachments. Kept out of the D1 state blob on purpose: that blob is
+# capped at 5 MB for the whole app, so binary files have to live elsewhere.
+# Create with:  npx wrangler r2 bucket create folio-files
+[[r2_buckets]]
+binding = "FILES"
+bucket_name = "folio-files"

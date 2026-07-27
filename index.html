@@ -230,10 +230,21 @@ const MONTHS = ['January','February','March','April','May','June','July','August
 const DAY_SHORT = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 const fmtKey = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
 const todayKey = () => fmtKey(new Date());
+const fmtBytes = n => {
+  const b = Number(n) || 0;
+  if (b < 1024) return b + ' B';
+  if (b < 1024 * 1024) return (b / 1024).toFixed(0) + ' KB';
+  return (b / (1024 * 1024)).toFixed(1) + ' MB';
+};
 const parseKey = s => { const [y,m,d]=s.split('-').map(Number); return new Date(y,m-1,d); };
 
 /* ── security ── */
 const MAX_IMAGE_BYTES = 2 * 1024 * 1024; /* 2 MB per uploaded image */
+const MAX_PDF_BYTES   = 25 * 1024 * 1024; /* 25 MB per PDF — matches /api/files */
+/* Extracted text lands in the note body, which syncs inside the 5 MB state
+   blob shared by the entire app. A long book would swallow that budget on its
+   own, so the extraction is truncated and the note says so. */
+const MAX_PDF_TEXT    = 200 * 1024;
 const safeHttpUrl = url => {
   if (!url || typeof url !== 'string') return null;
   try {
@@ -473,6 +484,136 @@ const Cache = {
   write(s) { try { localStorage.setItem(STORE,JSON.stringify(s)); } catch {} },
 };
 
+/* ── binary attachments (R2 via /api/files) ──
+   Notes carry only { id, key, name, size, type } — the bytes live in R2 and
+   never enter the synced state blob. Downloads are fetched with the sync
+   token and handed to the viewer as a blob: URL, because an <iframe>/<embed>
+   src cannot carry an Authorization header. */
+const Files = {
+  _urls: new Map(),   /* key → blob: URL, so re-opening a note doesn't refetch */
+
+  async upload(file) {
+    const token = Sync.getToken();
+    if (!token) throw new Error('NO_TOKEN');
+    const r = await fetch('/api/files', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': file.type || 'application/pdf',
+        'X-File-Name': encodeURIComponent(file.name || 'document.pdf'),
+      },
+      body: file,
+    });
+    if (r.status === 401) throw new Error('UNAUTHORIZED');
+    if (r.status === 501) throw new Error('NO_BUCKET');
+    if (!r.ok) {
+      const msg = await r.json().then(d => d.error).catch(() => null);
+      throw new Error(msg || `HTTP_${r.status}`);
+    }
+    return r.json();
+  },
+
+  /* Returns a blob: URL for the stored object, cached per key. */
+  async url(key) {
+    if (this._urls.has(key)) return this._urls.get(key);
+    const token = Sync.getToken();
+    if (!token) throw new Error('NO_TOKEN');
+    const id = String(key).replace(/^f\//, '');
+    const r = await fetch(`/api/files/${id}`, { headers: { Authorization: `Bearer ${token}` } });
+    if (r.status === 401) throw new Error('UNAUTHORIZED');
+    if (!r.ok) throw new Error(`HTTP_${r.status}`);
+    const url = URL.createObjectURL(await r.blob());
+    this._urls.set(key, url);
+    return url;
+  },
+
+  async remove(key) {
+    const token = Sync.getToken();
+    if (!token || !key) return;
+    const id = String(key).replace(/^f\//, '');
+    const cached = this._urls.get(key);
+    if (cached) { URL.revokeObjectURL(cached); this._urls.delete(key); }
+    try {
+      await fetch(`/api/files/${id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } });
+    } catch {}
+  },
+};
+
+/* ── pdf.js ──
+   Loaded from /vendor so the PWA keeps working offline. Deliberately left out
+   of the service worker's precache SHELL: it's ~1.4 MB and would slow every
+   cold start for a feature most sessions never touch. The runtime cache-first
+   handler picks it up the first time a PDF is actually opened. */
+let _pdfjs = null;
+function pdfjs() {
+  if (_pdfjs) return _pdfjs;
+  _pdfjs = new Promise((resolve, reject) => {
+    if (window.pdfjsLib) {
+      window.pdfjsLib.GlobalWorkerOptions.workerSrc = '/vendor/pdf.worker.min.js';
+      return resolve(window.pdfjsLib);
+    }
+    const s = document.createElement('script');
+    s.src = '/vendor/pdf.min.js';
+    s.onload = () => {
+      if (!window.pdfjsLib) return reject(new Error('pdf.js failed to load'));
+      window.pdfjsLib.GlobalWorkerOptions.workerSrc = '/vendor/pdf.worker.min.js';
+      resolve(window.pdfjsLib);
+    };
+    s.onerror = () => reject(new Error('pdf.js failed to load'));
+    document.head.appendChild(s);
+  });
+  return _pdfjs;
+}
+
+/* Deleting a note must also drop its attachments from R2, or the bucket
+   accumulates orphans no UI can ever reach again. Best-effort by design: a
+   failed cleanup should never block the delete the user asked for. */
+const purgeNoteFiles = (notes, ids) => {
+  const set = ids instanceof Set ? ids : new Set([ids]);
+  for (const n of notes || []) {
+    if (!set.has(n.id)) continue;
+    for (const f of n.files || []) Files.remove(f.key);
+  }
+};
+
+/* Upload failures are worth naming precisely — "upload failed" would hide the
+   one cause the user can actually fix (no bucket bound yet). */
+const pdfErrorLabel = (err) => {
+  const m = err?.message;
+  if (m === 'NO_BUCKET')     return 'PDF storage not set up yet — create the R2 bucket (see README)';
+  if (m === 'UNAUTHORIZED')  return 'Not authorised — check your sync token';
+  if (m === 'NO_TOKEN')      return 'Set up sync first — PDFs are stored in your Cloudflare account';
+  return m || 'Upload failed';
+};
+
+/* Pull the text out of a PDF for search. Page breaks are kept as headings so
+   a long extraction stays navigable once it's in the note body. */
+async function extractPdfText(data, onProgress) {
+  const lib = await pdfjs();
+  /* getDocument consumes (detaches) the buffer it's given, so hand it a copy —
+     the same bytes are also uploaded and rendered. */
+  const doc = await lib.getDocument({ data: data.slice(0) }).promise;
+  const out = [];
+  let total = 0, truncated = false;
+  for (let p = 1; p <= doc.numPages; p++) {
+    onProgress?.(p, doc.numPages);
+    const page = await doc.getPage(p);
+    const content = await page.getTextContent();
+    const text = content.items.map(i => i.str).join(' ').replace(/\s+/g, ' ').trim();
+    if (!text) continue;
+    const chunk = `\n\n## Page ${p}\n\n${text}`;
+    if (total + chunk.length > MAX_PDF_TEXT) { truncated = true; break; }
+    out.push(chunk);
+    total += chunk.length;
+  }
+  try { await doc.destroy(); } catch {}
+  return {
+    text: out.join('').trim(),
+    pages: doc.numPages,
+    truncated,
+  };
+}
+
 /* ── per-item last-write-wins merge with soft-delete tombstones ──
    Used for notes/tasks/meetings/journal during sync merges. For every id seen in any
    of the four inputs, whichever has the LATEST timestamp wins: a newer edit beats an
@@ -555,6 +696,9 @@ const SEED = () => ({
   meetings: [],
   folders: [],
   journal: [],
+  /* Notes may carry `files: [{id, key, name, size, type}]` — PDF attachments.
+     Only this metadata syncs; the bytes live in R2 (see the Files helper), because
+     the whole state blob is capped at 5 MB. */
   /* tombstones — {id, deletedAt} records so a stale save from another device can't
      resurrect something deleted elsewhere; see mergeById() */
   notesDeleted: [],
@@ -1089,6 +1233,127 @@ function MiniCalendar({ value, onChange, onClose }) {
   );
 }
 
+/* ── PdfView ─────────────────────────────────────────────────────
+   Renders a stored PDF with pdf.js onto a canvas. Canvas rather than an
+   <iframe>/<embed> because the bytes arrive as an authenticated fetch (no
+   header can ride on a frame src), and because it keeps `object-src 'none'`
+   in the CSP intact. */
+function PdfView({ file, onRemove }) {
+  const [state, setState]   = useState('loading'); /* loading | ready | error */
+  const [error, setError]   = useState(null);
+  const [page, setPage]     = useState(1);
+  const [pages, setPages]   = useState(0);
+  const [expanded, setExpanded] = useState(false);
+  const canvasRef = useRef(null);
+  const docRef    = useRef(null);
+  const taskRef   = useRef(null);   /* in-flight render, so page flips can cancel */
+  const wrapRef   = useRef(null);
+
+  /* Load the document once per file. */
+  useEffect(() => {
+    if (!file?.key) return;
+    let dead = false;
+    setState('loading'); setError(null);
+    (async () => {
+      try {
+        const [lib, url] = await Promise.all([pdfjs(), Files.url(file.key)]);
+        const doc = await lib.getDocument(url).promise;
+        if (dead) { try { doc.destroy(); } catch {} return; }
+        docRef.current = doc;
+        setPages(doc.numPages);
+        setPage(1);
+        setState('ready');
+      } catch (e) {
+        if (dead) return;
+        setError(e.message === 'UNAUTHORIZED' ? 'Not authorised — check your sync token' : 'Could not load this PDF');
+        setState('error');
+      }
+    })();
+    return () => {
+      dead = true;
+      try { taskRef.current?.cancel(); } catch {}
+      try { docRef.current?.destroy(); } catch {}
+      docRef.current = null;
+    };
+  }, [file?.key]);
+
+  /* Draw the current page, sized to the container so it stays readable on a
+     phone and sharp on a retina screen. */
+  useEffect(() => {
+    if (state !== 'ready' || !docRef.current) return;
+    let dead = false;
+    (async () => {
+      try {
+        try { taskRef.current?.cancel(); } catch {}
+        const pg = await docRef.current.getPage(page);
+        if (dead) return;
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+        const avail = (wrapRef.current?.clientWidth || 600) - 2;
+        const base  = pg.getViewport({ scale: 1 });
+        const scale = Math.max(0.2, avail / base.width);
+        const dpr   = Math.min(window.devicePixelRatio || 1, 2);
+        const vp    = pg.getViewport({ scale: scale * dpr });
+        canvas.width  = Math.floor(vp.width);
+        canvas.height = Math.floor(vp.height);
+        canvas.style.width  = '100%';
+        canvas.style.height = 'auto';
+        const task = pg.render({ canvasContext: canvas.getContext('2d'), viewport: vp });
+        taskRef.current = task;
+        await task.promise;
+      } catch (e) {
+        /* A cancelled render is the expected outcome of flipping pages fast. */
+        if (!dead && e?.name !== 'RenderingCancelledException') setError('Could not render this page');
+      }
+    })();
+    return () => { dead = true; };
+  }, [state, page, expanded]);
+
+  const download = async () => {
+    try {
+      const url = await Files.url(file.key);
+      const a = document.createElement('a');
+      a.href = url; a.download = file.name || 'document.pdf';
+      a.click();
+    } catch {}
+  };
+
+  const bar = { display:'flex', alignItems:'center', gap:8, padding:'8px 10px', borderBottom:'1px solid var(--border)', flexWrap:'wrap' };
+  const btn = { background:'var(--bg-base)', border:'1px solid var(--border-strong)', borderRadius:6, color:'var(--text-secondary)', cursor:'pointer', fontSize:11, padding:'3px 8px', fontFamily:'Manrope,sans-serif' };
+
+  return (
+    <div style={{margin:'8px 0',background:'var(--bg-surface)',border:'1px solid var(--border)',borderRadius:10,overflow:'hidden'}}>
+      <div style={bar}>
+        <svg style={{width:13,height:13,flexShrink:0,color:'var(--danger)'}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><polyline points="14 2 14 8 20 8"/>
+        </svg>
+        <span style={{fontSize:12,fontWeight:600,color:'var(--text-primary)',minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',flex:1}}>
+          {file?.name || 'document.pdf'}
+        </span>
+        {file?.size ? <span style={{fontSize:10.5,color:'var(--text-muted)',flexShrink:0}}>{fmtBytes(file.size)}</span> : null}
+        <button style={btn} onClick={download}>Download</button>
+        {onRemove && <button style={{...btn,color:'var(--danger)'}} onClick={onRemove}>Remove</button>}
+      </div>
+
+      {state==='loading' && <div style={{padding:'22px 14px',fontSize:12,color:'var(--text-muted)'}}>Loading PDF…</div>}
+      {state==='error'   && <div style={{padding:'22px 14px',fontSize:12,color:'var(--danger)'}}>{error}</div>}
+
+      {state==='ready' && (<>
+        <div ref={wrapRef} style={{padding:10,maxHeight:expanded?'none':420,overflow:'auto',background:'var(--bg-base)'}}>
+          <canvas ref={canvasRef} style={{display:'block',borderRadius:4,boxShadow:'0 1px 6px rgba(0,0,0,.25)'}}/>
+        </div>
+        <div style={{...bar,borderBottom:'none',borderTop:'1px solid var(--border)'}}>
+          <button style={{...btn,opacity:page<=1?.4:1}} disabled={page<=1} onClick={()=>setPage(p=>Math.max(1,p-1))}>‹ Prev</button>
+          <span style={{fontSize:11,color:'var(--text-secondary)',fontFamily:'"JetBrains Mono",monospace'}}>{page} / {pages}</span>
+          <button style={{...btn,opacity:page>=pages?.4:1}} disabled={page>=pages} onClick={()=>setPage(p=>Math.min(pages,p+1))}>Next ›</button>
+          <span style={{flex:1}}/>
+          <button style={btn} onClick={()=>setExpanded(v=>!v)}>{expanded?'Collapse':'Expand'}</button>
+        </div>
+      </>)}
+    </div>
+  );
+}
+
 /* ── NoteEditor ── */
 function NoteEditor({ note, state, update, isMobile }) {
   const [showCode, setShowCode] = useState(false);
@@ -1106,19 +1371,24 @@ function NoteEditor({ note, state, update, isMobile }) {
   const [previewMode, setPreviewMode] = useState(false);
   const imgInputRef = useRef(null);
   const mdInputRef  = useRef(null);
+  const pdfInputRef = useRef(null);
+  /* Must stay above the `if (!note) return` below — Rules of Hooks. */
+  const [pdfBusy, setPdfBusy] = useState(null); /* null | {label, error} */
   const activeTA = useRef(null); /* { el, partIdx, pos } */
 
   /* ── bodyParts — MUST be before any early return (Rules of Hooks) ── */
   const bodyParts = useMemo(() => {
     if (!note) return [{type:'text',content:''}];
     const parts=[]; let rest=note.body||'';
-    const re=/```(\w+)?\n([\s\S]*?)```|\[url:(.*?)\|(.*?)\]|\[img:([^\]]+)\]/g; let m; let last=0;
+    const re=/```(\w+)?\n([\s\S]*?)```|\[url:(.*?)\|(.*?)\]|\[img:([^\]]+)\]|\[pdf:([^\]]+)\]/g; let m; let last=0;
     while((m=re.exec(rest))!==null){
       if(m.index>last) parts.push({type:'text',content:rest.slice(last,m.index)});
       if(m[0].startsWith('```'))
         parts.push({type:'code',lang:m[1]||'plaintext',content:m[2].replace(/\n$/,'')});
       else if(m[5]!==undefined)
         parts.push({type:'image',id:m[5]});
+      else if(m[6]!==undefined)
+        parts.push({type:'pdf',id:m[6]});
       else
         parts.push({type:'link',title:decodeUrlPart(m[3]||''),url:decodeUrlPart(m[4]||'')});
       last=m.index+m[0].length;
@@ -1149,6 +1419,7 @@ function NoteEditor({ note, state, update, isMobile }) {
     if(p.type==='code') return '```'+p.lang+'\n'+p.content+'\n```';
     if(p.type==='link') return '[url:'+encodeURIComponent(p.title)+'|'+encodeURIComponent(p.url)+']';
     if(p.type==='image') return '[img:'+p.id+']';
+    if(p.type==='pdf')   return '[pdf:'+p.id+']';
     return p.content;
   }).join('');
 
@@ -1334,6 +1605,32 @@ function NoteEditor({ note, state, update, isMobile }) {
         }
         return;
       }
+    }
+  };
+
+  /* ── PDF attachment ──
+     Uploaded to R2 first; only the small metadata record goes into the note,
+     so the synced state blob stays lean. (State for this lives above the
+     early return — see the refs block — to keep hook order stable.) */
+  const handlePdfAttach = async e => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    if (file.type !== 'application/pdf') { setPdfBusy({ label:'Not a PDF', error:true }); return; }
+    if (file.size > MAX_PDF_BYTES) { setPdfBusy({ label:`Too large — max ${fmtBytes(MAX_PDF_BYTES)}`, error:true }); return; }
+    try {
+      setPdfBusy({ label:'Uploading…' });
+      const meta = await Files.upload(file);
+      const id = uid();
+      const rec = { id, key:meta.key, name:meta.name, size:meta.size, type:meta.type, uploadedAt:Date.now() };
+      insertAtCursor(
+        {type:'pdf', id},
+        (note.body||'')+'\n\n[pdf:'+id+']',
+        {files: [...(note.files||[]), rec]}
+      );
+      setPdfBusy(null);
+    } catch (err) {
+      setPdfBusy({ label: pdfErrorLabel(err), error:true });
     }
   };
 
@@ -1545,6 +1842,17 @@ function NoteEditor({ note, state, update, isMobile }) {
           <svg style={{width:10,height:10}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>img
         </button>
         <input ref={imgInputRef} type="file" accept="image/*" style={{display:'none'}} onChange={handleImg}/>
+        {/* pdf attachment */}
+        <button onClick={()=>{setPdfBusy(null);pdfInputRef.current?.click();}} title="Attach a PDF" style={{...tbBtn,display:'flex',alignItems:'center',gap:3}}
+          onMouseEnter={e=>{e.currentTarget.style.background='var(--bg-surface)';e.currentTarget.style.color='var(--text-primary)';}}
+          onMouseLeave={e=>{e.currentTarget.style.background='none';e.currentTarget.style.color='var(--text-secondary)';}}>
+          <svg style={{width:10,height:10}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><polyline points="14 2 14 8 20 8"/></svg>pdf
+        </button>
+        <input ref={pdfInputRef} type="file" accept="application/pdf,.pdf" style={{display:'none'}} onChange={handlePdfAttach}/>
+        {pdfBusy && (
+          <span style={{fontSize:10.5,color:pdfBusy.error?'var(--danger)':'var(--text-muted)',maxWidth:280,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}
+                title={pdfBusy.label}>{pdfBusy.label}</span>
+        )}
         {/* code */}
         <button onClick={()=>setShowCode(v=>!v)} title="Add code snippet" style={{...tbBtn,display:'flex',alignItems:'center',gap:3}}
           onMouseEnter={e=>{e.currentTarget.style.background='var(--bg-surface)';e.currentTarget.style.color='var(--text-primary)';}}
@@ -1678,6 +1986,16 @@ function NoteEditor({ note, state, update, isMobile }) {
                     placeholder="Add caption…" style={{display:'block',width:'100%',background:'transparent',border:'none',borderTop:'1px solid var(--border)',color:'var(--text-secondary)',fontSize:11.5,padding:'6px 10px',outline:'none',boxSizing:'border-box'}}/>
                 </div>;
               })()
+            : part.type==='pdf'
+            ? (() => {
+                const f = (note.files||[]).find(x=>x.id===part.id);
+                if (!f) return null;
+                return <PdfView key={i} file={f} onRemove={()=>{
+                  const np=[...bodyParts]; np.splice(i,1);
+                  upNote({body:rebuildBody(np), files:(note.files||[]).filter(x=>x.id!==f.id)});
+                  Files.remove(f.key);
+                }}/>;
+              })()
             : previewMode
             ? <MarkdownView key={i} content={part.content} onCheckboxToggle={idx=>handleCheckboxToggle(i,idx)}/>
             : <textarea key={i} className="editor-body" value={part.content}
@@ -1784,6 +2102,7 @@ function NoteEditor({ note, state, update, isMobile }) {
         <button onClick={()=>{
             if(confirm('Delete this note?')){
               const id = note.id;
+              purgeNoteFiles(state.notes, id);
               update('notes', prev => (prev||state.notes).filter(n=>n.id!==id));
               update('notesDeleted', prev => [...(prev||[]), { id, deletedAt: Date.now() }]);
               update('ui', {...state.ui, noteId:null});
@@ -1837,9 +2156,61 @@ function NotesView({ state, update, isMobile }) {
   }, [filtered]);
 
   const newNote = () => {
-    const n = { id:uid(), emoji:'📝', title:'', body:'', tags:[], links:[], images:[], folderId: filterFolder||null, created:Date.now(), updated:Date.now() };
+    const n = { id:uid(), emoji:'📝', title:'', body:'', tags:[], links:[], images:[], files:[], folderId: filterFolder||null, created:Date.now(), updated:Date.now() };
     update('notes', [n, ...state.notes]);
     update('ui', {...state.ui, noteId:n.id});
+  };
+
+  /* ── import a PDF as its own note ──
+     Uploads the file to R2, then extracts its text into the note body so the
+     PDF's contents are reachable by the same search and tagging as any other
+     note. The [pdf:…] marker at the top renders the document itself. */
+  const pdfNoteInputRef = useRef(null);
+  const [importing, setImporting] = useState(null); /* null | {label, error} */
+  const [dragOver, setDragOver]   = useState(false);
+
+  const importPdfAsNote = async (file) => {
+    if (!file) return;
+    if (file.type !== 'application/pdf') { setImporting({ label:'Not a PDF file', error:true }); return; }
+    if (file.size > MAX_PDF_BYTES) { setImporting({ label:`Too large — max ${fmtBytes(MAX_PDF_BYTES)}`, error:true }); return; }
+    try {
+      setImporting({ label:`Uploading ${file.name}…` });
+      const bytes = await file.arrayBuffer();
+      const meta  = await Files.upload(file);
+
+      let extracted = { text:'', pages:0, truncated:false };
+      try {
+        setImporting({ label:'Reading text…' });
+        extracted = await extractPdfText(bytes, (p, total) =>
+          setImporting({ label:`Reading text… page ${p} of ${total}` }));
+      } catch {
+        /* A PDF that resists text extraction (scanned, or DRM'd) is still
+           perfectly good as an attachment — keep the note, skip the text. */
+      }
+
+      const fileId = uid();
+      const rec = { id:fileId, key:meta.key, name:meta.name, size:meta.size, type:meta.type, uploadedAt:Date.now() };
+      const title = (file.name || 'document.pdf').replace(/\.pdf$/i, '').replace(/[_-]+/g, ' ').trim() || 'Untitled PDF';
+
+      const parts = [`[pdf:${fileId}]`];
+      if (extracted.text) {
+        parts.push('---', extracted.text);
+        if (extracted.truncated) parts.push(`\n_Text extraction truncated at ${fmtBytes(MAX_PDF_TEXT)} — the full document is attached above._`);
+      } else {
+        parts.push('---', '_No selectable text found in this PDF (it may be a scan). The document is attached above._');
+      }
+
+      const n = {
+        id:uid(), emoji:'📄', title, body:parts.join('\n\n'),
+        tags:[], links:[], images:[], files:[rec],
+        folderId: filterFolder||null, created:Date.now(), updated:Date.now(),
+      };
+      update('notes', [n, ...state.notes]);
+      update('ui', {...state.ui, noteId:n.id});
+      setImporting(null);
+    } catch (err) {
+      setImporting({ label: pdfErrorLabel(err), error:true });
+    }
   };
 
   const togglePin = (e, id) => {
@@ -1847,6 +2218,7 @@ function NotesView({ state, update, isMobile }) {
     update('notes', state.notes.map(n=>n.id===id?{...n,pinned:!n.pinned}:n));
   };
   const deleteNote = id => {
+    purgeNoteFiles(state.notes, id);
     update('notes', state.notes.filter(n=>n.id!==id));
     update('notesDeleted', [...(state.notesDeleted||[]), { id, deletedAt: Date.now() }]);
     if (noteId===id) update('ui',{...state.ui,noteId:null});
@@ -1857,6 +2229,7 @@ function NotesView({ state, update, isMobile }) {
     setSelectedIds(prev=>{ const s=new Set(prev); s.has(id)?s.delete(id):s.add(id); return s; });
   };
   const deleteSelected = () => {
+    purgeNoteFiles(state.notes, selectedIds);
     update('notes', state.notes.filter(n=>!selectedIds.has(n.id)));
     update('notesDeleted', [...(state.notesDeleted||[]), ...[...selectedIds].map(id => ({ id, deletedAt: Date.now() }))]);
     if (selectedIds.has(noteId)) update('ui',{...state.ui,noteId:null});
@@ -1885,13 +2258,33 @@ function NotesView({ state, update, isMobile }) {
   }
 
   const listPanel = (
-    <div style={{
+    <div
+      onDragOver={e=>{ if([...(e.dataTransfer?.types||[])].includes('Files')){ e.preventDefault(); e.dataTransfer.dropEffect='copy'; setDragOver(true);} }}
+      onDragLeave={e=>{ if(!e.currentTarget.contains(e.relatedTarget)) setDragOver(false); }}
+      onDrop={e=>{
+        if(![...(e.dataTransfer?.types||[])].includes('Files')) return;
+        e.preventDefault(); setDragOver(false);
+        const f=[...(e.dataTransfer.files||[])].find(x=>x.type==='application/pdf');
+        if(f) importPdfAsNote(f);
+        else setImporting({label:'Only PDF files can be imported as notes',error:true});
+      }}
+      style={{
       width: isMobile ? '100%' : listWidth,
       minWidth: isMobile ? 0 : 160,
       borderRight: isMobile ? 'none' : '1px solid var(--border)',
       display:'flex', flexDirection:'column', overflow:'hidden',
       flex: isMobile ? 1 : 'none',
+      position:'relative',
+      outline: dragOver ? '2px dashed var(--accent)' : 'none',
+      outlineOffset: -2,
     }}>
+      {dragOver && (
+        <div style={{position:'absolute',inset:0,zIndex:5,background:'rgba(129,140,248,.10)',display:'flex',alignItems:'center',justifyContent:'center',pointerEvents:'none'}}>
+          <span style={{fontSize:12,fontWeight:600,color:'var(--accent)',background:'var(--modal-bg)',border:'1px solid var(--accent)',borderRadius:8,padding:'8px 14px'}}>
+            Drop a PDF to import it as a note
+          </span>
+        </div>
+      )}
       <div style={{padding:'16px 14px 10px',flexShrink:0}}>
         <div style={{display:'flex',gap:8,marginBottom:dateFilter?6:10}}>
           <input className="input" value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search notes…" style={{flex:1}}/>
@@ -1910,10 +2303,29 @@ function NotesView({ state, update, isMobile }) {
               <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
             </svg>
           </button>
+          {/* import a PDF as its own note */}
+          <button onClick={()=>{setImporting(null);pdfNoteInputRef.current?.click();}} title="Import a PDF as a note"
+            style={{background:'var(--bg-surface)',border:'1px solid var(--border)',borderRadius:8,padding:'8px 10px',cursor:'pointer',display:'flex',alignItems:'center',flexShrink:0,transition:'all 120ms'}}
+            onMouseEnter={e=>{e.currentTarget.style.borderColor='var(--border-strong)';}}
+            onMouseLeave={e=>{e.currentTarget.style.borderColor='var(--border)';}}>
+            <svg style={{width:15,height:15,color:'var(--text-secondary)'}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><polyline points="9 15 12 12 15 15"/>
+            </svg>
+          </button>
+          <input ref={pdfNoteInputRef} type="file" accept="application/pdf,.pdf" style={{display:'none'}}
+            onChange={e=>{const f=e.target.files?.[0];e.target.value='';importPdfAsNote(f);}}/>
           <button className="btn-primary" onClick={newNote} style={{padding:'8px 12px',display:'flex',alignItems:'center'}}>
             {React.cloneElement(Ic.plus,{style:{width:15,height:15}})}
           </button>
         </div>
+        {importing && (
+          <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:8,padding:'5px 8px',borderRadius:7,
+                       background:importing.error?'rgba(244,63,94,.10)':'rgba(129,140,248,.10)',
+                       border:`1px solid ${importing.error?'rgba(244,63,94,.30)':'rgba(129,140,248,.30)'}`}}>
+            <span style={{fontSize:11,color:importing.error?'var(--danger)':'var(--accent)',flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis'}}>{importing.label}</span>
+            {importing.error && <button onClick={()=>setImporting(null)} style={{background:'none',border:'none',color:'var(--danger)',cursor:'pointer',fontSize:14,lineHeight:1,padding:'0 2px'}}>×</button>}
+          </div>
+        )}
         {favOnly&&(
           <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:8,padding:'5px 8px',background:'#f59e0b15',border:'1px solid #f59e0b30',borderRadius:7}}>
             <svg style={{width:11,height:11,color:'var(--warning)',flexShrink:0}} viewBox="0 0 24 24" fill="currentColor" stroke="none"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
