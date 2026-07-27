@@ -925,6 +925,7 @@ const Ic = {
   img:     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>,
   copy:    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>,
   move:    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><polyline points="5 9 2 12 5 15"/><polyline points="9 5 12 2 15 5"/><polyline points="15 19 12 22 9 19"/><polyline points="19 9 22 12 19 15"/><line x1="2" y1="12" x2="22" y2="12"/><line x1="12" y1="2" x2="12" y2="22"/></svg>,
+  fit:     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/></svg>,
 };
 
 const LANGS = ['plaintext','javascript','typescript','python','rust','go','csharp','bash','powershell','sql','json','css','jsx'];
@@ -4927,7 +4928,7 @@ function SectionBanner({ sectionId, banner, onChange, isMobile }) {
   const pillBtn = { background:'rgba(0,0,0,.55)', color:'#fff', border:'none', borderRadius:6, padding:'6px 10px', fontSize:12, cursor:'pointer', display:'flex', alignItems:'center', gap:5, backdropFilter:'blur(4px)', fontFamily:'Manrope,sans-serif' };
 
   const startDrag = e => {
-    if (!repositioning || banner?.type !== 'image') return;
+    if (!repositioning || banner?.type !== 'image' || banner?.fit === 'contain') return;
     e.preventDefault();
     const rectH = dragRef.current.offsetHeight;
     const startY = e.clientY;
@@ -4963,23 +4964,62 @@ function SectionBanner({ sectionId, banner, onChange, isMobile }) {
     );
   }
 
+  const isImage = banner.type === 'image';
+  const isFit   = isImage && banner.fit === 'contain'; /* whole photo visible, no crop — see the blurred backdrop below */
+
   return (
     <div ref={dragRef} onMouseDown={startDrag} onClick={()=>{ if (!repositioning) setActive(true); }}
       style={{
         position:'relative', height:isMobile?120:200, flexShrink:0, overflow:'hidden',
-        backgroundImage: banner.type==='gradient' ? banner.value : banner.type==='image' ? `url("${banner.url}")` : undefined,
-        backgroundSize:'cover', backgroundRepeat:'no-repeat',
-        backgroundPosition: banner.type==='image' ? `center ${repositioning?dragY:(banner.positionY??50)}%` : 'center',
+        backgroundImage: banner.type==='gradient' ? banner.value : undefined,
+        backgroundSize:'cover', backgroundRepeat:'no-repeat', backgroundPosition:'center',
         cursor: repositioning ? 'grab' : 'default',
       }}>
+      {isImage && (isFit ? (<>
+        {/* Most photos aren't nearly as wide as this banner, so showing the
+            whole image (object-fit: contain) leaves gaps on the sides or top
+            and bottom — and object-fit: contain / background-size: cover both
+            resize with the container automatically, so this holds up whether
+            the banner is the short mobile strip, a desktop one with the
+            sidebar open or collapsed, or anything in between; only the blur
+            radius is a fixed pixel value, so that's scaled down on the
+            shorter mobile banner to avoid over-smearing it.
+            Filling the gaps with a blurred, dimmed copy of the same photo
+            reads as intentional rather than empty — same trick as Spotify/
+            Apple Music "now playing" backgrounds. Oversized well beyond the
+            blur radius and clipped by the container's overflow:hidden so the
+            blur's soft edge never peeks into view. */}
+        <div style={{position:'absolute', inset:-40, backgroundImage:`url("${banner.url}")`, backgroundSize:'cover', backgroundRepeat:'no-repeat', backgroundPosition:'center', filter:`blur(${isMobile?16:28}px) brightness(0.55)`}}/>
+        <img src={banner.url} alt="" style={{position:'absolute', inset:0, width:'100%', height:'100%', objectFit:'contain', objectPosition:'center'}}/>
+      </>) : (
+        <div style={{position:'absolute', inset:0, backgroundImage:`url("${banner.url}")`, backgroundSize:'cover', backgroundRepeat:'no-repeat', backgroundPosition:`center ${repositioning?dragY:(banner.positionY??50)}%`}}/>
+      ))}
       {active && !repositioning && (
-        <div style={{position:'absolute',right:isMobile?12:20,bottom:12,display:'flex',gap:6}}>
-          {banner.type==='image' && (
-            <button onClick={()=>setRepositioning(true)} style={pillBtn}>
-              <span style={{width:12,height:12,display:'flex'}}>{Ic.move}</span> Reposition
+        /* Icon-only on mobile: this row can hold up to four buttons now, and
+           text labels alongside icons don't reliably fit a narrow phone
+           screen. Desktop keeps the labels since there's usually room —
+           but "desktop" here just means isMobile is false, a single fixed
+           breakpoint that says nothing about actual window width. A snapped/
+           split-screen desktop window narrower than that breakpoint's typical
+           layout still hits this branch with full labels, so flex-wrap plus a
+           maxWidth tied to the container (not a guessed pixel figure) lets the
+           row fold onto a second line instead of overflowing off the banner
+           at sizes this component has no other way to detect. */
+        <div style={{position:'absolute',right:isMobile?12:20,bottom:12,display:'flex',flexWrap:'wrap',justifyContent:'flex-end',rowGap:4,columnGap:isMobile?4:6,maxWidth:`calc(100% - ${isMobile?24:40}px)`}}>
+          {isImage && !isFit && (
+            <button onClick={()=>setRepositioning(true)} style={pillBtn} title="Reposition">
+              <span style={{width:12,height:12,display:'flex'}}>{Ic.move}</span> {!isMobile && 'Reposition'}
             </button>
           )}
-          <button onClick={()=>setPickerOpen(true)} style={pillBtn}>Change cover</button>
+          {isImage && (
+            <button onClick={()=>onChange({...banner, fit: isFit ? undefined : 'contain'})} style={pillBtn}
+              title={isFit ? 'Crop the photo to fill the banner' : 'Show the whole photo — fills the gaps with a blurred backdrop'}>
+              <span style={{width:12,height:12,display:'flex'}}>{Ic.fit}</span> {!isMobile && (isFit ? 'Fill banner' : 'Fit whole image')}
+            </button>
+          )}
+          <button onClick={()=>setPickerOpen(true)} style={pillBtn} title="Change cover">
+            <span style={{width:12,height:12,display:'flex'}}>{Ic.img}</span> {!isMobile && 'Change cover'}
+          </button>
           <button onClick={()=>onChange(null)} style={pillBtn} title="Remove cover">
             <span style={{width:12,height:12,display:'flex'}}>{Ic.x}</span>
           </button>
