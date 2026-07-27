@@ -238,6 +238,36 @@ const fmtBytes = n => {
 };
 const parseKey = s => { const [y,m,d]=s.split('-').map(Number); return new Date(y,m-1,d); };
 
+/* ── week helpers (Monday-start) — used by the Journal week view/nav ── */
+/* Monday of the week containing `d`. Date.getDay() is 0=Sun..6=Sat, so Sunday
+   needs a 6-day look-back rather than the usual `1 - day`. */
+function mondayOf(d) {
+  const day = d.getDay();
+  const diff = day === 0 ? -6 : 1 - day;
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate() + diff);
+}
+/* The Monday–Sunday range (as 'YYYY-MM-DD' keys) containing dateKey. */
+function weekRangeKeys(dateKey) {
+  const mon = mondayOf(parseKey(dateKey));
+  const sun = new Date(mon.getFullYear(), mon.getMonth(), mon.getDate() + 6);
+  return { startKey: fmtKey(mon), endKey: fmtKey(sun), mon, sun };
+}
+/* "This week" for the week containing today, otherwise a compact date range —
+   collapsing the month/year when both ends share one, so it doesn't sprawl
+   into "3 Mar 2025 – 9 Mar 2025" for the common case. */
+function weekLabel(startKey, endKey) {
+  if (startKey === weekRangeKeys(todayKey()).startKey) return 'This week';
+  const s = parseKey(startKey), e = parseKey(endKey);
+  const sameMonth = s.getMonth() === e.getMonth() && s.getFullYear() === e.getFullYear();
+  const sameYear  = s.getFullYear() === e.getFullYear();
+  const dayOnly   = d => d.toLocaleDateString('en-GB', { day:'numeric' });
+  const dayMonth  = d => d.toLocaleDateString('en-GB', { day:'numeric', month:'short' });
+  const full      = d => d.toLocaleDateString('en-GB', { day:'numeric', month:'short', year:'numeric' });
+  if (sameMonth) return `${dayOnly(s)}–${full(e)}`;
+  if (sameYear)  return `${dayMonth(s)} – ${full(e)}`;
+  return `${full(s)} – ${full(e)}`;
+}
+
 /* ── security ── */
 const MAX_IMAGE_BYTES = 2 * 1024 * 1024; /* 2 MB per uploaded image */
 const MAX_PDF_BYTES   = 25 * 1024 * 1024; /* 25 MB per PDF — matches /api/files */
@@ -1230,6 +1260,93 @@ function MiniCalendar({ value, onChange, onClose }) {
         })}
       </div>
       {value&&<button onClick={()=>onChange(null)} style={{marginTop:8,width:'100%',background:'none',border:'1px solid var(--border-strong)',borderRadius:6,color:'var(--text-secondary)',fontSize:11,padding:'5px',cursor:'pointer',fontFamily:'Manrope,sans-serif',transition:'all 110ms'}} onMouseEnter={e=>{e.currentTarget.style.borderColor='var(--accent)';e.currentTarget.style.color='var(--accent)';}} onMouseLeave={e=>{e.currentTarget.style.borderColor='var(--border-strong)';e.currentTarget.style.color='var(--text-secondary)';}}>Clear date filter</button>}
+    </div>
+  );
+}
+
+/* ── JournalDatePicker — like MiniCalendar, but adds year stepping too
+   («/»), since browsing a journal reasonably means jumping whole years back,
+   not just months. Selecting a day hands its key up and closes. ── */
+function JournalDatePicker({ value, onChange, onClose }) {
+  const ref = useRef(null);
+  const init = value ? parseKey(value) : new Date();
+  const [view, setView] = useState(new Date(init.getFullYear(), init.getMonth(), 1));
+  useEffect(() => {
+    const h = e => { if (!ref.current?.contains(e.target)) onClose(); };
+    setTimeout(() => document.addEventListener('mousedown', h), 0);
+    return () => document.removeEventListener('mousedown', h);
+  }, []);
+  const yr = view.getFullYear(), mo = view.getMonth();
+  const firstDow = new Date(yr, mo, 1).getDay();
+  const days     = new Date(yr, mo + 1, 0).getDate();
+  const cells    = Array(firstDow).fill(null).concat(Array.from({length:days},(_,i)=>i+1));
+  const navBtn = { background:'none', border:'none', color:'var(--text-secondary)', fontSize:15, cursor:'pointer', lineHeight:1, padding:'0 4px', borderRadius:5 };
+  return (
+    <div ref={ref} style={{position:'absolute',top:'calc(100% + 4px)',left:0,zIndex:200,background:'var(--bg-surface)',border:'1px solid var(--border-strong)',borderRadius:12,padding:'12px 12px 10px',width:224,boxShadow:'0 12px 40px rgba(0,0,0,.8)'}}>
+      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:8}}>
+        <div style={{display:'flex'}}>
+          <button onClick={()=>setView(new Date(yr-1,mo,1))} title="Previous year" style={navBtn} onMouseEnter={e=>e.currentTarget.style.color='var(--text-primary)'} onMouseLeave={e=>e.currentTarget.style.color='var(--text-secondary)'}>«</button>
+          <button onClick={()=>setView(new Date(yr,mo-1,1))} title="Previous month" style={navBtn} onMouseEnter={e=>e.currentTarget.style.color='var(--text-primary)'} onMouseLeave={e=>e.currentTarget.style.color='var(--text-secondary)'}>‹</button>
+        </div>
+        <span style={{fontSize:12,fontWeight:700,color:'var(--text-primary)'}}>{MCAL_MONTHS[mo]} {yr}</span>
+        <div style={{display:'flex'}}>
+          <button onClick={()=>setView(new Date(yr,mo+1,1))} title="Next month" style={navBtn} onMouseEnter={e=>e.currentTarget.style.color='var(--text-primary)'} onMouseLeave={e=>e.currentTarget.style.color='var(--text-secondary)'}>›</button>
+          <button onClick={()=>setView(new Date(yr+1,mo,1))} title="Next year" style={navBtn} onMouseEnter={e=>e.currentTarget.style.color='var(--text-primary)'} onMouseLeave={e=>e.currentTarget.style.color='var(--text-secondary)'}>»</button>
+        </div>
+      </div>
+      <div style={{display:'grid',gridTemplateColumns:'repeat(7,1fr)',gap:2,marginBottom:3}}>
+        {MCAL_DAYS.map((d,i)=><div key={i} style={{textAlign:'center',fontSize:10,color:'var(--text-muted)',fontWeight:700,padding:'2px 0'}}>{d}</div>)}
+      </div>
+      <div style={{display:'grid',gridTemplateColumns:'repeat(7,1fr)',gap:2}}>
+        {cells.map((d,i)=>{
+          if (!d) return <div key={i}/>;
+          const key = fmtKey(new Date(yr,mo,d));
+          const sel = key === value;
+          const isToday = key === todayKey();
+          return (
+            <button key={i} onClick={()=>{ onChange(key); onClose(); }}
+              style={{background:sel?'var(--accent)':isToday&&!sel?'var(--bg-surface)':'none',border:isToday&&!sel?'1px solid #818cf840':'1px solid transparent',borderRadius:6,color:sel?'#fff':isToday?'var(--accent)':'var(--text-tertiary)',fontSize:11,padding:'4px 0',cursor:'pointer',transition:'all 80ms',textAlign:'center',lineHeight:1.4}}
+              onMouseEnter={e=>{ if(!sel) e.currentTarget.style.background='var(--border-strong)'; }}
+              onMouseLeave={e=>{ if(!sel) e.currentTarget.style.background=isToday?'var(--bg-surface)':'none'; }}>
+              {d}
+            </button>
+          );
+        })}
+      </div>
+      <button onClick={()=>{ onChange(todayKey()); onClose(); }} style={{marginTop:8,width:'100%',background:'none',border:'1px solid var(--border-strong)',borderRadius:6,color:'var(--text-secondary)',fontSize:11,padding:'5px',cursor:'pointer',fontFamily:'Manrope,sans-serif',transition:'all 110ms'}} onMouseEnter={e=>{e.currentTarget.style.borderColor='var(--accent)';e.currentTarget.style.color='var(--accent)';}} onMouseLeave={e=>{e.currentTarget.style.borderColor='var(--border-strong)';e.currentTarget.style.color='var(--text-secondary)';}}>Jump to today</button>
+    </div>
+  );
+}
+
+/* ── JournalWeekNav — the Journal feed always shows exactly one Monday–Sunday
+   week; this steps which one. Week is the primary unit (‹ ›), Month/Year
+   buttons jump several weeks at a time, and the calendar icon jumps straight
+   to an arbitrary date's week. ── */
+function JournalWeekNav({ viewDate, onChange }) {
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const { startKey, endKey } = weekRangeKeys(viewDate);
+  const isThisWeek = startKey === weekRangeKeys(todayKey()).startKey;
+  const shiftDays = n => onChange(fmtKey(new Date(parseKey(viewDate).getTime() + n*86400000)));
+  const shiftMonths = n => { const d = parseKey(viewDate); onChange(fmtKey(new Date(d.getFullYear(), d.getMonth()+n, d.getDate()))); };
+  const shiftYears  = n => { const d = parseKey(viewDate); onChange(fmtKey(new Date(d.getFullYear()+n, d.getMonth(), d.getDate()))); };
+  const navBtn = { background:'var(--bg-surface)', border:'1px solid var(--border)', borderRadius:6, color:'var(--text-secondary)', fontSize:11.5, padding:'5px 8px', cursor:'pointer', fontFamily:'Manrope,sans-serif', display:'flex', alignItems:'center', gap:3, whiteSpace:'nowrap' };
+  return (
+    <div style={{display:'flex',alignItems:'center',flexWrap:'wrap',gap:6,marginBottom:18,maxWidth:900}}>
+      <button onClick={()=>shiftYears(-1)} title="Previous year" style={navBtn}>« Year</button>
+      <button onClick={()=>shiftMonths(-1)} title="Previous month" style={navBtn}>‹ Month</button>
+      <button onClick={()=>shiftDays(-7)} title="Previous week" style={navBtn}>‹ Week</button>
+      <div style={{position:'relative'}}>
+        <button onClick={()=>setPickerOpen(v=>!v)} style={{...navBtn,color:'var(--text-primary)',fontWeight:600,minWidth:100,justifyContent:'center'}}>
+          <span style={{width:12,height:12,display:'flex'}}>{Ic.cal}</span> {weekLabel(startKey,endKey)}
+        </button>
+        {pickerOpen && <JournalDatePicker value={viewDate} onChange={onChange} onClose={()=>setPickerOpen(false)}/>}
+      </div>
+      <button onClick={()=>shiftDays(7)} title="Next week" style={navBtn}>Week ›</button>
+      <button onClick={()=>shiftMonths(1)} title="Next month" style={navBtn}>Month ›</button>
+      <button onClick={()=>shiftYears(1)} title="Next year" style={navBtn}>Year »</button>
+      {!isThisWeek && (
+        <button onClick={()=>onChange(todayKey())} style={{...navBtn,color:'var(--accent)',borderColor:'var(--accent)'}}>This week</button>
+      )}
     </div>
   );
 }
@@ -3502,13 +3619,22 @@ function TagsView({ state, update, isMobile }) {
 }
 
 /* ── JournalView ── */
-function JournalEntryTags({ tags, onChange }) {
-  const [input, setInput] = useState('');
-  const add = () => {
-    const clean = input.trim().replace(/^#*/,'#');
+/* `allTags` is every tag used across journal history (most-used first — see
+   JournalView), so a previously-typed tag like #gratitude becomes a one-click
+   pick instead of retyping it on every entry. Suggestions show as soon as the
+   input is focused, even before typing anything, same as the note-tag picker. */
+function JournalEntryTags({ tags, onChange, allTags=[] }) {
+  const [input, setInput]     = useState('');
+  const [focused, setFocused] = useState(false);
+  const add = raw => {
+    const clean = (raw ?? input).trim().replace(/^#*/,'#');
     if (clean.length > 1 && !tags.includes(clean)) onChange([...tags, clean]);
     setInput('');
   };
+  const suggestions = allTags.filter(t =>
+    !tags.includes(t) &&
+    (!input || t.toLowerCase().includes(input.replace(/^#/,'').toLowerCase()))
+  ).slice(0,8);
   return (
     <div style={{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap'}}>
       {tags.map(t=>(
@@ -3516,10 +3642,27 @@ function JournalEntryTags({ tags, onChange }) {
           {t}<span onClick={()=>onChange(tags.filter(x=>x!==t))} style={{cursor:'pointer',opacity:.7,marginLeft:2}}>×</span>
         </span>
       ))}
-      <input value={input} onChange={e=>setInput(e.target.value)}
-        onKeyDown={e=>{if(e.key==='Enter'){e.preventDefault();add();}}}
-        placeholder="#tag"
-        style={{background:'var(--bg-surface)',border:'1px solid var(--border-strong)',borderRadius:6,padding:'2px 8px',color:'var(--text-primary)',fontSize:12,width:80,outline:'none'}}/>
+      <div style={{position:'relative'}}>
+        <input value={input} onChange={e=>setInput(e.target.value)}
+          onFocus={()=>setFocused(true)}
+          onBlur={()=>setTimeout(()=>setFocused(false),150)}
+          onKeyDown={e=>{if(e.key==='Enter'){e.preventDefault();add();}}}
+          placeholder="#tag"
+          style={{background:'var(--bg-surface)',border:'1px solid var(--border-strong)',borderRadius:6,padding:'2px 8px',color:'var(--text-primary)',fontSize:12,width:80,outline:'none'}}/>
+        {focused && suggestions.length>0 && (
+          <div style={{position:'absolute',top:'100%',left:0,marginTop:4,background:'var(--modal-bg)',border:'1px solid var(--border-strong)',borderRadius:8,padding:'4px',zIndex:20,minWidth:140,boxShadow:'0 8px 24px rgba(0,0,0,.5)'}}>
+            {suggestions.map(t=>(
+              <div key={t} onMouseDown={()=>add(t)}
+                style={{display:'flex',alignItems:'center',gap:6,padding:'5px 8px',borderRadius:5,cursor:'pointer',transition:'background 100ms'}}
+                onMouseEnter={e=>e.currentTarget.style.background='var(--border)'}
+                onMouseLeave={e=>e.currentTarget.style.background='transparent'}>
+                <span style={{width:7,height:7,borderRadius:99,background:tagColor(t),flexShrink:0,display:'inline-block'}}/>
+                <span style={{fontSize:12,color:'var(--text-tertiary)'}}>{t}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -3548,16 +3691,33 @@ function JournalView({ state, update, isMobile }) {
   const [editMood, setEditMood]           = useState(null);
   const [editTags, setEditTags]           = useState([]);
   const [search, setSearch]               = useState('');
+  /* Which Monday–Sunday week the feed shows. Defaults to the week containing
+     today, so a fresh week starts empty and fills in day by day — browsing
+     history via JournalWeekNav moves this without touching "today" itself. */
+  const [viewDate, setViewDate]           = useState(todayKey());
 
   const streak   = useMemo(() => computeStreak(entries), [entries]);
   const prompt   = useMemo(() => dailyPrompt(), []);
   const onThisDay = useMemo(() => entriesOnThisDay(entries), [entries]);
+  /* Every tag ever used on a journal entry, most-used first, so a tag you
+     reach for constantly (#gratitude…) sits at the top of the suggestion list
+     — see JournalEntryTags. Built from the whole history, not the currently
+     viewed week, so it doesn't thin out to nothing right after a new week starts. */
+  const allJournalTags = useMemo(() => {
+    const counts = {};
+    entries.forEach(e => (e.tags||[]).forEach(t => { counts[t] = (counts[t]||0) + 1; }));
+    return Object.keys(counts).sort((a,b) => counts[b]-counts[a] || a.localeCompare(b));
+  }, [entries]);
+  const { startKey: weekStart, endKey: weekEnd } = useMemo(() => weekRangeKeys(viewDate), [viewDate]);
 
   const grouped = useMemo(() => {
     const q = search.trim().toLowerCase();
+    /* A search is a "find it wherever it is" action — it deliberately searches
+       every entry ever written, not just the week currently in view. Only when
+       there's no search does the feed restrict itself to the viewed week. */
     const visible = q
       ? entries.filter(e => e.body.toLowerCase().includes(q) || (e.prompt||'').toLowerCase().includes(q) || (e.tags||[]).some(t=>t.toLowerCase().includes(q)))
-      : entries;
+      : entries.filter(e => e.date >= weekStart && e.date <= weekEnd);
     const today = todayKey();
     const yesterday = fmtKey(new Date(Date.now() - 86400000));
     const byKey = {};
@@ -3568,13 +3728,17 @@ function JournalView({ state, update, isMobile }) {
       byKey[key].items.push(e);
     });
     return Object.entries(byKey).sort(([a],[b])=>b.localeCompare(a)).map(([,v])=>v);
-  }, [entries, search]);
+  }, [entries, search, weekStart, weekEnd]);
 
   const addEntry = () => {
     if (!composerText.trim()) return;
     const entry = { id:uid(), date:todayKey(), created:Date.now(), updated:Date.now(), body:composerText.trim(), prompt:usePrompt?prompt:null, mood:composerMood, tags:composerTags };
     update('journal', [entry, ...entries]);
     setComposerText(''); setComposerMood(null); setUsePrompt(true);
+    /* A new entry is always dated today — jump the view back to this week so
+       it's actually visible, rather than landing silently in a week you're
+       not looking at because you were browsing old entries when you wrote it. */
+    setViewDate(todayKey());
   };
   const startEdit = e => { setEditingId(e.id); setEditText(e.body); setEditMood(e.mood); setEditTags(e.tags||[]); };
   const saveEdit = () => {
@@ -3630,7 +3794,7 @@ function JournalView({ state, update, isMobile }) {
         <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:10}}>
           <div style={{display:'flex',alignItems:'center',gap:14,flexWrap:'wrap'}}>
             <MoodPicker value={composerMood} onChange={setComposerMood}/>
-            <JournalEntryTags tags={composerTags} onChange={setComposerTags}/>
+            <JournalEntryTags tags={composerTags} onChange={setComposerTags} allTags={allJournalTags}/>
           </div>
           <button className="btn-primary" onClick={addEntry} disabled={!composerText.trim()}
             style={{opacity:composerText.trim()?1:.5}}>Save entry</button>
@@ -3641,6 +3805,11 @@ function JournalView({ state, update, isMobile }) {
       <div style={{maxWidth:900,marginBottom:18}}>
         <input className="input" value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search journal entries…"/>
       </div>
+
+      {/* week navigator — the feed below always shows exactly one Monday–
+          Sunday week; hidden while actively searching since search spans
+          every entry regardless of week (see the `grouped` memo above). */}
+      {!search.trim() && <JournalWeekNav viewDate={viewDate} onChange={setViewDate}/>}
 
       {/* entries feed */}
       {grouped.map(({label,items})=>(
@@ -3673,7 +3842,7 @@ function JournalView({ state, update, isMobile }) {
                       style={{background:'var(--bg-surface)',border:'1px solid var(--border-strong)',borderRadius:8,padding:10,outline:'none',fontFamily:'Manrope,sans-serif',fontSize:14,color:'var(--text-primary)',lineHeight:1.6,width:'100%',resize:'vertical'}}/>
                     <div style={{display:'flex',alignItems:'center',gap:14,flexWrap:'wrap'}}>
                       <MoodPicker value={editMood} onChange={setEditMood}/>
-                      <JournalEntryTags tags={editTags} onChange={setEditTags}/>
+                      <JournalEntryTags tags={editTags} onChange={setEditTags} allTags={allJournalTags}/>
                     </div>
                     <div style={{display:'flex',gap:8,justifyContent:'flex-end'}}>
                       <button className="btn-ghost" onClick={()=>setEditingId(null)}>Cancel</button>
@@ -3696,8 +3865,16 @@ function JournalView({ state, update, isMobile }) {
       {entries.length===0 && (
         <div style={{color:'var(--text-muted)',fontSize:13}}>No entries yet — write your first one above.</div>
       )}
-      {entries.length>0 && grouped.length===0 && (
+      {entries.length>0 && grouped.length===0 && search.trim() && (
         <div style={{color:'var(--text-muted)',fontSize:13}}>No entries match "{search}".</div>
+      )}
+      {/* Week has entries elsewhere but none in the currently viewed range —
+          this is the expected state right after a new week starts, not an
+          error, so it reads as a plain status rather than a dead end. */}
+      {entries.length>0 && grouped.length===0 && !search.trim() && (
+        <div style={{color:'var(--text-muted)',fontSize:13}}>
+          {weekLabel(weekStart,weekEnd)==='This week' ? 'No entries yet this week.' : `No entries for ${weekLabel(weekStart,weekEnd)}.`}
+        </div>
       )}
     </div>
   );
