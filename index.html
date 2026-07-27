@@ -4898,13 +4898,31 @@ function BannerPickerModal({ sectionId, banner, onChange, onClose }) {
 
 /* ── SectionBanner — Notion-style cover banner shown above each main nav section ── */
 function SectionBanner({ sectionId, banner, onChange, isMobile }) {
-  const [hover, setHover]                 = useState(false);
+  const [hover, setHover]                 = useState(false); /* "Add cover" affordance only — no banner set yet */
+  const [active, setActive]               = useState(false); /* edit controls for an existing banner — shown only after a click/tap */
   const [pickerOpen, setPickerOpen]       = useState(false);
   const [repositioning, setRepositioning] = useState(false);
   const [dragY, setDragY]                 = useState(banner?.positionY ?? 50);
   const dragRef = useRef(null);
 
-  useEffect(() => { setDragY(banner?.positionY ?? 50); setRepositioning(false); setHover(false); }, [sectionId]);
+  useEffect(() => { setDragY(banner?.positionY ?? 50); setRepositioning(false); setHover(false); setActive(false); }, [sectionId]);
+
+  /* Clicking anywhere outside the banner closes the edit controls again —
+     otherwise clicking once and then working elsewhere on the page leaves
+     Reposition/Change cover/Remove sitting there indefinitely. Suspended while
+     repositioning or the picker modal is open so those flows aren't cut short. */
+  useEffect(() => {
+    if (!active || repositioning || pickerOpen) return;
+    const onDocPointerDown = e => {
+      if (dragRef.current && !dragRef.current.contains(e.target)) setActive(false);
+    };
+    document.addEventListener('mousedown', onDocPointerDown);
+    document.addEventListener('touchstart', onDocPointerDown);
+    return () => {
+      document.removeEventListener('mousedown', onDocPointerDown);
+      document.removeEventListener('touchstart', onDocPointerDown);
+    };
+  }, [active, repositioning, pickerOpen]);
 
   const pillBtn = { background:'rgba(0,0,0,.55)', color:'#fff', border:'none', borderRadius:6, padding:'6px 10px', fontSize:12, cursor:'pointer', display:'flex', alignItems:'center', gap:5, backdropFilter:'blur(4px)', fontFamily:'Manrope,sans-serif' };
 
@@ -4946,7 +4964,7 @@ function SectionBanner({ sectionId, banner, onChange, isMobile }) {
   }
 
   return (
-    <div ref={dragRef} onMouseEnter={()=>setHover(true)} onMouseLeave={()=>setHover(false)} onMouseDown={startDrag}
+    <div ref={dragRef} onMouseDown={startDrag} onClick={()=>{ if (!repositioning) setActive(true); }}
       style={{
         position:'relative', height:isMobile?120:200, flexShrink:0, overflow:'hidden',
         backgroundImage: banner.type==='gradient' ? banner.value : banner.type==='image' ? `url("${banner.url}")` : undefined,
@@ -4954,7 +4972,7 @@ function SectionBanner({ sectionId, banner, onChange, isMobile }) {
         backgroundPosition: banner.type==='image' ? `center ${repositioning?dragY:(banner.positionY??50)}%` : 'center',
         cursor: repositioning ? 'grab' : 'default',
       }}>
-      {(hover || isMobile) && !repositioning && (
+      {active && !repositioning && (
         <div style={{position:'absolute',right:isMobile?12:20,bottom:12,display:'flex',gap:6}}>
           {banner.type==='image' && (
             <button onClick={()=>setRepositioning(true)} style={pillBtn}>
