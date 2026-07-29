@@ -21,15 +21,30 @@ INSERT OR IGNORE INTO state (id, data, updated_at) VALUES (1, '{}', 0);
 -- `updated_at` doubles as the ETag/optimistic-concurrency version, so it must
 -- stay strictly increasing.
 
--- Web Push subscriptions + notification schedule (one row per device/browser)
+-- Web Push subscriptions (one row per device/browser)
 CREATE TABLE IF NOT EXISTS push_subs (
   id           TEXT PRIMARY KEY,            -- push endpoint URL (stable per device/browser)
   subscription TEXT NOT NULL,               -- JSON: { endpoint, keys: { p256dh, auth } }
-  schedule     TEXT NOT NULL DEFAULT '[]',  -- JSON: pending plan [{ id, title, body, fireAt }]
+  schedule     TEXT NOT NULL DEFAULT '[]',  -- JSON: one-off entries only (pomodoro, test) — see below
+  sent         TEXT NOT NULL DEFAULT '[]',  -- JSON: ids already delivered (or retired as stale)
   next_fire_at INTEGER NOT NULL DEFAULT 0,  -- unix ms of earliest undelivered entry (0 = none)
-  updated_at   INTEGER NOT NULL             -- last time this sub was confirmed working
+  updated_at   INTEGER NOT NULL             -- last time this sub was confirmed WORKING
 );
 
--- next_fire_at is denormalised from `schedule` purely so the delivery worker can
--- find due subscriptions with an indexed lookup instead of parsing every plan.
+-- MIGRATION — run once if this table predates the `sent` column:
+--   ALTER TABLE push_subs ADD COLUMN sent TEXT NOT NULL DEFAULT '[]';
+
+-- The recurring plan (meetings + salah) is NOT stored here. The cron Worker
+-- re-derives it from the `state` row on every tick, so notifications keep
+-- firing even if the app is never opened. `schedule` now holds only one-off
+-- entries the client pushes that aren't derivable from state.
+--
+-- `sent` is what makes rebuilding safe: the plan is never consumed, so a
+-- delayed or skipped cron tick can't permanently lose a notification, and a
+-- rebuild can't resurrect a delivered one. Entries self-prune once their id
+-- drops out of the plan (ids embed their date, so they never repeat).
+--
+-- `next_fire_at` is observability only. It must NEVER gate delivery: the
+-- previous design filtered on it, so a row that drained to 0 stopped being
+-- selected and went silent forever.
 CREATE INDEX IF NOT EXISTS idx_push_subs_next_fire ON push_subs (next_fire_at);

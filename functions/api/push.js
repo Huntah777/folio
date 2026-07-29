@@ -16,39 +16,51 @@ const json = (data, status = 200) =>
     headers: { 'Content-Type': 'application/json; charset=utf-8' },
   });
 
-const tokenOk = (request, env) => {
+/* Constant-time comparison via HMAC — output is fixed-width regardless of
+   input, so the XOR loop can't leak the expected token's length through
+   timing the way an early length check does. */
+const tokenOk = async (request, env) => {
   const header = request.headers.get('Authorization') || '';
   const given  = header.replace(/^Bearer\s+/i, '').trim();
   const expect = env.SYNC_TOKEN || '';
-  if (!given || !expect || given.length !== expect.length) return false;
+  if (!given || !expect) return false;
+  const key = await crypto.subtle.generateKey({ name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const enc = new TextEncoder();
+  const [a, b] = await Promise.all([
+    crypto.subtle.sign('HMAC', key, enc.encode(given)),
+    crypto.subtle.sign('HMAC', key, enc.encode(expect)),
+  ]);
+  const ua = new Uint8Array(a), ub = new Uint8Array(b);
   let diff = 0;
-  for (let i = 0; i < given.length; i++) diff |= given.charCodeAt(i) ^ expect.charCodeAt(i);
+  for (let i = 0; i < ua.length; i++) diff |= ua[i] ^ ub[i];
   return diff === 0;
 };
 
 export async function onRequest({ request, env }) {
-  if (!tokenOk(request, env)) return json({ error: 'Unauthorized' }, 401);
+  if (!await tokenOk(request, env)) return json({ error: 'Unauthorized' }, 401);
 
   try {
     if (request.method === 'POST') {
-      const { subscription, schedule } = await request.json();
+      /* Registration only. The recurring plan (meetings + salah) is derived
+         server-side by the cron Worker from the shared state row, so the
+         client no longer supplies one — that design is exactly what went
+         silent whenever the app wasn't opened for a while.
+
+         Any `schedule` in the body is ignored, and the stored column is left
+         untouched on conflict so one-off entries (pomodoro, test) already
+         queued there survive a re-registration. */
+      const { subscription } = await request.json();
       if (!subscription?.endpoint) return json({ error: 'Missing subscription' }, 400);
 
-      const arr = Array.isArray(schedule) ? schedule : [];
-      const nextFireAt = arr.length ? Math.min(...arr.map(n => n.fireAt)) : 0;
-
       await env.DB.prepare(
-        `INSERT INTO push_subs (id, subscription, schedule, next_fire_at, updated_at) VALUES (?, ?, ?, ?, ?)
+        `INSERT INTO push_subs (id, subscription, schedule, sent, next_fire_at, updated_at)
+         VALUES (?, ?, '[]', '[]', 0, ?)
          ON CONFLICT(id) DO UPDATE
-           SET subscription  = excluded.subscription,
-               schedule      = excluded.schedule,
-               next_fire_at  = excluded.next_fire_at,
-               updated_at    = excluded.updated_at`,
+           SET subscription = excluded.subscription,
+               updated_at   = excluded.updated_at`,
       ).bind(
         subscription.endpoint,
         JSON.stringify(subscription),
-        JSON.stringify(arr),
-        nextFireAt,
         Date.now(),
       ).run();
 
@@ -75,7 +87,10 @@ export async function onRequest({ request, env }) {
         let arr = [];
         if (row?.schedule) { try { arr = JSON.parse(row.schedule) || []; } catch {} }
         arr = arr.filter(n => n.id !== (notification?.id || 'pomodoro'));
-        if (notification) arr.push(notification);
+        /* Flagged as a one-off so the cron Worker preserves it across the
+           per-tick plan rebuild — the rebuild only knows about things derivable
+           from state, and would otherwise drop this on the next tick. */
+        if (notification) arr.push({ ...notification, oneoff: true });
 
         const nextFireAt = arr.length ? Math.min(...arr.map(n => n.fireAt)) : 0;
         const prevUpdatedAt = row ? row.updated_at : -1; // irrelevant when there's no existing row to conflict with

@@ -373,7 +373,15 @@ function vapidKeyBytes() {
   return out;
 }
 
-/* ── notification scheduling (meetings + salah unified) ── */
+/* ── notification scheduling (meetings + salah unified) ──
+   This builds the LOCAL, in-page schedule only: the service worker's setTimeout
+   timers, which fire while the app is actually open and give sub-minute
+   accuracy. Background delivery is not driven from here — the cron Worker
+   re-derives the same plan from the synced state row every minute (see
+   push-worker/src/index.js) so notifications keep arriving on every device
+   even when the app hasn't been opened for weeks. The two produce identical
+   notification ids on purpose, so a locally-timed alert and a pushed one
+   collapse onto the same tag instead of buzzing twice. */
 async function buildSchedule(meetings, salah) {
   const now = Date.now();
   const checkDays = Array.from({ length: 14 }, (_, i) => new Date(now + i * 86400000));
@@ -438,10 +446,16 @@ async function buildSchedule(meetings, salah) {
   return notifications;
 }
 
-async function syncPushSchedule(schedule) {
+/* Registers this device's push subscription with the server. Registration is
+   ALL the client does now — the server derives what to send. Re-running this
+   is cheap and also refreshes `updated_at`, which is the liveness signal the
+   worker's stale-subscription cleanup relies on, so a device that's genuinely
+   in use is never garbage-collected. */
+async function registerPush() {
   try {
     const token = localStorage.getItem('folio_token');
-    if (!token || !('serviceWorker' in navigator)) return false;
+    if (!token || !('serviceWorker' in navigator) || !('PushManager' in window)) return false;
+    if (!('Notification' in window) || Notification.permission !== 'granted') return false;
     const reg = await navigator.serviceWorker.ready;
     let sub = await reg.pushManager.getSubscription();
     if (!sub) {
@@ -453,7 +467,7 @@ async function syncPushSchedule(schedule) {
     const res = await fetch('/api/push', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ subscription: sub.toJSON(), schedule }),
+      body: JSON.stringify({ subscription: sub.toJSON() }),
     });
     return res.ok;
   } catch {
@@ -462,15 +476,17 @@ async function syncPushSchedule(schedule) {
 }
 
 async function activatePush() {
-  return syncPushSchedule([]);
+  return registerPush();
 }
 
 async function scheduleNotifications(meetings, salah) {
-  const schedule = await buildSchedule(meetings, salah);
+  /* Local timers for while the page is open… */
   if (('Notification' in window) && Notification.permission === 'granted' && navigator.serviceWorker?.controller) {
+    const schedule = await buildSchedule(meetings, salah);
     navigator.serviceWorker.controller.postMessage({ type: 'SCHEDULE_NOTIFICATIONS', notifications: schedule });
   }
-  syncPushSchedule(schedule);
+  /* …and make sure the server still knows about this device. */
+  registerPush();
 }
 const scheduleCalendarNotifications = (m) => scheduleNotifications(m, null);
 
@@ -765,7 +781,11 @@ const SEED = () => ({
            /* per-prayer minute adjustments — see salahOffsets() */
            offsets:{fajr:0,sunrise:0,dhuhr:0,asr:0,maghrib:0,isha:0} },
   banners: {},
-  ui: { view:'today', noteId: null, calDate: todayKey(), filterTag:'', folderId: null },
+  /* `timezone` is the IANA zone the cron Worker builds notification times in —
+     a Worker has no implicit local timezone, so without this every reminder
+     would land at the UTC-equivalent time. Set automatically from the browser
+     on load; see the timezone effect in App(). */
+  ui: { view:'today', noteId: null, calDate: todayKey(), filterTag:'', folderId: null, timezone: null },
 });
 
 /* ── Salah (prayer time) — AlAdhan API ── */
@@ -5302,6 +5322,8 @@ function SetupModal({ onClose, onConnected, onSync, syncStatus }) {
   const [token, setToken] = useState(Sync.getToken() || '');
   const [status, setStatus] = useState('');
   const [pushState, setPushState] = useState('checking'); /* 'checking' | 'active' | 'no-perm' | 'no-sub' | 'no-token' */
+  const [pushBusy, setPushBusy]   = useState(false);
+  const [pushMsg, setPushMsg]     = useState(null);
 
   React.useEffect(() => {
     (async () => {
@@ -5315,6 +5337,38 @@ function SetupModal({ onClose, onConnected, onSync, syncStatus }) {
       } catch { setPushState('no-sub'); }
     })();
   }, []);
+
+  /* Tear the existing subscription down and build a fresh one. Unsubscribing
+     first matters: if the old subscription is the broken one, re-POSTing it
+     would just re-register the same dead endpoint. */
+  const reconnectPush = async () => {
+    setPushBusy(true); setPushMsg(null);
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      const old = await reg.pushManager.getSubscription();
+      if (old) {
+        /* Drop the stale row server-side too, so it isn't left behind as an
+           orphan that the worker keeps trying until the 30-day cleanup. */
+        const token = localStorage.getItem('folio_token');
+        if (token) {
+          fetch('/api/push', {
+            method: 'DELETE',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+            body: JSON.stringify({ endpoint: old.endpoint }),
+          }).catch(()=>{});
+        }
+        await old.unsubscribe().catch(()=>{});
+      }
+      const ok = await registerPush();
+      setPushState(ok ? 'active' : 'no-sub');
+      setPushMsg(ok
+        ? { text: 'Reconnected — this device is registered for background alerts.' }
+        : { text: 'Could not reconnect. Check the sync token and notification permission.', error: true });
+    } catch (e) {
+      setPushMsg({ text: e?.message || 'Could not reconnect.', error: true });
+    }
+    setPushBusy(false);
+  };
 
   const save = async e => {
     e.preventDefault();
@@ -5402,14 +5456,25 @@ function SetupModal({ onClose, onConnected, onSync, syncStatus }) {
         </form>
 
         {/* Push status */}
-        <div style={{padding:'12px 24px',borderTop:'1px solid var(--border)',display:'flex',alignItems:'center',gap:10}}>
+        <div style={{padding:'12px 24px',borderTop:'1px solid var(--border)',display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
           <svg style={{width:13,height:13,flexShrink:0,color:pushState==='active'?'var(--warning)':'var(--text-muted)'}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
-          <span style={{fontSize:12,color:'var(--text-secondary)',flex:1}}>Background alerts</span>
+          <span style={{fontSize:12,color:'var(--text-secondary)',flex:1,minWidth:120}}>Background alerts</span>
           {pushState==='checking' && <span style={{fontSize:11,color:'var(--text-muted)'}}>checking…</span>}
           {pushState==='active'   && <span style={{fontSize:11,fontWeight:700,color:'var(--warning)',background:'rgba(245,158,11,0.1)',border:'1px solid rgba(245,158,11,0.3)',borderRadius:4,padding:'2px 8px'}}>ACTIVE</span>}
           {pushState==='no-perm'  && <span style={{fontSize:11,color:'var(--text-muted)'}}>Enable notifications via the bell button</span>}
           {pushState==='no-token' && <span style={{fontSize:11,color:'var(--text-muted)'}}>Requires sync token above</span>}
           {pushState==='no-sub'   && <span style={{fontSize:11,color:'var(--text-muted)'}}>Inactive — tap the bell button to activate</span>}
+          {/* A push subscription can be silently invalidated by the browser
+              (site data cleared, PWA reinstalled, key rotation) and there's no
+              event for it — the device just stops receiving. Re-subscribing is
+              the fix, so make it a one-tap action rather than a reinstall. */}
+          {(pushState==='active' || pushState==='no-sub') && (
+            <button type="button" onClick={reconnectPush} disabled={pushBusy}
+              style={{background:'var(--bg-surface)',border:'1px solid var(--border-strong)',borderRadius:6,color:'var(--text-secondary)',fontSize:11,padding:'3px 9px',cursor:pushBusy?'default':'pointer',fontFamily:'Manrope,sans-serif',opacity:pushBusy?.6:1}}>
+              {pushBusy ? 'Reconnecting…' : 'Reconnect'}
+            </button>
+          )}
+          {pushMsg && <span style={{fontSize:11,color:pushMsg.error?'var(--danger)':'var(--success)',flexBasis:'100%'}}>{pushMsg.text}</span>}
         </div>
 
         {/* Advanced / PWA reset */}
@@ -5916,6 +5981,18 @@ function App() {
   useEffect(() => {
     if (state?.meetings) scheduleNotifications(state.meetings, state?.salah);
   }, [state?.meetings, state?.salah]);
+
+  /* ── keep ui.timezone current ──
+     The cron Worker has no local timezone of its own, so it builds every
+     reminder time in this zone. Detected rather than asked for, and refreshed
+     when it changes (travel, or the first load after this field was added) so
+     reminders follow you instead of staying pinned to where you set it up. */
+  useEffect(() => {
+    if (!state?.ui) return;
+    let tz = null;
+    try { tz = Intl.DateTimeFormat().resolvedOptions().timeZone; } catch {}
+    if (tz && state.ui.timezone !== tz) update('ui', { ...state.ui, timezone: tz });
+  }, [state?.ui?.timezone]);
 
   /* ── adhan: play audio when SW messages PLAY_ADHAN (app in foreground) ── */
   useEffect(() => {

@@ -51,15 +51,100 @@ this is effectively free.
 ## 3. Push notifications (separate Worker)
 
 `push-worker/` is a **separate** Cloudflare Worker with a cron trigger — it is
-not deployed by `git push`. It only needs redeploying if you change files under
-`push-worker/`.
+**not** deployed by `git push`. Redeploy it whenever files under `push-worker/`
+change.
 
-Note `push-worker/wrangler.toml` is gitignored, so it must exist locally
-(with the D1 binding, cron trigger and VAPID secrets) before deploying:
+### How it works
 
+The Worker re-derives the whole notification plan (meetings + salah) from the
+shared D1 `state` row **on every tick**, and tracks what it has already
+delivered in `push_subs.sent`. The app does not need to be open — or ever
+opened again — for notifications to keep arriving on every device.
+
+This replaced a design where the client computed a 14-day schedule, POSTed it,
+and the Worker drained it as it sent. That went permanently silent whenever the
+app wasn't opened for a while: the stored schedule emptied, `next_fire_at`
+reached 0, and the row stopped being selected at all.
+
+### Required migration
+
+The `sent` column is new. Run once from the repo root — re-running is harmless,
+it just errors with "duplicate column name: sent":
+
+```powershell
+npx wrangler d1 execute folio-db --remote --command "ALTER TABLE push_subs ADD COLUMN sent TEXT NOT NULL DEFAULT '[]'"
 ```
-cd push-worker && npx wrangler deploy
+
+### Deploy
+
+`push-worker/wrangler.toml` is gitignored, so it must exist locally first. It
+needs the D1 binding, a **once-a-minute** cron trigger, and the secrets below:
+
+```toml
+name = "folio-push"
+main = "src/index.js"
+compatibility_date = "2025-01-01"
+
+[triggers]
+crons = ["* * * * *"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "folio-db"
+database_id = "c0d1bd3a-e24b-4e8b-af38-b69028465b57"
 ```
+
+```powershell
+cd push-worker
+npx wrangler secret put VAPID_PRIVATE_KEY   # base64url P-256 private scalar
+npx wrangler secret put VAPID_SUBJECT       # mailto:you@example.com
+npx wrangler secret put SYNC_TOKEN          # same value as the Pages project
+npx wrangler deploy
+cd ..
+```
+
+Windows PowerShell 5.1 has no `&&` operator — chain with `;` and `if ($?)`
+(e.g. `cd push-worker; if ($?) { npx wrangler deploy }`) rather than
+`cd push-worker && npx wrangler deploy`, which is a parser error.
+
+### Verifying it works
+
+The Worker exposes three token-guarded endpoints, so a silent pipeline can be
+diagnosed without waiting for a real reminder to come due.
+
+**PowerShell** (note: `curl` is an alias for `Invoke-WebRequest` here and does
+not accept `-H`, so use `Invoke-RestMethod`):
+
+```powershell
+$t = "<your SYNC_TOKEN>"
+$w = "https://<worker>.workers.dev"
+$h = @{ Authorization = "Bearer $t" }
+
+# What does the server think is scheduled, and which devices are registered?
+Invoke-RestMethod -Uri "$w/status" -Headers $h | ConvertTo-Json -Depth 5
+
+# Force a delivery tick right now
+Invoke-RestMethod -Uri "$w/run" -Method POST -Headers $h | ConvertTo-Json -Depth 5
+
+# Send an immediate test notification to every registered device
+Invoke-RestMethod -Uri "$w/test" -Method POST -Headers $h | ConvertTo-Json -Depth 5
+```
+
+**bash / macOS / Linux:**
+
+```bash
+curl -H "Authorization: Bearer $SYNC_TOKEN" https://<worker>.workers.dev/status
+curl -X POST -H "Authorization: Bearer $SYNC_TOKEN" https://<worker>.workers.dev/run
+curl -X POST -H "Authorization: Bearer $SYNC_TOKEN" https://<worker>.workers.dev/test
+```
+
+`/test` returns the HTTP status per device. A `201`/`200` means the push service
+accepted it; `404`/`410` means that subscription is dead and it is deleted
+automatically. If `/status` shows `devices: []`, no device has registered —
+open the app, grant notification permission, then use **Reconnect** in the
+sync/setup modal.
+
+Live logs: `npx wrangler tail` from `push-worker/`.
 
 ---
 
@@ -67,9 +152,9 @@ cd push-worker && npx wrangler deploy
 
 | Name | Notes |
 |---|---|
-| `SYNC_TOKEN` | Secret. Same value on every device you sync. Guards `/api/state`, `/api/push` and `/api/files`. |
+| `SYNC_TOKEN` | Secret. Same value on every device you sync. Guards `/api/state`, `/api/push` and `/api/files`, and the push Worker's `/run`, `/test` and `/status`. |
 
 ## After deploying
 
 Bump `CACHE` in `sw.js` whenever static assets change, or clients keep serving
-the old cached copy. Currently `folio-v13`.
+the old cached copy. Currently `folio-v20`.
