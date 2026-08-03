@@ -177,6 +177,11 @@ input:focus,textarea:focus{outline:none}
 }
 html,body{overflow-x:hidden}
 body.pwa-install-banner #app{padding-top:52px}
+/* Full view hides the fixed mobile nav, so reclaim the space #app reserves for
+   it above — otherwise the editor stops 56px short of the bottom of the screen. */
+@media(max-width:768px){
+  body.notes-full-view #app{padding-bottom:0}
+}
 @media(max-width:768px){
   .editor-title{font-size:22px!important}
   .editor-body{font-size:14px!important}
@@ -721,6 +726,37 @@ function applyTheme(id) {
   if (meta) meta.setAttribute('content', THEMES[id]?.swatch[0] || '#0a0a0b');
 }
 
+/* ── open note tabs + full view (device-local — never synced) ──
+   Deliberately NOT part of state.ui, which syncs: which notes you have open is
+   a per-device workspace, and syncing it would rearrange your laptop's tabs
+   every time you opened a note on your phone. Same reasoning as theme and
+   background above. */
+const TABS_KEY     = 'folio_note_tabs';
+const FULLVIEW_KEY = 'folio_note_fullview';
+/* A cap, because tabs are opened implicitly (any note you view becomes one) and
+   an unbounded strip would eventually be unusable. Oldest is evicted first. */
+const MAX_NOTE_TABS = 12;
+const NoteTabsPref = {
+  get() {
+    try {
+      const v = JSON.parse(localStorage.getItem(TABS_KEY));
+      return Array.isArray(v) ? v.filter(x => typeof x === 'string').slice(-MAX_NOTE_TABS) : [];
+    } catch { return []; }
+  },
+  set(ids) { try { localStorage.setItem(TABS_KEY, JSON.stringify(ids.slice(-MAX_NOTE_TABS))); } catch {} },
+};
+const FullViewPref = {
+  get() { try { return localStorage.getItem(FULLVIEW_KEY) === '1'; } catch { return false; } },
+  set(on) { try { on ? localStorage.setItem(FULLVIEW_KEY, '1') : localStorage.removeItem(FULLVIEW_KEY); } catch {} },
+};
+/* Full view only actually applies on the notes view with a live note open —
+   stripping the chrome off any other screen would leave nothing on it and no
+   way back. Shared by the render and the body-class effect so the two can't
+   disagree about when it's active. */
+const isNotesFullView = (fullView, state) =>
+  !!fullView && state?.ui?.view === 'notes' && !!state?.ui?.noteId
+  && (state?.notes || []).some(n => n.id === state.ui.noteId);
+
 /* ── background image/gif (device-local — never synced through Sync/Cache/SEED) ── */
 const BG_KEY = 'folio_background';
 const BackgroundPref = {
@@ -994,6 +1030,8 @@ const Ic = {
   copy:    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>,
   move:    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><polyline points="5 9 2 12 5 15"/><polyline points="9 5 12 2 15 5"/><polyline points="15 19 12 22 9 19"/><polyline points="19 9 22 12 19 15"/><line x1="2" y1="12" x2="22" y2="12"/><line x1="12" y1="2" x2="12" y2="22"/></svg>,
   fit:     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/></svg>,
+  expand:  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>,
+  shrink:  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/></svg>,
 };
 
 const LANGS = ['plaintext','javascript','typescript','python','rust','go','csharp','bash','powershell','sql','json','css','jsx'];
@@ -2290,8 +2328,82 @@ function NoteEditor({ note, state, update, isMobile }) {
   );
 }
 
+/* ── NoteTabs — in-app tab strip for switching between open notes ──
+   Not browser tabs: this is a single-page app, so each "tab" is just an entry
+   in a device-local id list with the editor rendering whichever is active.
+   Horizontally scrollable rather than shrinking tabs to nothing, so a title
+   stays readable no matter how many are open. */
+function NoteTabs({ notes, openIds, activeId, onSelect, onClose, fullView, onToggleFullView, isMobile }) {
+  const stripRef = useRef(null);
+  const activeRef = useRef(null);
+
+  /* Keep the active tab in view when it changes from outside the strip —
+     clicking a note in the list, or closing the tab to its right. */
+  useEffect(() => {
+    activeRef.current?.scrollIntoView({ block:'nearest', inline:'nearest' });
+  }, [activeId]);
+
+  /* A vertical wheel over a horizontal strip should scroll it, not the page. */
+  const onWheel = e => {
+    const el = stripRef.current;
+    if (!el || Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return;
+    if (el.scrollWidth <= el.clientWidth) return;
+    el.scrollLeft += e.deltaY;
+  };
+
+  const tabs = openIds.map(id => notes.find(n => n.id === id)).filter(Boolean);
+  if (!tabs.length && !fullView) return null;
+
+  return (
+    <div style={{display:'flex',alignItems:'stretch',borderBottom:'1px solid var(--border)',background:'var(--bg-base)',flexShrink:0,minWidth:0}}>
+      <div ref={stripRef} onWheel={onWheel} className="scrollbar"
+        style={{display:'flex',alignItems:'stretch',gap:2,overflowX:'auto',overflowY:'hidden',flex:1,minWidth:0,padding:'4px 4px 0'}}>
+        {tabs.map(n => {
+          const active = n.id === activeId;
+          return (
+            <div key={n.id} ref={active ? activeRef : null}
+              onClick={()=>onSelect(n.id)}
+              /* Middle-click closes, matching every other tabbed interface. */
+              onAuxClick={e=>{ if (e.button === 1) { e.preventDefault(); onClose(n.id); } }}
+              title={n.title || 'Untitled'}
+              style={{
+                display:'flex',alignItems:'center',gap:6,flexShrink:0,cursor:'pointer',
+                maxWidth:isMobile?150:200,padding:'6px 8px 6px 10px',borderRadius:'7px 7px 0 0',
+                background:active?'var(--bg-surface)':'transparent',
+                border:'1px solid',
+                borderColor:active?'var(--border)':'transparent',
+                borderBottom:'none',
+                color:active?'var(--text-primary)':'var(--text-secondary)',
+                transition:'background 110ms,color 110ms',
+              }}
+              onMouseEnter={e=>{ if(!active) e.currentTarget.style.background='var(--bg-surface)'; }}
+              onMouseLeave={e=>{ if(!active) e.currentTarget.style.background='transparent'; }}>
+              <span style={{fontSize:12,flexShrink:0}}>{n.emoji||'📝'}</span>
+              <span style={{fontSize:12,fontWeight:active?600:500,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',minWidth:0}}>
+                {n.title || 'Untitled'}
+              </span>
+              <span onClick={e=>{e.stopPropagation();onClose(n.id);}} title="Close tab"
+                style={{flexShrink:0,display:'flex',alignItems:'center',justifyContent:'center',width:15,height:15,borderRadius:4,opacity:.55,fontSize:14,lineHeight:1}}
+                onMouseEnter={e=>{e.currentTarget.style.opacity=1;e.currentTarget.style.background='var(--border-strong)';}}
+                onMouseLeave={e=>{e.currentTarget.style.opacity=.55;e.currentTarget.style.background='transparent';}}>×</span>
+            </div>
+          );
+        })}
+      </div>
+      <button onClick={onToggleFullView}
+        title={fullView ? 'Exit full view (Esc)' : 'Full view — hide the sidebar and note list'}
+        style={{flexShrink:0,alignSelf:'center',background:fullView?'var(--accent)':'transparent',border:'1px solid',borderColor:fullView?'var(--accent)':'var(--border)',borderRadius:6,color:fullView?'#fff':'var(--text-secondary)',cursor:'pointer',padding:'4px 7px',margin:'0 6px',display:'flex',alignItems:'center',gap:4,fontSize:11,fontFamily:'Manrope,sans-serif'}}>
+        <span style={{width:12,height:12,display:'flex'}}>{fullView ? Ic.shrink : Ic.expand}</span>
+        {!isMobile && (fullView ? 'Exit' : 'Full')}
+      </button>
+    </div>
+  );
+}
+
 /* ── NotesView ── */
-function NotesView({ state, update, isMobile }) {
+/* fullView/setFullView are owned by App — full view also hides the sidebar and
+   the cover banner, which live outside this component. */
+function NotesView({ state, update, isMobile, fullView, setFullView }) {
   const [search, setSearch] = useState('');
   const [listWidth, setListWidth] = useState(280);
   const [selectedIds, setSelectedIds] = useState(new Set());
@@ -2303,6 +2415,43 @@ function NotesView({ state, update, isMobile }) {
   const filterFolder = state.ui.folderId || null;
   const setFilterTag = t => update('ui',{...state.ui,filterTag:t});
   const noteId = state.ui.noteId;
+
+  /* ── open tabs (device-local, see NoteTabsPref) ── */
+  const [openIds, setOpenIds] = useState(() => NoteTabsPref.get());
+  useEffect(() => { NoteTabsPref.set(openIds); }, [openIds]);
+
+  /* Any note that becomes active gets a tab — so the existing "click a note in
+     the list" paths need no changes, and a note opened on another device (ui.noteId
+     syncs) surfaces here too. Also drops tabs for notes that no longer exist,
+     which is how a tab disappears when its note is deleted or synced away. */
+  useEffect(() => {
+    setOpenIds(prev => {
+      const live = prev.filter(id => state.notes.some(n => n.id === id));
+      let next = (noteId && !live.includes(noteId)) ? [...live, noteId] : live;
+      /* Evict oldest-first when over the cap, but never the note being edited —
+         otherwise the strip could stop showing the very note on screen. */
+      while (next.length > MAX_NOTE_TABS) {
+        const dropIdx = next.findIndex(id => id !== noteId);
+        if (dropIdx === -1) break;
+        next = next.filter((_, i) => i !== dropIdx);
+      }
+      return next.length === prev.length && next.every((id,i) => id === prev[i]) ? prev : next;
+    });
+  }, [noteId, state.notes]);
+
+  const openNote = id => update('ui', { ...state.ui, noteId: id });
+
+  /* Computed from the current list rather than inside a setOpenIds updater:
+     updaters can run during the render phase, and calling update() (which sets
+     state in App) from there is an update-while-rendering. */
+  const closeTab = id => {
+    const idx = openIds.indexOf(id);
+    const next = openIds.filter(x => x !== id);
+    setOpenIds(next);
+    /* Closing the active tab moves to its neighbour — the one on the right,
+       falling back to the left — rather than dumping you on an empty editor. */
+    if (id === noteId) openNote(next[idx] ?? next[idx - 1] ?? null);
+  };
 
   const filtered = useMemo(() => state.notes.filter(n => {
     const q = search.toLowerCase();
@@ -2426,6 +2575,9 @@ function NotesView({ state, update, isMobile }) {
             Notes
           </button>
         </div>
+        <NoteTabs notes={state.notes} openIds={openIds} activeId={noteId}
+          onSelect={openNote} onClose={closeTab}
+          fullView={fullView} onToggleFullView={()=>setFullView(v=>!v)} isMobile={isMobile}/>
         <NoteEditor note={selectedNote} state={state} update={update} isMobile={isMobile}/>
       </div>
     );
@@ -2604,6 +2756,22 @@ function NotesView({ state, update, isMobile }) {
     return <div style={{display:'flex',height:'100%',overflow:'hidden'}}>{listPanel}</div>;
   }
 
+  /* Full view drops the list panel (and, via App, the sidebar and cover banner)
+     so the editor gets the whole page. Only meaningful with a note open —
+     otherwise there'd be nothing left on screen. */
+  const editorPane = (
+    <div style={{flex:1,minWidth:0,display:'flex',flexDirection:'column',overflow:'hidden'}}>
+      <NoteTabs notes={state.notes} openIds={openIds} activeId={noteId}
+        onSelect={openNote} onClose={closeTab}
+        fullView={fullView} onToggleFullView={()=>setFullView(v=>!v)} isMobile={isMobile}/>
+      <NoteEditor note={selectedNote} state={state} update={update} isMobile={isMobile}/>
+    </div>
+  );
+
+  if (fullView && selectedNote) {
+    return <div style={{display:'flex',height:'100%',overflow:'hidden'}}>{editorPane}</div>;
+  }
+
   return (
     <div style={{display:'flex',height:'100%',overflow:'hidden'}}>
       {listPanel}
@@ -2625,7 +2793,7 @@ function NotesView({ state, update, isMobile }) {
           e.preventDefault();
         }}
       />
-      <NoteEditor note={selectedNote} state={state} update={update} isMobile={isMobile}/>
+      {editorPane}
     </div>
   );
 }
@@ -5825,6 +5993,27 @@ function App() {
   const [theme, setTheme]           = useState(() => ThemePref.get());
   const [background, setBackground] = useState(() => BackgroundPref.get());
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  /* Full view for the notes editor. Owned here because it also hides the
+     sidebar and cover banner, which are rendered at this level. */
+  const [fullView, setFullViewRaw] = useState(() => FullViewPref.get());
+  const setFullView = useCallback(v => {
+    setFullViewRaw(prev => { const next = typeof v === 'function' ? v(prev) : v; FullViewPref.set(next); return next; });
+  }, []);
+
+  /* Escape leaves full view. It hides every other navigation affordance, so
+     without this a stuck state would need a page reload to escape. Ignored
+     while typing, so it can't fire mid-edit. */
+  useEffect(() => {
+    if (!fullView) return;
+    const onKey = e => {
+      if (e.key !== 'Escape') return;
+      const t = e.target;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+      setFullView(false);
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [fullView, setFullView]);
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
   const saveTimer    = useRef(null);
   const pendingFlush = useRef(null); /* latest unsaved state, cleared on successful D1 write */
@@ -5873,6 +6062,13 @@ function App() {
     document.body.classList.toggle('pwa-install-banner', installBanner);
     return () => document.body.classList.remove('pwa-install-banner');
   }, [installBanner]);
+
+  /* Full view hides the fixed mobile nav, and #app reserves 56px of bottom
+     padding for it — this class reclaims that space (see the CSS). */
+  useEffect(() => {
+    document.body.classList.toggle('notes-full-view', isNotesFullView(fullView, state));
+    return () => document.body.classList.remove('notes-full-view');
+  }, [fullView, state?.ui?.view, state?.ui?.noteId, state?.notes]);
 
   /* Respect ?view= from manifest shortcuts */
   const VALID_VIEWS = ['today','notes','journal','tasks','kanban','calendar','tags'];
@@ -6146,19 +6342,28 @@ function App() {
   const views = { today:TodayView, notes:NotesView, journal:JournalView, tasks:TasksView, kanban:KanbanView, calendar:CalendarView, tags:TagsView };
   const View  = views[state.ui.view] || TodayView;
 
+  const notesFullView = isNotesFullView(fullView, state);
+
   return (
     <div style={{isolation:'isolate',display:'flex',width:'100%',height:'100%',minWidth:0,overflow:'hidden'}}>
       <div id="app-bg-image"/>
       <div id="app-bg-scrim"/>
-      <Sidebar state={state} update={update} syncStatus={syncStatus} onSetup={()=>setSetupOpen(true)}
-        onSync={syncNow} collapsed={!sidebarOpen} onToggle={()=>setSidebarOpen(v=>!v)} onSalah={()=>setSalahOpen(true)} onTheme={()=>setThemeOpen(true)}/>
+      {!notesFullView && (
+        <Sidebar state={state} update={update} syncStatus={syncStatus} onSetup={()=>setSetupOpen(true)}
+          onSync={syncNow} collapsed={!sidebarOpen} onToggle={()=>setSidebarOpen(v=>!v)} onSalah={()=>setSalahOpen(true)} onTheme={()=>setThemeOpen(true)}/>
+      )}
       <div className="main">
-        <SectionBanner sectionId={state.ui.view} banner={state.banners?.[state.ui.view]} onChange={v=>changeBanner(state.ui.view,v)} isMobile={isMobile}/>
+        {!notesFullView && (
+          <SectionBanner sectionId={state.ui.view} banner={state.banners?.[state.ui.view]} onChange={v=>changeBanner(state.ui.view,v)} isMobile={isMobile}/>
+        )}
         <div style={{flex:1,minHeight:0,overflow:'hidden',display:'flex',flexDirection:'column'}}>
-          <View state={state} update={update} isMobile={isMobile} pom={pom} setPom={setPom}/>
+          <View state={state} update={update} isMobile={isMobile} pom={pom} setPom={setPom}
+            fullView={fullView} setFullView={setFullView}/>
         </div>
       </div>
-      <MobileNav state={state} update={update} syncStatus={syncStatus} onSetup={()=>setSetupOpen(true)} onSync={syncNow} onSalah={()=>setSalahOpen(true)} onTheme={()=>setThemeOpen(true)}/>
+      {!notesFullView && (
+        <MobileNav state={state} update={update} syncStatus={syncStatus} onSetup={()=>setSetupOpen(true)} onSync={syncNow} onSalah={()=>setSalahOpen(true)} onTheme={()=>setThemeOpen(true)}/>
+      )}
       {setupOpen && <SetupModal onClose={()=>setSetupOpen(false)} onConnected={handleSyncConnected} onSync={syncNow} syncStatus={syncStatus}/>}
       {salahOpen && <SalahModal state={state} update={update} onClose={()=>setSalahOpen(false)}/>}
       {themeOpen && <AppearanceModal theme={theme} onChangeTheme={changeTheme} background={background} onChangeBackground={changeBackground} onClose={()=>setThemeOpen(false)}/>}
