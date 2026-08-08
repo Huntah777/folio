@@ -378,6 +378,37 @@ function vapidKeyBytes() {
   return out;
 }
 
+/* A service worker has no localStorage, but it needs the sync token to
+   re-register a subscription from `pushsubscriptionchange` — which can fire
+   with no window ever open. CacheStorage is the one thing both contexts can
+   read/write, so the token is mirrored there any time it changes, plus once
+   on every app launch to back-fill devices that connected before this
+   existed. Mirror of AUTH_CACHE/AUTH_KEY in sw.js — keep both in sync. */
+const AUTH_CACHE = 'folio-auth';
+const AUTH_KEY   = '/__auth_token';
+async function mirrorTokenToSW(token) {
+  try {
+    const cache = await caches.open(AUTH_CACHE);
+    if (token) await cache.put(AUTH_KEY, new Response(token));
+    else await cache.delete(AUTH_KEY);
+  } catch {}
+}
+
+/* Written by sw.js every time it actually fires a notification (push or
+   local timer) — read-only from this side. A CacheStorage entry rather than
+   anything server-side because it needs to capture notifications delivered
+   with no window open, and it's purely a per-device diagnostic, not data
+   worth syncing. Mirror of NOTIF_LOG_CACHE/NOTIF_LOG_KEY in sw.js. */
+const NOTIF_LOG_CACHE = 'folio-notif-log';
+const NOTIF_LOG_KEY   = '/__notif_log';
+async function readNotificationLog() {
+  try {
+    const cache = await caches.open(NOTIF_LOG_CACHE);
+    const res = await cache.match(NOTIF_LOG_KEY);
+    return res ? await res.json() : [];
+  } catch { return []; }
+}
+
 /* ── notification scheduling (meetings + salah unified) ──
    This builds the LOCAL, in-page schedule only: the service worker's setTimeout
    timers, which fire while the app is actually open and give sub-minute
@@ -451,6 +482,20 @@ async function buildSchedule(meetings, salah) {
   return notifications;
 }
 
+/* True if an existing subscription was created under the VAPID key this build
+   still uses. A subscription tied to a stale key (e.g. the key was rotated
+   server-side) otherwise just sits there looking healthy while every push to
+   it silently fails — there's no browser-side error for that. */
+function subMatchesVapidKey(sub) {
+  const key = sub?.options?.applicationServerKey;
+  if (!key) return false;
+  const a = new Uint8Array(key);
+  const b = vapidKeyBytes();
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
 /* Registers this device's push subscription with the server. Registration is
    ALL the client does now — the server derives what to send. Re-running this
    is cheap and also refreshes `updated_at`, which is the liveness signal the
@@ -463,6 +508,10 @@ async function registerPush() {
     if (!('Notification' in window) || Notification.permission !== 'granted') return false;
     const reg = await navigator.serviceWorker.ready;
     let sub = await reg.pushManager.getSubscription();
+    if (sub && !subMatchesVapidKey(sub)) {
+      await sub.unsubscribe().catch(() => {});
+      sub = null;
+    }
     if (!sub) {
       sub = await reg.pushManager.subscribe({
         userVisibleOnly: true,
@@ -509,7 +558,10 @@ const Sync = {
   /* Changing the token can point at a different store, so drop the cached
      version with it — otherwise a stale If-None-Match could draw a 304 for
      state this client has never actually seen. */
-  setToken(t) { this._etag = null; try { const v = t ? String(t).trim() : ''; v ? localStorage.setItem(TOKEN_KEY,v) : localStorage.removeItem(TOKEN_KEY); } catch {} },
+  setToken(t) {
+    this._etag = null;
+    try { const v = t ? String(t).trim() : ''; v ? localStorage.setItem(TOKEN_KEY,v) : localStorage.removeItem(TOKEN_KEY); mirrorTokenToSW(v || null); } catch {}
+  },
   configured() { return !!this.getToken(); },
   /* Returns null when the server reports the state is unchanged (304), so a
      foreground wake on an idle account costs one tiny request instead of
@@ -710,6 +762,29 @@ function mergeById(localItems, remoteItems, localTombstones, remoteTombstones) {
   return { items, tombstones };
 }
 
+/* Collections that carry soft-delete tombstones — see mergeById above. */
+const TOMBSTONE_COLLECTIONS = ['notes','tasks','meetings','journal'];
+
+/* Restoring a full-state backup (Admin → Data → Import) is a deliberate
+   "make the app look like this snapshot" action, unlike a routine sync merge
+   where absence never means delete (a device just hasn't heard about the
+   item yet). Anything the imported snapshot dropped needs an explicit
+   tombstone here, or it would simply survive the next sync merge instead of
+   propagating as a delete — the exact resurrection bug c76ba11 already fixed
+   for normal deletes. */
+function tombMissing(prevState, nextState) {
+  const now = Date.now();
+  const out = { ...nextState };
+  TOMBSTONE_COLLECTIONS.forEach(key => {
+    const tKey = key + 'Deleted';
+    const nextIds = new Set((nextState[key]||[]).map(x=>x.id));
+    const missing = (prevState[key]||[]).filter(x=>!nextIds.has(x.id));
+    if (!missing.length) return;
+    out[tKey] = [...(nextState[tKey]||[]), ...missing.map(x=>({id:x.id, deletedAt:now}))];
+  });
+  return out;
+}
+
 /* ── themes (device-local — never synced through Sync/Cache/SEED) ── */
 const THEME_KEY = 'folio_theme';
 const THEMES = {
@@ -775,7 +850,7 @@ const BANNERS_KEY = 'folio_banners';
 const LegacyBannerPrefs = {
   get() { try { return JSON.parse(localStorage.getItem(BANNERS_KEY)) || {}; } catch { return {}; } },
 };
-const SECTION_LABELS = { today:'Today', notes:'Notes', journal:'Journal', tasks:'Tasks', kanban:'Kanban', calendar:'Calendar', tags:'Tags' };
+const SECTION_LABELS = { today:'Today', notes:'Notes', journal:'Journal', tasks:'Tasks', kanban:'Kanban', calendar:'Calendar', tags:'Tags', admin:'Admin' };
 const BANNER_GRADIENTS = [
   'linear-gradient(135deg,#667eea,#764ba2)',
   'linear-gradient(135deg,#f093fb,#f5576c)',
@@ -1032,6 +1107,7 @@ const Ic = {
   fit:     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/></svg>,
   expand:  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>,
   shrink:  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/></svg>,
+  admin:   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2"/></svg>,
 };
 
 const LANGS = ['plaintext','javascript','typescript','python','rust','go','csharp','bash','powershell','sql','json','css','jsx'];
@@ -4566,7 +4642,7 @@ function InstallBanner() {
 }
 
 /* ── Sidebar ── */
-function Sidebar({ state, update, syncStatus, onSetup, onSync, collapsed, onToggle, onSalah, onTheme }) {
+function Sidebar({ state, update, syncStatus, onSync, collapsed, onToggle }) {
   const { view } = state.ui;
   const recent = [...state.notes].sort((a,b)=>b.updated-a.updated).slice(0,5);
   const folders = state.folders || [];
@@ -4611,6 +4687,7 @@ function Sidebar({ state, update, syncStatus, onSetup, onSync, collapsed, onTogg
     {id:'kanban',   label:'Kanban',   icon:Ic.kanban},
     {id:'calendar', label:'Calendar', icon:Ic.cal},
     {id:'tags',     label:'Tags',     icon:Ic.tags},
+    {id:'admin',    label:'Admin',    icon:Ic.admin},
   ];
 
   const FolderIcon = ({open}) => (
@@ -4647,31 +4724,6 @@ function Sidebar({ state, update, syncStatus, onSetup, onSync, collapsed, onTogg
         <div style={{flex:1}}/>
         <div style={{padding:'10px 0',borderTop:'1px solid var(--border)',width:'100%',display:'flex',flexDirection:'column',alignItems:'center',gap:4,flexShrink:0}}>
           <SyncIconBtn onClick={onSync} syncStatus={syncStatus}/>
-          <button onClick={onSalah} title="Prayer times"
-            style={{background:state.salah?.enabled?'rgba(245,158,11,0.18)':'#16161d',border:`1px solid ${state.salah?.enabled?'rgba(245,158,11,0.38)':'#252529'}`,cursor:'pointer',color:state.salah?.enabled?'var(--warning)':'#4a4a54',padding:0,borderRadius:7,display:'flex',alignItems:'center',justifyContent:'center',transition:'all 120ms',width:28,height:28,flexShrink:0}}
-            onMouseEnter={e=>{e.currentTarget.style.background='rgba(245,158,11,0.18)';e.currentTarget.style.borderColor='rgba(245,158,11,0.38)';e.currentTarget.style.color='var(--warning)'}}
-            onMouseLeave={e=>{e.currentTarget.style.background=state.salah?.enabled?'rgba(245,158,11,0.18)':'#16161d';e.currentTarget.style.borderColor=state.salah?.enabled?'rgba(245,158,11,0.38)':'#252529';e.currentTarget.style.color=state.salah?.enabled?'var(--warning)':'#4a4a54'}}>
-            <svg style={{width:12,height:12}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-              <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9z"/>
-            </svg>
-          </button>
-          <button onClick={onSetup} title="Sync settings"
-            style={{background:'#16161d',border:'1px solid #252529',cursor:'pointer',color:'#4a4a54',padding:0,borderRadius:7,display:'flex',alignItems:'center',justifyContent:'center',transition:'all 120ms',width:28,height:28,flexShrink:0}}
-            onMouseEnter={e=>{e.currentTarget.style.background='rgba(129,140,248,0.15)';e.currentTarget.style.borderColor='rgba(129,140,248,0.35)';e.currentTarget.style.color='var(--accent)'}}
-            onMouseLeave={e=>{e.currentTarget.style.background='#16161d';e.currentTarget.style.borderColor='#252529';e.currentTarget.style.color='#4a4a54'}}>
-            <svg style={{width:11,height:11}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-              <circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2"/>
-            </svg>
-          </button>
-          <button onClick={onTheme} title="Appearance"
-            style={{background:'#16161d',border:'1px solid #252529',cursor:'pointer',color:'#4a4a54',padding:0,borderRadius:7,display:'flex',alignItems:'center',justifyContent:'center',transition:'all 120ms',width:28,height:28,flexShrink:0}}
-            onMouseEnter={e=>{e.currentTarget.style.background='rgba(129,140,248,0.15)';e.currentTarget.style.borderColor='rgba(129,140,248,0.35)';e.currentTarget.style.color='var(--accent)'}}
-            onMouseLeave={e=>{e.currentTarget.style.background='#16161d';e.currentTarget.style.borderColor='#252529';e.currentTarget.style.color='#4a4a54'}}>
-            <svg style={{width:12,height:12}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-              <circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 0 0 18c1 0 1.5-.5 1.5-1.4 0-.4-.15-.75-.4-1.05-.25-.3-.4-.65-.4-1.05 0-.9.7-1.5 1.6-1.5H16a3 3 0 0 0 3-3c0-4.4-3.6-8-7-8Z"/>
-              <circle cx="8.5" cy="10.5" r="1" fill="currentColor" stroke="none"/><circle cx="12" cy="7.5" r="1" fill="currentColor" stroke="none"/><circle cx="15.5" cy="10.5" r="1" fill="currentColor" stroke="none"/>
-            </svg>
-          </button>
         </div>
       </div>
     );
@@ -4789,31 +4841,6 @@ function Sidebar({ state, update, syncStatus, onSetup, onSync, collapsed, onTogg
           );})()}
         </div>
         <div style={{display:'flex',alignItems:'center',gap:5}}>
-          <button onClick={onSalah} title="Prayer times"
-            style={{background:state.salah?.enabled?'rgba(245,158,11,0.18)':'#16161d',border:`1px solid ${state.salah?.enabled?'rgba(245,158,11,0.38)':'#252529'}`,cursor:'pointer',color:state.salah?.enabled?'var(--warning)':'#4a4a54',padding:0,borderRadius:7,display:'flex',alignItems:'center',justifyContent:'center',transition:'all 120ms',width:28,height:28,flexShrink:0}}
-            onMouseEnter={e=>{e.currentTarget.style.background='rgba(245,158,11,0.18)';e.currentTarget.style.borderColor='rgba(245,158,11,0.38)';e.currentTarget.style.color='var(--warning)'}}
-            onMouseLeave={e=>{e.currentTarget.style.background=state.salah?.enabled?'rgba(245,158,11,0.18)':'#16161d';e.currentTarget.style.borderColor=state.salah?.enabled?'rgba(245,158,11,0.38)':'#252529';e.currentTarget.style.color=state.salah?.enabled?'var(--warning)':'#4a4a54'}}>
-            <svg style={{width:12,height:12}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-              <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9z"/>
-            </svg>
-          </button>
-          <button onClick={onSetup} title="Sync settings"
-            style={{background:'#16161d',border:'1px solid #252529',cursor:'pointer',color:'#4a4a54',padding:0,borderRadius:7,display:'flex',alignItems:'center',justifyContent:'center',transition:'all 120ms',width:28,height:28,flexShrink:0}}
-            onMouseEnter={e=>{e.currentTarget.style.background='rgba(129,140,248,0.15)';e.currentTarget.style.borderColor='rgba(129,140,248,0.35)';e.currentTarget.style.color='var(--accent)'}}
-            onMouseLeave={e=>{e.currentTarget.style.background='#16161d';e.currentTarget.style.borderColor='#252529';e.currentTarget.style.color='#4a4a54'}}>
-            <svg style={{width:12,height:12}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-              <circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2"/>
-            </svg>
-          </button>
-          <button onClick={onTheme} title="Appearance"
-            style={{background:'#16161d',border:'1px solid #252529',cursor:'pointer',color:'#4a4a54',padding:0,borderRadius:7,display:'flex',alignItems:'center',justifyContent:'center',transition:'all 120ms',width:28,height:28,flexShrink:0}}
-            onMouseEnter={e=>{e.currentTarget.style.background='rgba(129,140,248,0.15)';e.currentTarget.style.borderColor='rgba(129,140,248,0.35)';e.currentTarget.style.color='var(--accent)'}}
-            onMouseLeave={e=>{e.currentTarget.style.background='#16161d';e.currentTarget.style.borderColor='#252529';e.currentTarget.style.color='#4a4a54'}}>
-            <svg style={{width:12,height:12}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-              <circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 0 0 18c1 0 1.5-.5 1.5-1.4 0-.4-.15-.75-.4-1.05-.25-.3-.4-.65-.4-1.05 0-.9.7-1.5 1.6-1.5H16a3 3 0 0 0 3-3c0-4.4-3.6-8-7-8Z"/>
-              <circle cx="8.5" cy="10.5" r="1" fill="currentColor" stroke="none"/><circle cx="12" cy="7.5" r="1" fill="currentColor" stroke="none"/><circle cx="15.5" cy="10.5" r="1" fill="currentColor" stroke="none"/>
-            </svg>
-          </button>
           <SyncIconBtn onClick={onSync} syncStatus={syncStatus}/>
         </div>
       </div>
@@ -4822,8 +4849,9 @@ function Sidebar({ state, update, syncStatus, onSetup, onSync, collapsed, onTogg
 }
 
 /* ── MobileNav ── */
-function MobileNav({ state, update, syncStatus, onSetup, onSync, onSalah, onTheme }) {
+function MobileNav({ state, update, syncStatus }) {
   const { view } = state.ui;
+  const goAdmin = () => update('ui',{...state.ui,view:'admin'});
   const nav = v => update('ui',{...state.ui,view:v,...(v==='calendar'?{calDate:todayKey()}:{})});
   const pending = state.tasks.filter(t=>!t.done&&t.due===todayKey()).length;
   const spinning = syncStatus==='syncing' || syncStatus==='saving';
@@ -4841,8 +4869,9 @@ function MobileNav({ state, update, syncStatus, onSetup, onSync, onSalah, onThem
     letterSpacing:'.02em',textTransform:'uppercase',whiteSpace:'nowrap',textOverflow:'ellipsis',
     transition:'color 110ms',position:'relative',padding:'6px 2px',
   });
-  /* icon-only utility buttons (prayer/appearance/sync) — fixed width, no label,
-     kept out of the flex:1 label row so primary tabs always have room to breathe */
+  /* icon-only utility button (Admin, doubling as the sync-status indicator) —
+     fixed width, no label, kept out of the flex:1 label row so primary tabs
+     always have room to breathe */
   const navUtilStyle = extra => ({
     flex:'0 0 30px',width:30,display:'flex',alignItems:'center',justifyContent:'center',
     background:'none',border:'none',cursor:'pointer',color:'var(--text-muted)',
@@ -4870,18 +4899,7 @@ function MobileNav({ state, update, syncStatus, onSetup, onSync, onSalah, onThem
         </button>
       ))}
       <div style={{display:'flex',flexShrink:0,borderLeft:'1px solid var(--border)'}}>
-        <button onClick={onSalah} style={navUtilStyle({color:state.salah?.enabled?'var(--warning)':'var(--text-muted)'})} title="Prayer times">
-          <svg style={{width:15,height:15}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-            <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9z"/>
-          </svg>
-        </button>
-        <button onClick={onTheme} style={navUtilStyle()} title="Appearance">
-          <svg style={{width:15,height:15}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-            <circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 0 0 18c1 0 1.5-.5 1.5-1.4 0-.4-.15-.75-.4-1.05-.25-.3-.4-.65-.4-1.05 0-.9.7-1.5 1.6-1.5H16a3 3 0 0 0 3-3c0-4.4-3.6-8-7-8Z"/>
-            <circle cx="8.5" cy="10.5" r="1" fill="currentColor" stroke="none"/><circle cx="12" cy="7.5" r="1" fill="currentColor" stroke="none"/><circle cx="15.5" cy="10.5" r="1" fill="currentColor" stroke="none"/>
-          </svg>
-        </button>
-        <button onClick={onSetup} style={navUtilStyle()} title="Sync">
+        <button onClick={goAdmin} style={navUtilStyle({color:view==='admin'?'var(--accent)':'var(--text-muted)'})} title="Admin">
           <svg style={{width:15,height:15,animation:spinning?'spin 0.8s linear infinite':'none'}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
             <path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/>
           </svg>
@@ -4892,8 +4910,8 @@ function MobileNav({ state, update, syncStatus, onSetup, onSync, onSalah, onThem
   );
 }
 
-/* ── SalahModal ── */
-function SalahModal({ state, update, onClose }) {
+/* ── PrayerSettings (Admin → Prayer times tab) ── */
+function PrayerSettings({ state, update }) {
   const s = state.salah || {};
   const [enabled,  setEnabled]  = useState(!!s.enabled);
   const [lat,      setLat]      = useState(s.lat !== null && s.lat !== undefined ? String(s.lat) : '');
@@ -4903,6 +4921,7 @@ function SalahModal({ state, update, onClose }) {
   const [prayers,  setPrayers]  = useState({fajr:true,sunrise:false,dhuhr:true,asr:true,maghrib:true,isha:true,...(s.prayers||{})});
   const [offsets,  setOffsets]  = useState(() => salahOffsets(s));
   const [locMsg,   setLocMsg]   = useState('');
+  const [saveMsg,  setSaveMsg]  = useState('');
   const [preview,  setPreview]  = useState(null);
   const [previewState, setPreviewState] = useState('idle'); /* idle | loading | ok | stale | error */
   const previewSeq = useRef(0);
@@ -4962,7 +4981,8 @@ function SalahModal({ state, update, onClose }) {
       if (previewState==='loading') { setLocMsg('Still checking those coordinates…'); return; }
     }
     update('salah',{enabled, lat:isNaN(la)?null:la, lng:isNaN(lo)?null:lo, method, asr, prayers, offsets});
-    onClose();
+    setSaveMsg('✓ Saved');
+    setTimeout(()=>setSaveMsg(''), 2000);
   };
 
   const togBtn = active => ({
@@ -4974,19 +4994,10 @@ function SalahModal({ state, update, onClose }) {
   });
 
   return (
-    <div className="modal-bg" onClick={e=>{if(e.target===e.currentTarget)onClose();}}>
-      <div className="modal fadeUp" style={{maxHeight:'90vh',overflowY:'auto'}}>
-        <div style={{padding:'20px 24px',borderBottom:'1px solid var(--border)',display:'flex',justifyContent:'space-between',alignItems:'center',position:'sticky',top:0,background:'var(--modal-bg)',zIndex:1}}>
-          <div>
-            <div style={{fontFamily:'Fraunces,serif',fontSize:17,fontWeight:600}}>Prayer Times</div>
-            <div style={{fontSize:12,color:'var(--text-secondary)',marginTop:2}}>Automatic salah times in your calendar &amp; Today view</div>
-          </div>
-          <button onClick={onClose} style={{background:'none',border:'none',color:'var(--text-secondary)',cursor:'pointer',fontSize:20,lineHeight:1}}>×</button>
-        </div>
+    <div style={{display:'flex',flexDirection:'column',gap:18,maxWidth:560}}>
+      <div style={{fontSize:12,color:'var(--text-secondary)'}}>Automatic salah times in your calendar &amp; Today view.</div>
 
-        <div style={{padding:'20px 24px',display:'flex',flexDirection:'column',gap:18}}>
-
-          {/* enable toggle */}
+      {/* enable toggle */}
           <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:12}}>
             <div>
               <div style={{fontSize:14,fontWeight:600,color:'var(--text-primary)'}}>Show prayer times</div>
@@ -5098,17 +5109,15 @@ function SalahModal({ state, update, onClose }) {
             </div>
           </>)}
 
-          <div style={{display:'flex',gap:8,justifyContent:'flex-end',paddingTop:4}}>
-            <button type="button" className="btn-ghost" onClick={onClose}>Cancel</button>
-            <button type="button" className="btn-primary" onClick={save}>Save</button>
-          </div>
-        </div>
+      <div style={{display:'flex',gap:10,alignItems:'center',justifyContent:'flex-end',paddingTop:4}}>
+        {saveMsg && <span style={{fontSize:12,color:'var(--success)'}}>{saveMsg}</span>}
+        <button type="button" className="btn-primary" onClick={save}>Save</button>
       </div>
     </div>
   );
 }
 
-/* ── ThemeModal ── */
+/* ── Background image picker (Admin → Appearance tab) ── */
 function UnsplashCredit({ attribution }) {
   if (!attribution?.name) return null;
   const utm = 'utm_source=folio&utm_medium=referral';
@@ -5442,101 +5451,43 @@ function SectionBanner({ sectionId, banner, onChange, isMobile }) {
   );
 }
 
-function AppearanceModal({ theme, onChangeTheme, background, onChangeBackground, onClose }) {
+/* ── AppearanceSettings (Admin → Appearance tab) ── */
+function AppearanceSettings({ theme, onChangeTheme, background, onChangeBackground }) {
   return (
-    <div className="modal-bg" onClick={e=>{if(e.target===e.currentTarget)onClose();}}>
-      <div className="modal fadeUp" style={{maxHeight:'90vh',overflowY:'auto'}}>
-        <div style={{padding:'20px 24px',borderBottom:'1px solid var(--border)',display:'flex',justifyContent:'space-between',alignItems:'center',position:'sticky',top:0,background:'var(--modal-bg)',zIndex:1}}>
-          <div>
-            <div style={{fontFamily:'Fraunces,serif',fontSize:17,fontWeight:600}}>Appearance</div>
-            <div style={{fontSize:12,color:'var(--text-secondary)',marginTop:2}}>Applies to this device only — not synced</div>
-          </div>
-          <button onClick={onClose} style={{background:'none',border:'none',color:'var(--text-secondary)',cursor:'pointer',fontSize:20,lineHeight:1}}>×</button>
-        </div>
-
-        <div style={{padding:'20px 24px',display:'flex',flexDirection:'column',gap:22}}>
-          <div>
-            <div style={{fontSize:11,fontWeight:700,letterSpacing:'.06em',color:'var(--text-muted)',textTransform:'uppercase',marginBottom:10}}>Theme</div>
-            <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(140px,1fr))',gap:12}}>
-              {Object.entries(THEMES).map(([id,t])=>(
-                <div key={id} onClick={()=>onChangeTheme(id)}
-                  style={{cursor:'pointer',borderRadius:12,border:`1.5px solid ${theme===id?'var(--accent)':'var(--border)'}`,overflow:'hidden',transition:'border-color 120ms'}}>
-                  <div style={{display:'flex',height:56}}>
-                    {t.swatch.map((c,i)=>(<div key={i} style={{flex:1,background:c}}/>))}
-                  </div>
-                  <div style={{padding:'8px 10px',display:'flex',alignItems:'center',justifyContent:'space-between',background:'var(--bg-surface)'}}>
-                    <span style={{fontSize:12.5,fontWeight:600,color:'var(--text-primary)'}}>{t.label}</span>
-                    {theme===id && <span style={{color:'var(--accent)',fontSize:13}}>✓</span>}
-                  </div>
-                </div>
-              ))}
+    <div style={{display:'flex',flexDirection:'column',gap:22,maxWidth:640}}>
+      <div style={{fontSize:12,color:'var(--text-secondary)'}}>Applies to this device only — not synced.</div>
+      <div>
+        <div style={{fontSize:11,fontWeight:700,letterSpacing:'.06em',color:'var(--text-muted)',textTransform:'uppercase',marginBottom:10}}>Theme</div>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(140px,1fr))',gap:12}}>
+          {Object.entries(THEMES).map(([id,t])=>(
+            <div key={id} onClick={()=>onChangeTheme(id)}
+              style={{cursor:'pointer',borderRadius:12,border:`1.5px solid ${theme===id?'var(--accent)':'var(--border)'}`,overflow:'hidden',transition:'border-color 120ms'}}>
+              <div style={{display:'flex',height:56}}>
+                {t.swatch.map((c,i)=>(<div key={i} style={{flex:1,background:c}}/>))}
+              </div>
+              <div style={{padding:'8px 10px',display:'flex',alignItems:'center',justifyContent:'space-between',background:'var(--bg-surface)'}}>
+                <span style={{fontSize:12.5,fontWeight:600,color:'var(--text-primary)'}}>{t.label}</span>
+                {theme===id && <span style={{color:'var(--accent)',fontSize:13}}>✓</span>}
+              </div>
             </div>
-          </div>
-
-          <div className="divider"/>
-
-          <div>
-            <div style={{fontSize:11,fontWeight:700,letterSpacing:'.06em',color:'var(--text-muted)',textTransform:'uppercase',marginBottom:10}}>Background</div>
-            <BackgroundSection background={background} onChange={onChangeBackground}/>
-          </div>
+          ))}
         </div>
+      </div>
+
+      <div className="divider"/>
+
+      <div>
+        <div style={{fontSize:11,fontWeight:700,letterSpacing:'.06em',color:'var(--text-muted)',textTransform:'uppercase',marginBottom:10}}>Background</div>
+        <BackgroundSection background={background} onChange={onChangeBackground}/>
       </div>
     </div>
   );
 }
 
-/* ── SetupModal ── */
-function SetupModal({ onClose, onConnected, onSync, syncStatus }) {
+/* ── SyncSettings (Admin → Sync tab) ── */
+function SyncSettings({ onConnected, onSync, syncStatus }) {
   const [token, setToken] = useState(Sync.getToken() || '');
   const [status, setStatus] = useState('');
-  const [pushState, setPushState] = useState('checking'); /* 'checking' | 'active' | 'no-perm' | 'no-sub' | 'no-token' */
-  const [pushBusy, setPushBusy]   = useState(false);
-  const [pushMsg, setPushMsg]     = useState(null);
-
-  React.useEffect(() => {
-    (async () => {
-      if (!('Notification' in window) || Notification.permission !== 'granted') { setPushState('no-perm'); return; }
-      if (!localStorage.getItem('folio_token')) { setPushState('no-token'); return; }
-      if (!('serviceWorker' in navigator)) { setPushState('no-sub'); return; }
-      try {
-        const reg = await navigator.serviceWorker.ready;
-        const sub = await reg.pushManager.getSubscription();
-        setPushState(sub ? 'active' : 'no-sub');
-      } catch { setPushState('no-sub'); }
-    })();
-  }, []);
-
-  /* Tear the existing subscription down and build a fresh one. Unsubscribing
-     first matters: if the old subscription is the broken one, re-POSTing it
-     would just re-register the same dead endpoint. */
-  const reconnectPush = async () => {
-    setPushBusy(true); setPushMsg(null);
-    try {
-      const reg = await navigator.serviceWorker.ready;
-      const old = await reg.pushManager.getSubscription();
-      if (old) {
-        /* Drop the stale row server-side too, so it isn't left behind as an
-           orphan that the worker keeps trying until the 30-day cleanup. */
-        const token = localStorage.getItem('folio_token');
-        if (token) {
-          fetch('/api/push', {
-            method: 'DELETE',
-            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-            body: JSON.stringify({ endpoint: old.endpoint }),
-          }).catch(()=>{});
-        }
-        await old.unsubscribe().catch(()=>{});
-      }
-      const ok = await registerPush();
-      setPushState(ok ? 'active' : 'no-sub');
-      setPushMsg(ok
-        ? { text: 'Reconnected — this device is registered for background alerts.' }
-        : { text: 'Could not reconnect. Check the sync token and notification permission.', error: true });
-    } catch (e) {
-      setPushMsg({ text: e?.message || 'Could not reconnect.', error: true });
-    }
-    setPushBusy(false);
-  };
 
   const save = async e => {
     e.preventDefault();
@@ -5547,7 +5498,7 @@ function SetupModal({ onClose, onConnected, onSync, syncStatus }) {
     try {
       const remote = await Sync.load();
       setStatus('✓ Connected!');
-      setTimeout(() => { onConnected && onConnected(remote); onClose(); }, 900);
+      onConnected && onConnected(remote);
     } catch(err) {
       if (err.message === 'UNAUTHORIZED') {
         const health = await fetch('/api/health').then(r => r.json()).catch(() => ({}));
@@ -5564,8 +5515,266 @@ function SetupModal({ onClose, onConnected, onSync, syncStatus }) {
     }
   };
 
-  const [showAdvanced, setShowAdvanced] = useState(false);
+  return (
+    <div style={{display:'flex',flexDirection:'column',gap:18,maxWidth:520}}>
+      <div style={{fontSize:12,color:'var(--text-secondary)'}}>Connect to Cloudflare D1 for cross-device sync.</div>
+
+      {Sync.configured() && onSync && (
+        <div style={{padding:'12px 14px',background:'var(--bg-surface)',border:'1px solid var(--border)',borderRadius:8,display:'flex',alignItems:'center',justifyContent:'space-between',gap:10}}>
+          <div style={{fontSize:12}}>
+            <span style={{color:syncStatus==='synced'?'var(--success)':syncStatus==='offline'?'var(--danger)':syncStatus==='unauth'?'var(--warning)':'var(--text-secondary)',fontWeight:600}}>
+              {syncStatus==='synced'?'Synced':syncStatus==='syncing'?'Syncing…':syncStatus==='saving'?'Saving…':syncStatus==='offline'?'Offline':syncStatus==='unauth'?'Auth error':'Connected'}
+            </span>
+            <span style={{color:'var(--text-muted)',marginLeft:6}}>· pull latest from D1</span>
+          </div>
+          <button type="button" onClick={onSync}
+            style={{background:'linear-gradient(135deg,var(--accent),var(--accent-strong))',border:'none',borderRadius:7,color:'#fff',fontSize:12,fontWeight:700,padding:'6px 14px',cursor:'pointer',fontFamily:'Manrope,sans-serif',flexShrink:0,display:'flex',alignItems:'center',gap:6}}>
+            <svg style={{width:11,height:11,animation:(syncStatus==='syncing'||syncStatus==='saving')?'spin 0.8s linear infinite':'none'}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+              <path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/>
+            </svg>
+            Sync now
+          </button>
+        </div>
+      )}
+
+      <form onSubmit={save} style={{display:'flex',flexDirection:'column',gap:14}}>
+        <div>
+          <label style={{fontSize:12,color:'var(--text-secondary)',display:'block',marginBottom:6}}>Sync token <span style={{color:'var(--text-muted)'}}>(set as SYNC_TOKEN in Cloudflare Pages env vars)</span></label>
+          <input className="input" type="password" value={token} onChange={e=>setToken(e.target.value)}
+            placeholder="Paste your secret token…"/>
+        </div>
+        {status && (
+          <div style={{fontSize:12,color:status.startsWith('✓')?'var(--success)':status.startsWith('✗')?'var(--danger)':'var(--warning)',wordBreak:'break-word',overflowWrap:'anywhere'}}>{status}</div>
+        )}
+        <div style={{display:'flex',gap:8,justifyContent:'flex-end'}}>
+          {token && <button type="button" className="btn-ghost" onClick={()=>{Sync.setToken(null);setToken('');setStatus('cleared');}}>Disconnect</button>}
+          <button type="submit" className="btn-primary">Save &amp; test</button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+/* ── NotificationsSettings (Admin → Notifications tab) ──
+   Subscribe control + real diagnostics (what THIS device thinks vs. what the
+   SERVER has on file — they can disagree for weeks with no error, see the
+   GET handler in functions/api/push.js) + a local test notification, plus a
+   view of what's coming up and what's actually fired recently. */
+function NotificationsSettings({ state }) {
+  const [notifPerm, setNotifPerm] = useState(() => ('Notification' in window) ? Notification.permission : 'denied');
+  const [enabling, setEnabling]   = useState(false);
+  const [deviceSub, setDeviceSub] = useState(null);   /* null=checking, false=none, PushSubscription */
+  const [serverInfo, setServerInfo] = useState(null); /* null=checking, false=not registered, {updatedAt,sentToday} */
+  const [pushBusy, setPushBusy]   = useState(false);
+  const [pushMsg, setPushMsg]     = useState(null);
+  const [testMsg, setTestMsg]     = useState(null);
+  const [upcoming, setUpcoming]   = useState(null);
+  const [history, setHistory]     = useState(null);
+
+  const refreshDeviceStatus = useCallback(async () => {
+    if (notifPerm !== 'granted' || !('serviceWorker' in navigator)) { setDeviceSub(false); return; }
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      const sub = await reg.pushManager.getSubscription();
+      setDeviceSub(sub || false);
+    } catch { setDeviceSub(false); }
+  }, [notifPerm]);
+
+  useEffect(() => { refreshDeviceStatus(); }, [refreshDeviceStatus]);
+
+  useEffect(() => {
+    if (deviceSub === null) return;
+    if (!deviceSub) { setServerInfo(false); return; }
+    const token = Sync.getToken();
+    if (!token) { setServerInfo(false); return; }
+    (async () => {
+      try {
+        const r = await fetch(`/api/push?id=${encodeURIComponent(deviceSub.endpoint)}`, { headers: { Authorization: `Bearer ${token}` } });
+        const data = await r.json();
+        setServerInfo(data.registered ? data : false);
+      } catch { setServerInfo(false); }
+    })();
+  }, [deviceSub]);
+
+  useEffect(() => {
+    (async () => {
+      if (!state?.meetings) { setUpcoming([]); return; }
+      try {
+        const all = await buildSchedule(state.meetings, state.salah);
+        const now = Date.now();
+        setUpcoming(all.filter(n => n.fireAt > now).sort((a,b) => a.fireAt - b.fireAt).slice(0, 10));
+      } catch { setUpcoming([]); }
+    })();
+  }, [state?.meetings, state?.salah]);
+
+  useEffect(() => { readNotificationLog().then(setHistory); }, []);
+
+  const enableNotifications = async () => {
+    if (!('Notification' in window)) return;
+    setEnabling(true);
+    try {
+      const perm = await Notification.requestPermission();
+      setNotifPerm(perm);
+      if (perm === 'granted') {
+        scheduleNotifications(state.meetings, state.salah);
+        await activatePush();
+        await refreshDeviceStatus();
+      }
+    } finally { setEnabling(false); }
+  };
+
+  /* Tear the existing subscription down and build a fresh one. Unsubscribing
+     first matters: if the old subscription is the broken one, re-POSTing it
+     would just re-register the same dead endpoint. */
+  const reconnectPush = async () => {
+    setPushBusy(true); setPushMsg(null);
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      const old = await reg.pushManager.getSubscription();
+      if (old) {
+        const token = Sync.getToken();
+        if (token) {
+          fetch('/api/push', {
+            method: 'DELETE',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+            body: JSON.stringify({ endpoint: old.endpoint }),
+          }).catch(()=>{});
+        }
+        await old.unsubscribe().catch(()=>{});
+      }
+      const ok = await registerPush();
+      await refreshDeviceStatus();
+      setPushMsg(ok
+        ? { text: 'Reconnected — this device is registered for background alerts.' }
+        : { text: 'Could not reconnect. Check the sync token and notification permission.', error: true });
+    } catch (e) {
+      setPushMsg({ text: e?.message || 'Could not reconnect.', error: true });
+    }
+    setPushBusy(false);
+  };
+
+  const sendTestNotification = async () => {
+    setTestMsg(null);
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      await reg.showNotification('Test notification', {
+        body: "If you can see this, notifications are working on this device.",
+        icon: '/icons/icon-192.png', badge: '/icons/icon-192.png', tag: 'admin-test', renotify: true,
+      });
+      setTestMsg({ text: 'Sent — check your notification tray.' });
+    } catch { setTestMsg({ text: 'Could not show a test notification.', error: true }); }
+  };
+
+  const fmtWhen = ms => new Date(ms).toLocaleString([], { weekday:'short', month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' });
+
+  return (
+    <div style={{display:'flex',flexDirection:'column',gap:22,maxWidth:640}}>
+      {notifPerm !== 'granted' ? (
+        <div style={{background:'var(--bg-surface)',border:'1px solid var(--border)',borderRadius:10,padding:'14px 16px',display:'flex',alignItems:'center',justifyContent:'space-between',gap:12,flexWrap:'wrap'}}>
+          <div>
+            <div style={{fontSize:13,fontWeight:600}}>Notifications are off</div>
+            <div style={{fontSize:11,color:'var(--text-secondary)',marginTop:2}}>Enable them for meeting and prayer-time alerts, even when Folio isn't open.</div>
+          </div>
+          <button className="btn-primary" onClick={enableNotifications} disabled={enabling}>{enabling ? 'Requesting…' : 'Enable notifications'}</button>
+        </div>
+      ) : (
+        <div>
+          <div style={{fontSize:11,fontWeight:700,letterSpacing:'.06em',color:'var(--text-muted)',textTransform:'uppercase',marginBottom:10}}>Status</div>
+          <div style={{display:'flex',flexDirection:'column',gap:8}}>
+            <div style={{display:'flex',alignItems:'center',gap:10,padding:'8px 12px',background:'var(--bg-surface)',border:'1px solid var(--border)',borderRadius:8}}>
+              <span style={{fontSize:12,color:'var(--text-secondary)',flex:1}}>This device</span>
+              {deviceSub===null && <span style={{fontSize:11,color:'var(--text-muted)'}}>checking…</span>}
+              {deviceSub===false && <span style={{fontSize:11,color:'var(--text-muted)'}}>Not registered</span>}
+              {deviceSub && <span style={{fontSize:11,fontWeight:700,color:'var(--warning)',background:'rgba(245,158,11,0.1)',border:'1px solid rgba(245,158,11,0.3)',borderRadius:4,padding:'2px 8px'}}>ACTIVE</span>}
+            </div>
+            <div style={{display:'flex',alignItems:'center',gap:10,padding:'8px 12px',background:'var(--bg-surface)',border:'1px solid var(--border)',borderRadius:8,flexWrap:'wrap'}}>
+              <span style={{fontSize:12,color:'var(--text-secondary)',flex:1,minWidth:80}}>Server</span>
+              {serverInfo===null && <span style={{fontSize:11,color:'var(--text-muted)'}}>checking…</span>}
+              {serverInfo===false && <span style={{fontSize:11,color:'var(--text-muted)'}}>Not registered</span>}
+              {serverInfo && (
+                <span style={{fontSize:11,color:'var(--text-secondary)'}}>
+                  Confirmed {fmtWhen(serverInfo.updatedAt)} · {serverInfo.sentToday} sent today
+                </span>
+              )}
+            </div>
+            {/* A push subscription can be silently invalidated by the browser
+                (site data cleared, PWA reinstalled, key rotation) and there's
+                no event for most of these cases — the device just stops
+                receiving. Re-subscribing is the fix. */}
+            <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+              <button type="button" className="btn-ghost" onClick={reconnectPush} disabled={pushBusy}>{pushBusy ? 'Reconnecting…' : 'Reconnect'}</button>
+              <button type="button" className="btn-ghost" onClick={sendTestNotification}>Send test notification</button>
+            </div>
+            {pushMsg && <div style={{fontSize:11,color:pushMsg.error?'var(--danger)':'var(--success)'}}>{pushMsg.text}</div>}
+            {testMsg && <div style={{fontSize:11,color:testMsg.error?'var(--danger)':'var(--success)'}}>{testMsg.text}</div>}
+          </div>
+        </div>
+      )}
+
+      <div className="divider"/>
+
+      <div>
+        <div style={{fontSize:11,fontWeight:700,letterSpacing:'.06em',color:'var(--text-muted)',textTransform:'uppercase',marginBottom:10}}>Upcoming</div>
+        {!upcoming?.length ? (
+          <div style={{fontSize:12,color:'var(--text-muted)'}}>Nothing scheduled in the next 14 days.</div>
+        ) : (
+          <div style={{display:'flex',flexDirection:'column',gap:4}}>
+            {upcoming.map(n=>(
+              <div key={n.id} style={{display:'flex',justifyContent:'space-between',gap:10,padding:'6px 10px',background:'var(--bg-surface)',borderRadius:7,fontSize:12}}>
+                <span style={{color:'var(--text-primary)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{n.title}</span>
+                <span style={{color:'var(--text-muted)',flexShrink:0,fontFamily:'"JetBrains Mono",monospace'}}>{fmtWhen(n.fireAt)}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div>
+        <div style={{fontSize:11,fontWeight:700,letterSpacing:'.06em',color:'var(--text-muted)',textTransform:'uppercase',marginBottom:10}}>Recently delivered</div>
+        {!history?.length ? (
+          <div style={{fontSize:12,color:'var(--text-muted)'}}>Nothing delivered on this device yet.</div>
+        ) : (
+          <div style={{display:'flex',flexDirection:'column',gap:4}}>
+            {history.map((n,i)=>(
+              <div key={i} style={{display:'flex',justifyContent:'space-between',gap:10,padding:'6px 10px',background:'var(--bg-surface)',borderRadius:7,fontSize:12}}>
+                <span style={{color:'var(--text-primary)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{n.title}</span>
+                <span style={{color:'var(--text-muted)',flexShrink:0,fontFamily:'"JetBrains Mono",monospace'}}>{fmtWhen(n.firedAt)}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ── DataSettings (Admin → Data tab) ── */
+function DataSettings({ state, hydrate, replaceState }) {
   const [confirmClear, setConfirmClear] = useState(null); /* 'data' | 'cache' | null */
+  const [pendingImportFile, setPendingImportFile] = useState(null);
+  const [importMsg, setImportMsg] = useState(null);
+  const fileInputRef = useRef(null);
+
+  const exportState = () => {
+    const blob = new Blob([JSON.stringify(state, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `folio-backup-${todayKey()}.json`;
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  const confirmImport = async () => {
+    if (!pendingImportFile) return;
+    try {
+      const parsed = JSON.parse(await pendingImportFile.text());
+      replaceState(tombMissing(state, hydrate(parsed)));
+      setImportMsg({ text: 'Backup restored.' });
+    } catch {
+      setImportMsg({ text: "Could not read that file — is it a folio backup JSON?", error: true });
+    }
+    setPendingImportFile(null);
+  };
 
   const clearLocalData = () => {
     localStorage.removeItem('folio_v1');
@@ -5582,124 +5791,117 @@ function SetupModal({ onClose, onConnected, onSync, syncStatus }) {
   };
 
   return (
-    <div className="modal-bg" onClick={e=>{ if(e.target===e.currentTarget) onClose(); }}>
-      <div className="modal fadeUp">
-        <div style={{padding:'20px 24px',borderBottom:'1px solid var(--border)',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-          <div>
-            <div style={{fontFamily:'Fraunces,serif',fontSize:17,fontWeight:600}}>Sync settings</div>
-            <div style={{fontSize:12,color:'var(--text-secondary)',marginTop:2}}>Connect to Cloudflare D1 for cross-device sync</div>
+    <div style={{display:'flex',flexDirection:'column',gap:22,maxWidth:560}}>
+      <div>
+        <div style={{fontSize:11,fontWeight:700,letterSpacing:'.06em',color:'var(--text-muted)',textTransform:'uppercase',marginBottom:10}}>Backup</div>
+        <div style={{fontSize:12,color:'var(--text-secondary)',marginBottom:10}}>Download everything as a JSON file, or restore from one.</div>
+        <div style={{display:'flex',flexDirection:'column',gap:8}}>
+          <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+            <button type="button" className="btn-ghost" onClick={exportState}>Export data</button>
+            {!pendingImportFile && (
+              <button type="button" className="btn-ghost" onClick={()=>fileInputRef.current?.click()}>Import data…</button>
+            )}
+            <input ref={fileInputRef} type="file" accept="application/json" style={{display:'none'}}
+              onChange={e=>{ const f=e.target.files?.[0]; e.target.value=''; setImportMsg(null); if (f) setPendingImportFile(f); }}/>
           </div>
-          <button onClick={onClose} style={{background:'none',border:'none',color:'var(--text-secondary)',cursor:'pointer',fontSize:20,lineHeight:1}}>×</button>
-        </div>
-        {Sync.configured() && onSync && (
-          <div style={{padding:'12px 24px',borderBottom:'1px solid var(--border)',display:'flex',alignItems:'center',justifyContent:'space-between',gap:10}}>
-            <div style={{fontSize:12}}>
-              <span style={{color:syncStatus==='synced'?'var(--success)':syncStatus==='offline'?'var(--danger)':syncStatus==='unauth'?'var(--warning)':'var(--text-secondary)',fontWeight:600}}>
-                {syncStatus==='synced'?'Synced':syncStatus==='syncing'?'Syncing…':syncStatus==='saving'?'Saving…':syncStatus==='offline'?'Offline':syncStatus==='unauth'?'Auth error':'Connected'}
-              </span>
-              <span style={{color:'var(--text-muted)',marginLeft:6}}>· pull latest from D1</span>
-            </div>
-            <button type="button" onClick={()=>{ onSync(); onClose(); }}
-              style={{background:'linear-gradient(135deg,var(--accent),var(--accent-strong))',border:'none',borderRadius:7,color:'#fff',fontSize:12,fontWeight:700,padding:'6px 14px',cursor:'pointer',fontFamily:'Manrope,sans-serif',flexShrink:0,display:'flex',alignItems:'center',gap:6}}>
-              <svg style={{width:11,height:11,animation:(syncStatus==='syncing'||syncStatus==='saving')?'spin 0.8s linear infinite':'none'}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
-                <path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/>
-              </svg>
-              Sync now
-            </button>
-          </div>
-        )}
-        <form onSubmit={save} style={{padding:'20px 24px',display:'flex',flexDirection:'column',gap:14}}>
-          <div>
-            <label style={{fontSize:12,color:'var(--text-secondary)',display:'block',marginBottom:6}}>Sync token <span style={{color:'var(--text-muted)'}}>(set as SYNC_TOKEN in Cloudflare Pages env vars)</span></label>
-            <input className="input" type="password" value={token} onChange={e=>setToken(e.target.value)}
-              placeholder="Paste your secret token…" autoFocus/>
-          </div>
-          {status && (
-            <div style={{fontSize:12,color:status.startsWith('✓')?'var(--success)':status.startsWith('✗')?'var(--danger)':'var(--warning)',wordBreak:'break-word',overflowWrap:'anywhere'}}>{status}</div>
-          )}
-          <div style={{display:'flex',gap:8,justifyContent:'flex-end'}}>
-            {token && <button type="button" className="btn-ghost" onClick={()=>{Sync.setToken(null);setToken('');setStatus('cleared');}}>Disconnect</button>}
-            <button type="submit" className="btn-primary">Save &amp; test</button>
-          </div>
-        </form>
-
-        {/* Push status */}
-        <div style={{padding:'12px 24px',borderTop:'1px solid var(--border)',display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
-          <svg style={{width:13,height:13,flexShrink:0,color:pushState==='active'?'var(--warning)':'var(--text-muted)'}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
-          <span style={{fontSize:12,color:'var(--text-secondary)',flex:1,minWidth:120}}>Background alerts</span>
-          {pushState==='checking' && <span style={{fontSize:11,color:'var(--text-muted)'}}>checking…</span>}
-          {pushState==='active'   && <span style={{fontSize:11,fontWeight:700,color:'var(--warning)',background:'rgba(245,158,11,0.1)',border:'1px solid rgba(245,158,11,0.3)',borderRadius:4,padding:'2px 8px'}}>ACTIVE</span>}
-          {pushState==='no-perm'  && <span style={{fontSize:11,color:'var(--text-muted)'}}>Enable notifications via the bell button</span>}
-          {pushState==='no-token' && <span style={{fontSize:11,color:'var(--text-muted)'}}>Requires sync token above</span>}
-          {pushState==='no-sub'   && <span style={{fontSize:11,color:'var(--text-muted)'}}>Inactive — tap the bell button to activate</span>}
-          {/* A push subscription can be silently invalidated by the browser
-              (site data cleared, PWA reinstalled, key rotation) and there's no
-              event for it — the device just stops receiving. Re-subscribing is
-              the fix, so make it a one-tap action rather than a reinstall. */}
-          {(pushState==='active' || pushState==='no-sub') && (
-            <button type="button" onClick={reconnectPush} disabled={pushBusy}
-              style={{background:'var(--bg-surface)',border:'1px solid var(--border-strong)',borderRadius:6,color:'var(--text-secondary)',fontSize:11,padding:'3px 9px',cursor:pushBusy?'default':'pointer',fontFamily:'Manrope,sans-serif',opacity:pushBusy?.6:1}}>
-              {pushBusy ? 'Reconnecting…' : 'Reconnect'}
-            </button>
-          )}
-          {pushMsg && <span style={{fontSize:11,color:pushMsg.error?'var(--danger)':'var(--success)',flexBasis:'100%'}}>{pushMsg.text}</span>}
-        </div>
-
-        {/* Advanced / PWA reset */}
-        <div style={{borderTop:'1px solid var(--border)'}}>
-          <button type="button" onClick={()=>{setShowAdvanced(v=>!v);setConfirmClear(null);}}
-            style={{width:'100%',background:showAdvanced?'#1c1b27':'#191824',border:'none',borderTop:'none',borderBottom:showAdvanced?'none':'1px solid rgba(99,91,255,0.2)',cursor:'pointer',padding:'12px 24px',display:'flex',alignItems:'center',gap:8,color:showAdvanced?'#d4d2e8':'#a09cf7',fontSize:12,fontFamily:'Manrope,sans-serif',fontWeight:700,letterSpacing:'.05em',textTransform:'uppercase',transition:'background 120ms, color 120ms',boxShadow:showAdvanced?'none':'inset 0 1px 0 rgba(99,91,255,0.15)'}}
-            onMouseEnter={e=>{e.currentTarget.style.background='#1c1b27';e.currentTarget.style.color='#d4d2e8'}}
-            onMouseLeave={e=>{e.currentTarget.style.background=showAdvanced?'#1c1b27':'#191824';e.currentTarget.style.color=showAdvanced?'#d4d2e8':'#a09cf7'}}>
-            <svg style={{width:13,height:13,opacity:.85,flexShrink:0}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <circle cx="12" cy="12" r="3"/>
-              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
-            </svg>
-            Advanced
-            <svg style={{width:11,height:11,marginLeft:'auto',transform:showAdvanced?'rotate(180deg)':'none',transition:'transform 150ms'}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><polyline points="6 9 12 15 18 9"/></svg>
-          </button>
-          {showAdvanced && (
-            <div style={{padding:'0 24px 20px',display:'flex',flexDirection:'column',gap:8}}>
-              <div style={{fontSize:11,color:'var(--text-muted)',marginBottom:2}}>Use these if the PWA is showing stale data or won't load correctly.</div>
-
-              {/* Clear local data */}
-              {confirmClear === 'data' ? (
-                <div style={{display:'flex',gap:6,alignItems:'center'}}>
-                  <span style={{fontSize:11,color:'var(--warning)',flex:1}}>This will delete local data and reload — sync will pull it back if connected.</span>
-                  <button type="button" onClick={()=>setConfirmClear(null)} className="btn-ghost" style={{fontSize:11,padding:'4px 10px'}}>Cancel</button>
-                  <button type="button" onClick={clearLocalData}
-                    style={{background:'var(--warning)',border:'none',borderRadius:6,color:'var(--bg-app)',fontSize:11,fontWeight:700,padding:'4px 10px',cursor:'pointer',fontFamily:'Manrope,sans-serif'}}>Confirm</button>
-                </div>
-              ) : (
-                <button type="button" onClick={()=>setConfirmClear('data')}
-                  style={{background:'none',border:'1px solid var(--border-strong)',borderRadius:7,color:'var(--text-secondary)',fontSize:12,padding:'7px 12px',cursor:'pointer',textAlign:'left',fontFamily:'Manrope,sans-serif',transition:'all 120ms'}}
-                  onMouseEnter={e=>{e.currentTarget.style.borderColor='var(--warning)';e.currentTarget.style.color='var(--warning)'}}
-                  onMouseLeave={e=>{e.currentTarget.style.borderColor='var(--border-strong)';e.currentTarget.style.color='var(--text-secondary)'}}>
-                  Clear local data &amp; reload
-                  <span style={{display:'block',fontSize:10,color:'var(--text-muted)',marginTop:1}}>Removes cached app state — re-pulled from D1 on next open</span>
-                </button>
-              )}
-
-              {/* Clear SW cache */}
-              {confirmClear === 'cache' ? (
-                <div style={{display:'flex',gap:6,alignItems:'center'}}>
-                  <span style={{fontSize:11,color:'var(--danger)',flex:1}}>This unregisters the service worker and clears all caches. App will reload fresh.</span>
-                  <button type="button" onClick={()=>setConfirmClear(null)} className="btn-ghost" style={{fontSize:11,padding:'4px 10px'}}>Cancel</button>
-                  <button type="button" onClick={clearCacheAndReload}
-                    style={{background:'var(--danger)',border:'none',borderRadius:6,color:'#fff',fontSize:11,fontWeight:700,padding:'4px 10px',cursor:'pointer',fontFamily:'Manrope,sans-serif'}}>Confirm</button>
-                </div>
-              ) : (
-                <button type="button" onClick={()=>setConfirmClear('cache')}
-                  style={{background:'none',border:'1px solid var(--border-strong)',borderRadius:7,color:'var(--text-secondary)',fontSize:12,padding:'7px 12px',cursor:'pointer',textAlign:'left',fontFamily:'Manrope,sans-serif',transition:'all 120ms'}}
-                  onMouseEnter={e=>{e.currentTarget.style.borderColor='var(--danger)';e.currentTarget.style.color='var(--danger)'}}
-                  onMouseLeave={e=>{e.currentTarget.style.borderColor='var(--border-strong)';e.currentTarget.style.color='var(--text-secondary)'}}>
-                  Clear PWA cache &amp; reload
-                  <span style={{display:'block',fontSize:10,color:'var(--text-muted)',marginTop:1}}>Unregisters service worker and wipes all cached assets — fixes stale PWA installs</span>
-                </button>
-              )}
+          {pendingImportFile && (
+            <div style={{display:'flex',gap:6,alignItems:'center'}}>
+              <span style={{fontSize:11,color:'var(--warning)',flex:1}}>Restoring "{pendingImportFile.name}" replaces current data — anything it doesn't have will be deleted on next sync.</span>
+              <button type="button" onClick={()=>setPendingImportFile(null)} className="btn-ghost" style={{fontSize:11,padding:'4px 10px'}}>Cancel</button>
+              <button type="button" onClick={confirmImport}
+                style={{background:'var(--warning)',border:'none',borderRadius:6,color:'var(--bg-app)',fontSize:11,fontWeight:700,padding:'4px 10px',cursor:'pointer',fontFamily:'Manrope,sans-serif'}}>Confirm restore</button>
             </div>
           )}
+          {importMsg && <div style={{fontSize:11,color:importMsg.error?'var(--danger)':'var(--success)'}}>{importMsg.text}</div>}
         </div>
+      </div>
+
+      <div className="divider"/>
+
+      <div>
+        <div style={{fontSize:11,fontWeight:700,letterSpacing:'.06em',color:'var(--text-muted)',textTransform:'uppercase',marginBottom:10}}>Reset</div>
+        <div style={{fontSize:12,color:'var(--text-secondary)',marginBottom:10}}>Use these if the PWA is showing stale data or won't load correctly.</div>
+        <div style={{display:'flex',flexDirection:'column',gap:8}}>
+          {confirmClear === 'data' ? (
+            <div style={{display:'flex',gap:6,alignItems:'center'}}>
+              <span style={{fontSize:11,color:'var(--warning)',flex:1}}>This will delete local data and reload — sync will pull it back if connected.</span>
+              <button type="button" onClick={()=>setConfirmClear(null)} className="btn-ghost" style={{fontSize:11,padding:'4px 10px'}}>Cancel</button>
+              <button type="button" onClick={clearLocalData}
+                style={{background:'var(--warning)',border:'none',borderRadius:6,color:'var(--bg-app)',fontSize:11,fontWeight:700,padding:'4px 10px',cursor:'pointer',fontFamily:'Manrope,sans-serif'}}>Confirm</button>
+            </div>
+          ) : (
+            <button type="button" onClick={()=>setConfirmClear('data')}
+              style={{background:'none',border:'1px solid var(--border-strong)',borderRadius:7,color:'var(--text-secondary)',fontSize:12,padding:'7px 12px',cursor:'pointer',textAlign:'left',fontFamily:'Manrope,sans-serif',transition:'all 120ms'}}
+              onMouseEnter={e=>{e.currentTarget.style.borderColor='var(--warning)';e.currentTarget.style.color='var(--warning)'}}
+              onMouseLeave={e=>{e.currentTarget.style.borderColor='var(--border-strong)';e.currentTarget.style.color='var(--text-secondary)'}}>
+              Clear local data &amp; reload
+              <span style={{display:'block',fontSize:10,color:'var(--text-muted)',marginTop:1}}>Removes cached app state — re-pulled from D1 on next open</span>
+            </button>
+          )}
+
+          {confirmClear === 'cache' ? (
+            <div style={{display:'flex',gap:6,alignItems:'center'}}>
+              <span style={{fontSize:11,color:'var(--danger)',flex:1}}>This unregisters the service worker and clears all caches. App will reload fresh.</span>
+              <button type="button" onClick={()=>setConfirmClear(null)} className="btn-ghost" style={{fontSize:11,padding:'4px 10px'}}>Cancel</button>
+              <button type="button" onClick={clearCacheAndReload}
+                style={{background:'var(--danger)',border:'none',borderRadius:6,color:'#fff',fontSize:11,fontWeight:700,padding:'4px 10px',cursor:'pointer',fontFamily:'Manrope,sans-serif'}}>Confirm</button>
+            </div>
+          ) : (
+            <button type="button" onClick={()=>setConfirmClear('cache')}
+              style={{background:'none',border:'1px solid var(--border-strong)',borderRadius:7,color:'var(--text-secondary)',fontSize:12,padding:'7px 12px',cursor:'pointer',textAlign:'left',fontFamily:'Manrope,sans-serif',transition:'all 120ms'}}
+              onMouseEnter={e=>{e.currentTarget.style.borderColor='var(--danger)';e.currentTarget.style.color='var(--danger)'}}
+              onMouseLeave={e=>{e.currentTarget.style.borderColor='var(--border-strong)';e.currentTarget.style.color='var(--text-secondary)'}}>
+              Clear PWA cache &amp; reload
+              <span style={{display:'block',fontSize:10,color:'var(--text-muted)',marginTop:1}}>Unregisters service worker and wipes all cached assets — fixes stale PWA installs</span>
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ── AdminView ──
+   One consolidated settings page instead of separate modals, so notification
+   diagnostics/history have a real home instead of being crammed into a
+   corner popup. Tab choice is device-local (like theme/background above). */
+const ADMIN_TAB_KEY = 'folio_admin_tab';
+const ADMIN_TABS = [
+  { id: 'notifications', label: 'Notifications' },
+  { id: 'prayer',        label: 'Prayer times'  },
+  { id: 'appearance',    label: 'Appearance'    },
+  { id: 'sync',          label: 'Sync'          },
+  { id: 'data',          label: 'Data'          },
+];
+function AdminView({ state, update, hydrate, replaceState, theme, changeTheme, background, changeBackground, syncStatus, onSync, onConnected, isMobile }) {
+  const [tab, setTab] = useState(() => {
+    try {
+      const t = localStorage.getItem(ADMIN_TAB_KEY);
+      return ADMIN_TABS.some(x => x.id === t) ? t : 'notifications';
+    } catch { return 'notifications'; }
+  });
+  const selectTab = id => { setTab(id); try { localStorage.setItem(ADMIN_TAB_KEY, id); } catch {} };
+
+  return (
+    <div style={{flex:1,minHeight:0,overflow:'auto'}} className="scrollbar">
+      <div style={{maxWidth:760,margin:'0 auto',padding: isMobile ? '20px 16px 40px' : '32px 40px 60px'}}>
+        <div style={{fontFamily:'Fraunces,serif',fontSize:22,fontWeight:600,marginBottom:4}}>Admin</div>
+        <div style={{fontSize:13,color:'var(--text-secondary)',marginBottom:20}}>Notifications, sync, and how Folio looks.</div>
+
+        <div style={{display:'flex',gap:4,borderBottom:'1px solid var(--border)',marginBottom:24,overflowX:'auto'}}>
+          {ADMIN_TABS.map(t=>(
+            <button key={t.id} onClick={()=>selectTab(t.id)}
+              style={{background:'none',border:'none',borderBottom:`2px solid ${tab===t.id?'var(--accent)':'transparent'}`,color:tab===t.id?'var(--text-primary)':'var(--text-secondary)',fontSize:13,fontWeight:600,padding:'8px 14px',cursor:'pointer',fontFamily:'Manrope,sans-serif',whiteSpace:'nowrap',flexShrink:0,transition:'color 120ms,border-color 120ms'}}>
+              {t.label}
+            </button>
+          ))}
+        </div>
+
+        {tab==='notifications' && <NotificationsSettings state={state}/>}
+        {tab==='prayer'        && <PrayerSettings state={state} update={update}/>}
+        {tab==='appearance'    && <AppearanceSettings theme={theme} onChangeTheme={changeTheme} background={background} onChangeBackground={changeBackground}/>}
+        {tab==='sync'          && <SyncSettings onConnected={onConnected} onSync={onSync} syncStatus={syncStatus}/>}
+        {tab==='data'          && <DataSettings state={state} hydrate={hydrate} replaceState={replaceState}/>}
       </div>
     </div>
   );
@@ -5987,9 +6189,6 @@ function PomodoroWidget({ pom, setPom, tasks, update, isMobile }) {
 function App() {
   const [state, setStateRaw]   = useState(null);
   const [syncStatus, setSyncStatus] = useState('idle'); /* idle|saving|synced|offline|unauth|local */
-  const [setupOpen, setSetupOpen]   = useState(false);
-  const [salahOpen, setSalahOpen]   = useState(false);
-  const [themeOpen, setThemeOpen]   = useState(false);
   const [theme, setTheme]           = useState(() => ThemePref.get());
   const [background, setBackground] = useState(() => BackgroundPref.get());
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -6071,7 +6270,7 @@ function App() {
   }, [fullView, state?.ui?.view, state?.ui?.noteId, state?.notes]);
 
   /* Respect ?view= from manifest shortcuts */
-  const VALID_VIEWS = ['today','notes','journal','tasks','kanban','calendar','tags'];
+  const VALID_VIEWS = ['today','notes','journal','tasks','kanban','calendar','tags','admin'];
   const urlView = new URLSearchParams(location.search).get('view');
   const startView = VALID_VIEWS.includes(urlView) ? urlView : null;
 
@@ -6102,7 +6301,7 @@ function App() {
      and a plain union for tags (flat strings, no delete concept at all). */
   const mergeState = (local, remote) => {
     const merged = hydrate(remote);
-    ['notes','tasks','meetings','journal'].forEach(key => {
+    TOMBSTONE_COLLECTIONS.forEach(key => {
       const tKey = key + 'Deleted';
       const { items, tombstones } = mergeById(local?.[key], remote?.[key], local?.[tKey], remote?.[tKey]);
       merged[key] = items;
@@ -6146,9 +6345,9 @@ function App() {
     } catch(e) {
       if (e.message === 'UNAUTHORIZED') {
         Sync.setToken(null);
-        setStateRaw(hydrate(cache));
+        const hydrated = hydrate(cache);
+        setStateRaw({ ...hydrated, ui: { ...hydrated.ui, view: 'admin' } });
         setSyncStatus('unauth');
-        setSetupOpen(true);
       } else {
         setStateRaw(hydrate(cache));
         setSyncStatus('offline');
@@ -6156,7 +6355,7 @@ function App() {
     }
   })(); }, []);
 
-  /* ── reload state from server after token is saved in SetupModal ── */
+  /* ── reload state from server after token is saved in Admin → Sync ── */
   const handleSyncConnected = useCallback(async (remote) => {
     const cache = Cache.read();
     const remoteEmpty = !remote?.notes || remote.notes.length === 0;
@@ -6177,6 +6376,10 @@ function App() {
   useEffect(() => {
     if (state?.meetings) scheduleNotifications(state.meetings, state?.salah);
   }, [state?.meetings, state?.salah]);
+
+  /* Back-fills the SW-readable token cache for devices that connected before
+     mirrorTokenToSW existed (it's normally kept current by Sync.setToken). */
+  useEffect(() => { mirrorTokenToSW(Sync.getToken()); }, []);
 
   /* ── keep ui.timezone current ──
      The cron Worker has no local timezone of its own, so it builds every
@@ -6240,7 +6443,10 @@ function App() {
 
   /* ── manual / auto sync-now: pull remote, merge local extras, push if needed ── */
   const syncNow = useCallback(async () => {
-    if (!Sync.configured()) { setSetupOpen(true); return; }
+    if (!Sync.configured()) {
+      setStateRaw(prev => prev && ({ ...prev, ui: { ...prev.ui, view: 'admin' } }));
+      return;
+    }
     if (syncingRef.current) return;
     syncingRef.current = true;
     clearTimeout(saveTimer.current);
@@ -6332,6 +6538,28 @@ function App() {
     });
   }, []);
 
+  /* Whole-state replace for Admin → Data → Import, which restores a full
+     backup rather than editing one key — same write/debounce path as
+     `update` above, just skipping the per-key merge. */
+  const replaceState = useCallback((next) => {
+    Cache.write(next);
+    setStateRaw(next);
+    if (Sync.configured()) {
+      pendingFlush.current = next;
+      setSyncStatus('saving');
+      clearTimeout(saveTimer.current);
+      saveTimer.current = setTimeout(async () => {
+        try {
+          await Sync.save(next);
+          pendingFlush.current = null;
+          setSyncStatus('synced');
+        } catch(e) {
+          setSyncStatus(e.message === 'UNAUTHORIZED' ? 'unauth' : 'offline');
+        }
+      }, 1500);
+    }
+  }, []);
+
   if (!state) return (
     <div style={{display:'flex',height:'100vh',alignItems:'center',justifyContent:'center',flexDirection:'column',gap:10,color:'var(--text-muted)'}}>
       <img src="/folio-icon.svg" alt="" style={{width:30,height:30,borderRadius:7}}/>
@@ -6339,7 +6567,7 @@ function App() {
     </div>
   );
 
-  const views = { today:TodayView, notes:NotesView, journal:JournalView, tasks:TasksView, kanban:KanbanView, calendar:CalendarView, tags:TagsView };
+  const views = { today:TodayView, notes:NotesView, journal:JournalView, tasks:TasksView, kanban:KanbanView, calendar:CalendarView, tags:TagsView, admin:AdminView };
   const View  = views[state.ui.view] || TodayView;
 
   const notesFullView = isNotesFullView(fullView, state);
@@ -6349,24 +6577,24 @@ function App() {
       <div id="app-bg-image"/>
       <div id="app-bg-scrim"/>
       {!notesFullView && (
-        <Sidebar state={state} update={update} syncStatus={syncStatus} onSetup={()=>setSetupOpen(true)}
-          onSync={syncNow} collapsed={!sidebarOpen} onToggle={()=>setSidebarOpen(v=>!v)} onSalah={()=>setSalahOpen(true)} onTheme={()=>setThemeOpen(true)}/>
+        <Sidebar state={state} update={update} syncStatus={syncStatus}
+          onSync={syncNow} collapsed={!sidebarOpen} onToggle={()=>setSidebarOpen(v=>!v)}/>
       )}
       <div className="main">
-        {!notesFullView && (
+        {!notesFullView && state.ui.view!=='admin' && (
           <SectionBanner sectionId={state.ui.view} banner={state.banners?.[state.ui.view]} onChange={v=>changeBanner(state.ui.view,v)} isMobile={isMobile}/>
         )}
         <div style={{flex:1,minHeight:0,overflow:'hidden',display:'flex',flexDirection:'column'}}>
           <View state={state} update={update} isMobile={isMobile} pom={pom} setPom={setPom}
-            fullView={fullView} setFullView={setFullView}/>
+            fullView={fullView} setFullView={setFullView}
+            hydrate={hydrate} replaceState={replaceState}
+            theme={theme} changeTheme={changeTheme} background={background} changeBackground={changeBackground}
+            syncStatus={syncStatus} onSync={syncNow} onConnected={handleSyncConnected}/>
         </div>
       </div>
       {!notesFullView && (
-        <MobileNav state={state} update={update} syncStatus={syncStatus} onSetup={()=>setSetupOpen(true)} onSync={syncNow} onSalah={()=>setSalahOpen(true)} onTheme={()=>setThemeOpen(true)}/>
+        <MobileNav state={state} update={update} syncStatus={syncStatus}/>
       )}
-      {setupOpen && <SetupModal onClose={()=>setSetupOpen(false)} onConnected={handleSyncConnected} onSync={syncNow} syncStatus={syncStatus}/>}
-      {salahOpen && <SalahModal state={state} update={update} onClose={()=>setSalahOpen(false)}/>}
-      {themeOpen && <AppearanceModal theme={theme} onChangeTheme={changeTheme} background={background} onChangeBackground={changeBackground} onClose={()=>setThemeOpen(false)}/>}
       {background?.source==='unsplash' && background?.attribution && <UnsplashCredit attribution={background.attribution}/>}
       {installBanner && <InstallBanner/>}
       <PomodoroWidget pom={pom} setPom={setPom} tasks={state.tasks} update={update} isMobile={isMobile}/>

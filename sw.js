@@ -1,4 +1,51 @@
-const CACHE = 'folio-v21';
+const CACHE = 'folio-v22';
+
+/* Caches used as cross-context storage rather than HTTP caching — a SW has no
+   localStorage, so the sync token (needed to re-register a subscription with
+   no window ever open) and the notification-delivery log both live here as
+   synthetic Response bodies under a fixed key. Named separately from CACHE so
+   the version-bump cleanup below doesn't sweep them. */
+const AUTH_CACHE     = 'folio-auth';
+const NOTIF_LOG_CACHE = 'folio-notif-log';
+const AUTH_KEY      = '/__auth_token';
+const NOTIF_LOG_KEY = '/__notif_log';
+const NOTIF_LOG_MAX = 50;
+
+const VAPID_PUBLIC_KEY = 'BMg79Dc4KgbVAa253omi5oER5VpB3ErcDnjaR5lgmIinGMVlUpe4-LUgfuQrTb9a3urAaLnDZgQ_vtE4OvVLcPA';
+/* Duplicated from index.html on purpose — same reasoning as the buildSchedule
+   mirror between the client and push-worker: a SW is its own script scope
+   with no access to the page's globals. Keep both copies in sync by hand. */
+function vapidKeyBytes() {
+  const pad = VAPID_PUBLIC_KEY.length % 4;
+  const b64 = (pad ? VAPID_PUBLIC_KEY + '='.repeat(4 - pad) : VAPID_PUBLIC_KEY)
+    .replace(/-/g, '+').replace(/_/g, '/');
+  const raw = atob(b64);
+  const out = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+  return out;
+}
+
+async function readAuthToken() {
+  try {
+    const cache = await caches.open(AUTH_CACHE);
+    const res = await cache.match(AUTH_KEY);
+    return res ? await res.text() : null;
+  } catch { return null; }
+}
+
+async function logNotification(entry) {
+  try {
+    const cache = await caches.open(NOTIF_LOG_CACHE);
+    const res = await cache.match(NOTIF_LOG_KEY);
+    let log = [];
+    if (res) { try { log = await res.json(); } catch {} }
+    log.unshift(entry);
+    if (log.length > NOTIF_LOG_MAX) log.length = NOTIF_LOG_MAX;
+    await cache.put(NOTIF_LOG_KEY, new Response(JSON.stringify(log), {
+      headers: { 'Content-Type': 'application/json' },
+    }));
+  } catch {}
+}
 
 const SHELL = [
   '/',
@@ -40,7 +87,9 @@ self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys().then((keys) =>
       Promise.all(
-        keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))
+        keys
+          .filter((k) => k !== CACHE && k !== AUTH_CACHE && k !== NOTIF_LOG_CACHE)
+          .map((k) => caches.delete(k))
       )
     )
   );
@@ -107,6 +156,7 @@ self.addEventListener('message', (event) => {
         renotify: true,
         data:     { url: '/' },
       });
+      logNotification({ id: 'pomodoro', title: n.title, body: n.body, firedAt: Date.now(), source: 'pomodoro' });
       pomodoroTimer = null;
     }, delay);
     return;
@@ -127,6 +177,7 @@ self.addEventListener('message', (event) => {
         tag:      id,
         renotify: false,
       });
+      logNotification({ id, title, body, firedAt: Date.now(), source: 'local' });
       pendingTimers.delete(id);
     }, delay);
     pendingTimers.set(id, timer);
@@ -149,18 +200,50 @@ self.addEventListener('push', (event) => {
   };
 
   const notify = self.registration.showNotification(title, options);
+  const logged = logNotification({ id: id || type || title, title, body, firedAt: Date.now(), source: 'push' });
 
   if (type === 'salah_athan') {
     event.waitUntil(
       Promise.all([
         notify,
+        logged,
         self.clients.matchAll({ type: 'window', includeUncontrolled: true })
           .then(clients => clients.forEach(c => c.postMessage({ type: 'PLAY_ADHAN', prayer, title }))),
       ])
     );
   } else {
-    event.waitUntil(notify);
+    event.waitUntil(Promise.all([notify, logged]));
   }
+});
+
+/* Fires when the browser silently rotates or invalidates a subscription (key
+   rotation, storage eviction) — there's no other event for this, and it can
+   happen with no window ever open, so the SW has to re-subscribe itself
+   using the token mirrored into AUTH_CACHE (see mirrorTokenToSW in index.html). */
+self.addEventListener('pushsubscriptionchange', (event) => {
+  event.waitUntil((async () => {
+    const token = await readAuthToken();
+    if (!token) return;
+    try {
+      const newSub = await self.registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: vapidKeyBytes(),
+      });
+      await fetch('/api/push', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ subscription: newSub.toJSON() }),
+      });
+      const old = event.oldSubscription;
+      if (old) {
+        fetch('/api/push', {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ endpoint: old.endpoint }),
+        }).catch(() => {});
+      }
+    } catch {}
+  })());
 });
 
 self.addEventListener('notificationclick', (event) => {

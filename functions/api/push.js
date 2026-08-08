@@ -40,6 +40,33 @@ export async function onRequest({ request, env }) {
   if (!await tokenOk(request, env)) return json({ error: 'Unauthorized' }, 401);
 
   try {
+    if (request.method === 'GET') {
+      /* Diagnostics only. The browser will happily report a healthy-looking
+         subscription object long after the push service has abandoned it —
+         this is the only way to see what the server actually has on file. */
+      const id = new URL(request.url).searchParams.get('id');
+      if (!id) return json({ error: 'Missing id' }, 400);
+
+      const row = await env.DB.prepare(
+        'SELECT sent, updated_at FROM push_subs WHERE id = ?'
+      ).bind(id).first();
+
+      if (!row) return json({ registered: false });
+
+      let sent = [];
+      try { sent = JSON.parse(row.sent) || []; } catch {}
+
+      /* No `scheduled`/`nextFireAt` field here on purpose: unlike the old
+         per-row schedule design, this table no longer stores the recurring
+         plan (the cron Worker rebuilds it from `state` every tick), so
+         there's nothing per-row to report beyond delivery history. */
+      return json({
+        registered: true,
+        updatedAt: row.updated_at,
+        sentToday: sent.length,
+      });
+    }
+
     if (request.method === 'POST') {
       /* Registration only. The recurring plan (meetings + salah) is derived
          server-side by the cron Worker from the shared state row, so the
