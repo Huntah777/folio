@@ -187,6 +187,10 @@ body.pwa-install-banner #app{padding-top:52px}
   .editor-body{font-size:14px!important}
 }
 /* markdown rendered view */
+/* mermaid diagrams — fit the note width by default; the container scrolls
+   horizontally when a wide chart has an intrinsic minimum, so a big flowchart
+   stays legible instead of being squashed to nothing. */
+.mermaid-view svg{max-width:100%;height:auto;display:inline-block}
 .md-view{font-family:'Manrope',sans-serif;font-size:14.5px;color:var(--text-quaternary);line-height:1.75;cursor:text;min-height:60px;padding:2px 0;width:100%}
 .md-view:empty::before{content:'Start writing…';color:var(--text-muted)}
 .md-view .md-h1{font-family:'Fraunces',serif;font-size:26px;font-weight:600;color:var(--text-primary);margin:20px 0 8px;line-height:1.2}
@@ -613,6 +617,40 @@ const Files = {
    of the service worker's precache SHELL: it's ~1.4 MB and would slow every
    cold start for a feature most sessions never touch. The runtime cache-first
    handler picks it up the first time a PDF is actually opened. */
+/* ── mermaid ──
+   Vendored (3.3 MB) so diagrams still render offline in the PWA, and lazy-
+   loaded for the same reason pdf.js is: most sessions never open a note with a
+   diagram in it, so it stays out of the service worker's precache SHELL and is
+   fetched the first time one is actually rendered. */
+let _mermaid = null;
+function mermaidLib() {
+  if (_mermaid) return _mermaid;
+  _mermaid = new Promise((resolve, reject) => {
+    if (window.mermaid) return resolve(window.mermaid);
+    const s = document.createElement('script');
+    s.src = '/vendor/mermaid.min.js';
+    s.onload = () => window.mermaid ? resolve(window.mermaid) : reject(new Error('mermaid failed to load'));
+    s.onerror = () => reject(new Error('mermaid failed to load'));
+    document.head.appendChild(s);
+  });
+  return _mermaid;
+}
+
+/* Render one diagram to SVG. securityLevel 'strict' matters even though the
+   content is your own: it sanitises HTML in labels and disables click
+   directives, so a diagram pasted from somewhere else can't inject markup. */
+async function renderMermaid(code, id) {
+  const m = await mermaidLib();
+  m.initialize({
+    startOnLoad: false,
+    securityLevel: 'strict',
+    theme: document.documentElement.dataset.theme === 'ghibli' ? 'default' : 'dark',
+    fontFamily: 'Manrope, sans-serif',
+  });
+  const { svg } = await m.render(id, code);
+  return svg;
+}
+
 let _pdfjs = null;
 function pdfjs() {
   if (_pdfjs) return _pdfjs;
@@ -724,6 +762,9 @@ function applyTheme(id) {
   document.documentElement.dataset.theme = id;
   const meta = document.querySelector('meta[name="theme-color"]');
   if (meta) meta.setAttribute('content', THEMES[id]?.swatch[0] || '#0a0a0b');
+  /* Mermaid bakes its palette into the generated SVG, so diagrams can't follow
+     a CSS variable change — they have to be re-rendered. */
+  try { window.dispatchEvent(new CustomEvent('folio-theme-change')); } catch {}
 }
 
 /* ── open note tabs + full view (device-local — never synced) ──
@@ -1034,12 +1075,15 @@ const Ic = {
   shrink:  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/></svg>,
 };
 
-const LANGS = ['plaintext','javascript','typescript','python','rust','go','csharp','bash','powershell','sql','json','css','jsx'];
+/* `mermaid` is a real fenced language here — a ```mermaid block renders as a
+   diagram instead of highlighted source (see MermaidBlock). Keeping it in the
+   same list means the language dropdown can convert a block either way. */
+const LANGS = ['plaintext','javascript','typescript','python','rust','go','csharp','bash','powershell','sql','json','css','jsx','mermaid'];
 const safeLang = lang => (LANGS.includes(lang) ? lang : 'plaintext');
 const LANG_COLORS = {
   plaintext:'#6e7681', javascript:'#f1e05a', typescript:'#3178c6', python:'#3572A5',
   rust:'#dea584', go:'#00ADD8', csharp:'#178600', bash:'#89e051', powershell:'#5391FE',
-  sql:'#e38c00', json:'#cbcb41', css:'#563d7c', jsx:'#61dafb',
+  sql:'#e38c00', json:'#cbcb41', css:'#563d7c', jsx:'#61dafb', mermaid:'#ff6f61',
 };
 const TAG_COLORS = { '#getting-started':'#818cf8','#work':'#22d3ee','#personal':'#10b981','#ideas':'#f59e0b','#meeting':'#f43f5e','#gratitude':'#fbbf24','#reflection':'#38bdf8','#goals':'#c084fc' };
 const tagColor = t => {
@@ -1127,7 +1171,7 @@ function MarkdownView({ content, onCheckboxToggle }) {
 }
 
 /* ── CodeBlock ── */
-function CodeBlock({ value='', lang='javascript', onChange, onLangChange }) {
+function CodeBlock({ value='', lang='javascript', onChange, onLangChange, bare=false }) {
   const taRef  = useRef(null);
   const preRef = useRef(null);
   const gutRef = useRef(null);
@@ -1150,6 +1194,9 @@ function CodeBlock({ value='', lang='javascript', onChange, onLangChange }) {
 
   return (
     <div style={{marginTop:4}}>
+      {/* `bare` drops the language/copy header — used when this is nested as
+          the source editor inside MermaidBlock, which supplies its own. */}
+      {!bare && (
       <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:6}}>
         <span style={{width:8,height:8,borderRadius:99,background:langColor,flexShrink:0}}/>
         <select value={lang} onChange={e=>onLangChange(e.target.value)}
@@ -1161,6 +1208,7 @@ function CodeBlock({ value='', lang='javascript', onChange, onLangChange }) {
           copy
         </button>
       </div>
+      )}
       <div className="code-wrap" style={{height:h,display:'flex',borderTop:`2px solid ${langColor}`}}>
         <div ref={gutRef} style={{width:gutW,flexShrink:0,overflowY:'hidden',padding:'12px 8px 12px 10px',textAlign:'right',fontFamily:'"JetBrains Mono",monospace',fontSize:'12.5px',lineHeight:'1.6',color:'var(--text-muted)',userSelect:'none',background:'var(--bg-sidebar)',borderRight:'1px solid var(--border)'}}>
           {Array.from({length:lineCount},(_,i)=><div key={i}>{i+1}</div>)}
@@ -1172,6 +1220,112 @@ function CodeBlock({ value='', lang='javascript', onChange, onLangChange }) {
           <textarea ref={taRef} value={value} onChange={e=>onChange(e.target.value)} onScroll={sync} spellCheck={false}/>
         </div>
       </div>
+    </div>
+  );
+}
+
+/* ── MermaidBlock — a ```mermaid fence rendered as a diagram ──
+   The source stays plain text in the note body, so diagrams remain
+   searchable, syncable and diffable like everything else — only the
+   presentation changes. */
+const MERMAID_STARTER = `flowchart TD
+    A[Start] --> B{Condition?}
+    B -->|Yes| C[Do the thing]
+    B -->|No| D[Skip it]
+    C --> E[Done]
+    D --> E`;
+
+function MermaidBlock({ value, onChange, onLangChange }) {
+  const [svg, setSvg]         = useState('');
+  const [error, setError]     = useState(null);
+  const [editing, setEditing] = useState(() => !value.trim());
+  const [themeTick, setThemeTick] = useState(0);
+  /* Rendering is debounced so a long diagram isn't re-parsed on every
+     keystroke while you type it. */
+  const [debounced, setDebounced] = useState(value);
+  const seqRef = useRef(0);
+  const idRef  = useRef('mmd-' + uid());
+
+  useEffect(() => {
+    const t = setTimeout(() => setDebounced(value), 350);
+    return () => clearTimeout(t);
+  }, [value]);
+
+  useEffect(() => {
+    const onThemeChange = () => setThemeTick(t => t + 1);
+    window.addEventListener('folio-theme-change', onThemeChange);
+    return () => window.removeEventListener('folio-theme-change', onThemeChange);
+  }, []);
+
+  useEffect(() => {
+    const code = debounced.trim();
+    if (!code) { setSvg(''); setError(null); return; }
+    let dead = false;
+    const my = ++seqRef.current;
+    (async () => {
+      try {
+        /* Unique id per render: mermaid uses it for the SVG's internal element
+           ids, and reusing one makes two diagrams on a page collide. */
+        const out = await renderMermaid(code, `${idRef.current}-${my}`);
+        if (dead || my !== seqRef.current) return;
+        setSvg(out); setError(null);
+      } catch (e) {
+        if (dead || my !== seqRef.current) return;
+        /* Keep the last good SVG on screen rather than blanking the diagram
+           mid-edit — an in-progress line is almost always transiently invalid. */
+        setError(String(e?.message || e).split('\n').slice(0, 3).join(' ').trim() || 'Invalid diagram syntax');
+      }
+    })();
+    return () => { dead = true; };
+  }, [debounced, themeTick]);
+
+  const downloadSvg = () => {
+    if (!svg) return;
+    const blob = new Blob([svg], { type: 'image/svg+xml' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = 'diagram.svg';
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const btn = { background:'none', border:'none', color:'var(--text-secondary)', cursor:'pointer', display:'flex', alignItems:'center', gap:3, fontSize:11, fontFamily:'Manrope,sans-serif', padding:0 };
+
+  return (
+    <div style={{marginTop:4}}>
+      <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:6,flexWrap:'wrap'}}>
+        <span style={{width:8,height:8,borderRadius:99,background:LANG_COLORS.mermaid,flexShrink:0}}/>
+        <select value="mermaid" onChange={e=>onLangChange(e.target.value)}
+          style={{background:'var(--bg-surface)',border:`1px solid ${LANG_COLORS.mermaid}55`,borderRadius:6,color:LANG_COLORS.mermaid,fontSize:11,padding:'3px 8px',fontFamily:'Manrope,sans-serif',cursor:'pointer'}}>
+          {LANGS.map(l=><option key={l} value={l} style={{color:LANG_COLORS[l],background:'var(--bg-surface)'}}>{l}</option>)}
+        </select>
+        <button onClick={()=>setEditing(v=>!v)} style={{...btn,color:editing?'var(--accent)':'var(--text-secondary)'}}>
+          <span style={{width:12,height:12,display:'flex'}}>{Ic.code}</span>{editing ? 'hide source' : 'edit'}
+        </button>
+        {svg && <button onClick={downloadSvg} style={btn}>
+          <span style={{width:12,height:12,display:'flex'}}>{Ic.img}</span>SVG
+        </button>}
+        <button onClick={()=>navigator.clipboard.writeText(value)} style={btn}>
+          <span style={{width:12,height:12,display:'flex'}}>{Ic.copy}</span>copy
+        </button>
+        {error && <span style={{fontSize:10.5,color:'var(--danger)',minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}} title={error}>{error}</span>}
+      </div>
+
+      {/* Rendered diagram. Scrolls horizontally rather than squashing — a wide
+          flowchart stays readable instead of being crushed to fit. */}
+      {svg
+        ? <div className="mermaid-view scrollbar"
+            style={{background:'var(--bg-surface)',border:`1px solid ${error?'var(--danger)':'var(--border)'}`,borderRadius:10,padding:'14px 12px',overflowX:'auto',textAlign:'center'}}
+            dangerouslySetInnerHTML={{__html: svg}}/>
+        : <div style={{background:'var(--bg-surface)',border:`1px solid ${error?'var(--danger)':'var(--border)'}`,borderRadius:10,padding:'18px 14px',fontSize:12,color:error?'var(--danger)':'var(--text-muted)'}}>
+            {error || (debounced.trim() ? 'Rendering diagram…' : 'Empty diagram — add some mermaid syntax below.')}
+          </div>}
+
+      {editing && (
+        <div style={{marginTop:8}}>
+          <CodeBlock value={value} lang="plaintext" onChange={onChange} onLangChange={()=>{}} bare/>
+        </div>
+      )}
     </div>
   );
 }
@@ -1951,6 +2105,16 @@ function NoteEditor({ note, state, update, isMobile }) {
     setCodeVal(''); setShowCode(false);
   };
 
+  /* Inserts a ready-to-edit flowchart rather than an empty fence — a blank
+     mermaid block is just a syntax error until you know the syntax, and the
+     starter doubles as a reminder of the shape. */
+  const insertFlowchart = () => {
+    insertAtCursor(
+      {type:'code', lang:'mermaid', content:MERMAID_STARTER},
+      (note.body||'')+'\n\n```mermaid\n'+MERMAID_STARTER+'\n```'
+    );
+  };
+
   /* ── toolbar button style helper ── */
   const tbBtn = {background:'none',border:'1px solid var(--border)',borderRadius:5,color:'var(--text-secondary)',padding:'3px 8px',fontSize:11,fontWeight:600,cursor:'pointer',fontFamily:'JetBrains Mono,monospace',transition:'all 110ms'};
 
@@ -2071,6 +2235,12 @@ function NoteEditor({ note, state, update, isMobile }) {
           onMouseLeave={e=>{e.currentTarget.style.background='none';e.currentTarget.style.color='var(--text-secondary)';}}>
           <svg style={{width:10,height:10}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>code
         </button>
+        {/* mermaid flowchart */}
+        <button onClick={insertFlowchart} title="Insert a flowchart (mermaid)" style={{...tbBtn,display:'flex',alignItems:'center',gap:3}}
+          onMouseEnter={e=>{e.currentTarget.style.background='var(--bg-surface)';e.currentTarget.style.color='var(--text-primary)';}}
+          onMouseLeave={e=>{e.currentTarget.style.background='none';e.currentTarget.style.color='var(--text-secondary)';}}>
+          <svg style={{width:10,height:10}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="8" y="2" width="8" height="5" rx="1"/><rect x="2" y="17" width="8" height="5" rx="1"/><rect x="14" y="17" width="8" height="5" rx="1"/><path d="M12 7v4"/><path d="M6 17v-2a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v2"/></svg>flow
+        </button>
         {/* web url */}
         <button onClick={()=>{setShowWebLink(v=>!v);setShowLinkSearch(false);}} title="Add web link"
           style={{...tbBtn,display:'flex',alignItems:'center',gap:3,color:showWebLink?'var(--accent)':'var(--text-secondary)',borderColor:showWebLink?'var(--accent)':'var(--border)'}}
@@ -2155,7 +2325,11 @@ function NoteEditor({ note, state, update, isMobile }) {
 
         {/* text + code + inline link + inline image parts */}
         {bodyParts.map((part,i)=>
-          part.type==='code'
+          part.type==='code' && part.lang==='mermaid'
+            ? <MermaidBlock key={i} value={part.content}
+                onChange={v=>{const np=[...bodyParts];np[i]={...np[i],content:v};upNote({body:rebuildBody(np)});}}
+                onLangChange={l=>{const np=[...bodyParts];np[i]={...np[i],lang:l};upNote({body:rebuildBody(np)});}}/>
+          : part.type==='code'
             ? <CodeBlock key={i} value={part.content} lang={part.lang}
                 onChange={v=>{const np=[...bodyParts];np[i]={...np[i],content:v};upNote({body:rebuildBody(np)});}}
                 onLangChange={l=>{const np=[...bodyParts];np[i]={...np[i],lang:l};upNote({body:rebuildBody(np)});}}/>
