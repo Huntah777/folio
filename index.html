@@ -56,18 +56,52 @@ tailwind.config = {
   --border:#1f1f24; --border-strong:#2a2a31;
   --text-primary:#f4f3ee; --text-secondary:#9a9788; --text-tertiary:#c9c6b8; --text-quaternary:#e6e4dc; --text-muted:#3a3a44;
   --accent:#818cf8; --accent-strong:#6366f1; --success:#10b981; --warning:#f59e0b; --danger:#f43f5e;
+  /* Translucent fills, the way macOS builds controls: a wash of light over
+     whatever is behind, rather than a flat opaque grey. Keeps a control
+     legible on both the plain background and a photo background. */
+  --fill:rgba(255,255,255,.055); --fill-hover:rgba(255,255,255,.085); --fill-active:rgba(255,255,255,.12);
+  --hairline:rgba(255,255,255,.09);
+  --vibrancy:rgba(22,22,27,.72);
+  --accent-ring:rgba(129,140,248,.35);
+  --accent-soft:rgba(129,140,248,.14);
+  --shadow-1:0 1px 2px rgba(0,0,0,.28);
+  --shadow-2:0 4px 16px -4px rgba(0,0,0,.5);
+  --shadow-3:0 18px 48px -12px rgba(0,0,0,.72);
 }
 :root[data-theme="ghibli"]{
   --bg-app:#f2e4c9; --bg-sidebar:#e9d7b3; --bg-surface:#fbf3e2; --bg-surface-2:#f5e8ca; --bg-surface-3:#f0e0bd; --modal-bg:#fbf3e2;
   --border:#e0cca0; --border-strong:#cbaf7a;
   --text-primary:#3c2c1e; --text-secondary:#7d6448; --text-tertiary:#5a4632; --text-quaternary:#4a3a28; --text-muted:#b9a582;
   --accent:#7a9e6f; --accent-strong:#5c8151; --success:#7a9e6f; --warning:#d98e3f; --danger:#c1594a;
+  /* On a light ground the same idea inverts: tint with shadow, not light. */
+  --fill:rgba(60,44,30,.06); --fill-hover:rgba(60,44,30,.10); --fill-active:rgba(60,44,30,.15);
+  --hairline:rgba(60,44,30,.12);
+  --vibrancy:rgba(251,243,226,.78);
+  --accent-ring:rgba(122,158,111,.38);
+  --accent-soft:rgba(122,158,111,.18);
+  --shadow-1:0 1px 2px rgba(120,92,54,.12);
+  --shadow-2:0 4px 16px -4px rgba(120,92,54,.20);
+  --shadow-3:0 18px 48px -12px rgba(120,92,54,.32);
+}
+/* One radius scale and one motion curve for the whole app, so nothing has to
+   guess. The curve is the decelerating ease Apple uses everywhere — fast to
+   start, settling at the end — which is most of why a UI "feels" native. */
+:root{
+  --r-xs:6px; --r-sm:9px; --r-md:12px; --r-lg:16px; --r-xl:20px; --r-pill:999px;
+  --ease:cubic-bezier(.32,.72,0,1);
+  --dur:200ms;
 }
 *{box-sizing:border-box;margin:0;padding:0}
 html,body{height:100%;background:var(--bg-app);color:var(--text-primary);font-family:'Manrope',system-ui,sans-serif;-webkit-font-smoothing:antialiased}
-::-webkit-scrollbar{width:5px;height:5px}
-::-webkit-scrollbar-thumb{background:var(--border-strong);border-radius:4px}
+::-webkit-scrollbar{width:9px;height:9px}
+::-webkit-scrollbar-thumb{background:transparent;border-radius:var(--r-pill);border:2.5px solid transparent;background-clip:content-box}
 ::-webkit-scrollbar-track{background:transparent}
+/* Overlay scrollbars: the thumb only materialises once the pointer is over
+   the scrolling region, so a dense list isn't permanently railed by a bar. */
+*:hover::-webkit-scrollbar-thumb{background:var(--border-strong);background-clip:content-box}
+*::-webkit-scrollbar-thumb:hover{background:var(--text-muted);background-clip:content-box}
+.no-scrollbar::-webkit-scrollbar{display:none}
+.no-scrollbar{-ms-overflow-style:none;scrollbar-width:none}
 
 /* layout */
 #app-bg-image{position:fixed;inset:0;z-index:-2;background:var(--app-bg-image,none) center/cover no-repeat;background-color:var(--bg-app)}
@@ -77,15 +111,17 @@ html,body{height:100%;background:var(--bg-app);color:var(--text-primary);font-fa
 .main{flex:1;overflow:hidden;display:flex;flex-direction:column}
 
 /* sidebar nav */
-.nav-item{display:flex;align-items:center;gap:9px;padding:7px 10px;border-radius:8px;font-size:13px;font-weight:500;color:var(--text-secondary);cursor:pointer;transition:all 110ms;user-select:none}
-.nav-item:hover{background:var(--bg-surface);color:var(--text-primary)}
-.nav-item.active{background:var(--border);color:var(--text-primary)}
+.nav-item{display:flex;align-items:center;gap:10px;padding:7px 11px;border-radius:var(--r-sm);font-size:13px;font-weight:500;color:var(--text-secondary);cursor:pointer;transition:background var(--dur) var(--ease),color var(--dur) var(--ease);user-select:none;position:relative}
+.nav-item:hover{background:var(--fill);color:var(--text-primary)}
+.nav-item.active{background:var(--fill-active);color:var(--text-primary);box-shadow:inset 0 1px 0 var(--hairline)}
+.nav-item:active{background:var(--fill-active)}
 .nav-item svg{width:15px;height:15px;flex-shrink:0}
 
 /* cards */
-.card{background:linear-gradient(160deg,var(--bg-surface-3),var(--bg-surface-2));border:1px solid var(--border);border-radius:12px}
-.note-card{padding:14px;cursor:pointer;transition:all 150ms;position:relative}
-.note-card:hover{border-color:var(--border-strong);transform:translateY(-1px);box-shadow:0 6px 20px -8px #000}
+.card{background:linear-gradient(160deg,var(--bg-surface-3),var(--bg-surface-2));border:1px solid var(--border);border-radius:var(--r-lg);box-shadow:var(--shadow-1),inset 0 1px 0 var(--hairline)}
+.note-card{padding:15px 16px;cursor:pointer;transition:transform var(--dur) var(--ease),box-shadow var(--dur) var(--ease),border-color var(--dur) var(--ease);position:relative}
+.note-card:hover{border-color:var(--border-strong);transform:translateY(-2px);box-shadow:var(--shadow-2),inset 0 1px 0 var(--hairline)}
+.note-card:active{transform:translateY(0) scale(.995)}
 .note-card.sel{border-color:var(--accent);box-shadow:0 0 0 1px rgba(129,140,248,.18)}
 .note-card.checked{border-color:#818cf840}
 /* delete / action buttons */
@@ -104,14 +140,14 @@ html,body{height:100%;background:var(--bg-app);color:var(--text-primary);font-fa
 .note-cb{opacity:0;transition:opacity 120ms;flex-shrink:0}
 .note-card:hover .note-cb,.note-card.checked .note-cb{opacity:1}
 /* context menu */
-.ctx-menu{background:var(--bg-surface);border:1px solid var(--border-strong);border-radius:10px;padding:4px;min-width:170px;box-shadow:0 8px 32px rgba(0,0,0,.75);z-index:9999;position:fixed}
-.ctx-item{display:flex;align-items:center;gap:9px;padding:7px 12px;border-radius:7px;font-size:13px;cursor:pointer;color:var(--text-tertiary);transition:all 100ms;user-select:none;font-family:'Manrope',sans-serif;font-weight:500}
-.ctx-item:hover{background:var(--border-strong);color:var(--text-primary)}
+.ctx-menu{background:var(--vibrancy);-webkit-backdrop-filter:blur(24px) saturate(180%);backdrop-filter:blur(24px) saturate(180%);border:1px solid var(--hairline);border-radius:var(--r-md);padding:5px;min-width:180px;box-shadow:var(--shadow-3);z-index:9999;position:fixed;animation:popIn 160ms var(--ease) both}
+.ctx-item{display:flex;align-items:center;gap:9px;padding:7px 11px;border-radius:var(--r-xs);font-size:13px;cursor:pointer;color:var(--text-tertiary);transition:background 100ms var(--ease),color 100ms var(--ease);user-select:none;font-family:'Manrope',sans-serif;font-weight:500}
+.ctx-item:hover{background:var(--accent);color:#fff}
 .ctx-item.danger{color:var(--text-secondary)}
-.ctx-item.danger:hover{background:rgba(244,63,94,.12);color:var(--danger)}
-.ctx-sep{height:1px;background:var(--border-strong);margin:3px 6px}
+.ctx-item.danger:hover{background:var(--danger);color:#fff}
+.ctx-sep{height:1px;background:var(--hairline);margin:4px 8px}
 /* bulk action bar */
-.bulk-bar{position:sticky;bottom:8px;background:#1c1c24;border:1px solid #818cf840;border-radius:10px;padding:8px 12px;display:flex;align-items:center;gap:8px;margin-top:8px;backdrop-filter:blur(8px);box-shadow:0 4px 20px rgba(0,0,0,.6)}
+.bulk-bar{position:sticky;bottom:8px;background:var(--vibrancy);-webkit-backdrop-filter:blur(24px) saturate(180%);backdrop-filter:blur(24px) saturate(180%);border:1px solid var(--accent-ring);border-radius:var(--r-lg);padding:9px 13px;display:flex;align-items:center;gap:8px;margin-top:8px;box-shadow:var(--shadow-3)}
 /* folder action buttons */
 .folder-action{background:none;border:1px solid transparent;cursor:pointer;padding:3px 6px;border-radius:5px;font-size:12px;line-height:1;font-family:'Manrope',sans-serif;font-weight:600;transition:all 110ms}
 .folder-action.rename{color:var(--text-secondary)}
@@ -132,43 +168,94 @@ input:focus,textarea:focus{outline:none}
 .code-wrap textarea{position:absolute;inset:0;resize:none;font-family:'JetBrains Mono',monospace;font-size:12.5px;line-height:1.6;padding:12px 16px;border:none;outline:none;caret-color:var(--text-primary);background:transparent;color:transparent;z-index:1;tab-size:2}
 
 /* tag pill */
-.tag{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:99px;font-size:11.5px;font-weight:600;cursor:pointer}
+.tag{display:inline-flex;align-items:center;gap:4px;padding:3px 9px;border-radius:var(--r-pill);font-size:11.5px;font-weight:600;cursor:pointer;transition:transform 140ms var(--ease),filter 140ms var(--ease);white-space:nowrap}
+.tag:hover{filter:brightness(1.18)}
+.tag:active{transform:scale(.94)}
 
 /* tick */
-.tick{width:17px;height:17px;border-radius:5px;border:1.5px solid var(--text-muted);display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;cursor:pointer;transition:all 120ms}
+.tick{width:19px;height:19px;border-radius:var(--r-pill);border:1.5px solid var(--border-strong);display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;cursor:pointer;transition:background 140ms var(--ease),border-color 140ms var(--ease),transform 140ms var(--ease)}
+.tick:hover{border-color:var(--accent)}
+.tick:active{transform:scale(.88)}
 .tick.on{background:var(--accent);border-color:var(--accent)}
 
 /* cal */
-.cal-cell{border-radius:7px;padding:5px;min-height:72px;cursor:pointer;transition:background 110ms;font-size:12px}
+.cal-cell{border-radius:var(--r-sm);padding:5px;min-height:72px;cursor:pointer;transition:background 140ms var(--ease);font-size:12px}
 @media(max-width:768px){.cal-cell{min-height:44px;padding:3px;font-size:11px}}
-.cal-cell:hover{background:var(--bg-surface)}
-.cal-cell.today{background:var(--bg-surface)}
-.cal-cell.sel{outline:1.5px solid var(--accent)}
+.cal-cell:hover{background:var(--fill)}
+.cal-cell.today{background:var(--fill)}
+.cal-cell.sel{outline:2px solid var(--accent);outline-offset:-2px}
 .cal-dot{width:6px;height:6px;border-radius:99px;background:var(--accent);margin:1px 0}
 
 /* modal */
-.modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.6);backdrop-filter:blur(3px);z-index:50;display:flex;align-items:center;justify-content:center}
-.modal{background:var(--modal-bg);border:1px solid var(--border-strong);border-radius:14px;width:480px;max-width:95vw;box-shadow:0 24px 64px -12px rgba(0,0,0,.8);max-height:90vh;overflow-y:auto}
+.modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.42);-webkit-backdrop-filter:blur(14px) saturate(140%);backdrop-filter:blur(14px) saturate(140%);z-index:50;display:flex;align-items:center;justify-content:center;animation:fadeIn 180ms var(--ease) both;padding:16px}
+.modal{background:var(--modal-bg);border:1px solid var(--hairline);border-radius:var(--r-xl);width:480px;max-width:100%;box-shadow:var(--shadow-3),inset 0 1px 0 var(--hairline);max-height:90vh;overflow-y:auto}
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+@keyframes popIn{from{opacity:0;transform:scale(.96) translateY(-4px)}to{opacity:1;transform:none}}
 
 /* misc */
-.input{background:var(--bg-surface);border:1px solid var(--border);border-radius:8px;padding:8px 11px;color:var(--text-primary);font-family:'Manrope',sans-serif;font-size:13px;width:100%;transition:border-color 120ms}
-.input:focus{outline:none;border-color:var(--accent)}
-.btn-primary{background:var(--accent);color:#fff;border:none;border-radius:8px;padding:8px 16px;font-family:'Manrope',sans-serif;font-size:13px;font-weight:600;cursor:pointer;transition:all 120ms}
-.btn-primary:hover{background:var(--accent-strong)}
-.btn-ghost{background:transparent;color:var(--text-secondary);border:1px solid var(--border);border-radius:8px;padding:7px 14px;font-family:'Manrope',sans-serif;font-size:13px;cursor:pointer;transition:all 120ms}
-.btn-ghost:hover{border-color:var(--border-strong);color:var(--text-primary)}
-@keyframes fadeUp{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:none}}
-.fadeUp{animation:fadeUp 220ms ease both}
+.input{background:var(--fill);border:1px solid var(--hairline);border-radius:var(--r-sm);padding:9px 12px;color:var(--text-primary);font-family:'Manrope',sans-serif;font-size:13px;width:100%;transition:border-color var(--dur) var(--ease),box-shadow var(--dur) var(--ease),background var(--dur) var(--ease)}
+.input:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3.5px var(--accent-ring)}
+
+/* Buttons are capsules. The press state scales down a touch rather than
+   changing colour — the same feedback a physical key gives, and what makes
+   a tap feel like it landed on a phone where there is no hover. */
+.btn-primary{background:var(--accent);color:#fff;border:none;border-radius:var(--r-pill);padding:9px 18px;font-family:'Manrope',sans-serif;font-size:13px;font-weight:600;cursor:pointer;transition:background var(--dur) var(--ease),transform 140ms var(--ease),box-shadow var(--dur) var(--ease);box-shadow:var(--shadow-1)}
+.btn-primary:hover{background:var(--accent-strong);box-shadow:var(--shadow-2)}
+.btn-primary:active{transform:scale(.96)}
+.btn-primary:focus-visible{outline:none;box-shadow:0 0 0 3.5px var(--accent-ring)}
+.btn-primary:disabled{opacity:.45;cursor:default;transform:none}
+.btn-ghost{background:var(--fill);color:var(--text-tertiary);border:1px solid transparent;border-radius:var(--r-pill);padding:8px 16px;font-family:'Manrope',sans-serif;font-size:13px;font-weight:500;cursor:pointer;transition:background var(--dur) var(--ease),color var(--dur) var(--ease),transform 140ms var(--ease)}
+.btn-ghost:hover{background:var(--fill-hover);color:var(--text-primary)}
+.btn-ghost:active{transform:scale(.96)}
+.btn-ghost:focus-visible{outline:none;box-shadow:0 0 0 3.5px var(--accent-ring)}
+.btn-ghost:disabled{opacity:.45;cursor:default;transform:none}
+
+/* Capsule toggle — the "bubble" used for tag filters and any on/off chip. */
+.pill{display:inline-flex;align-items:center;gap:6px;padding:6px 13px;border-radius:var(--r-pill);border:1px solid transparent;background:var(--fill);color:var(--text-secondary);font-family:'Manrope',sans-serif;font-size:12.5px;font-weight:600;cursor:pointer;white-space:nowrap;transition:background var(--dur) var(--ease),color var(--dur) var(--ease),transform 140ms var(--ease);user-select:none}
+.pill:hover{background:var(--fill-hover);color:var(--text-primary)}
+.pill:active{transform:scale(.95)}
+.pill.on{background:var(--accent);color:#fff;box-shadow:var(--shadow-1)}
+.pill.on:hover{background:var(--accent-strong);color:#fff}
+.pill-count{font-size:10.5px;font-weight:700;opacity:.65;font-family:'JetBrains Mono',monospace}
+
+/* macOS segmented control: one recessed track, the selection a raised slug. */
+.seg{display:inline-flex;align-items:center;gap:2px;padding:2.5px;border-radius:var(--r-pill);background:var(--fill);border:1px solid var(--hairline)}
+.seg > button{background:none;border:none;border-radius:var(--r-pill);padding:5px 13px;font-family:'Manrope',sans-serif;font-size:12px;font-weight:600;color:var(--text-secondary);cursor:pointer;transition:background var(--dur) var(--ease),color var(--dur) var(--ease);white-space:nowrap}
+.seg > button:hover{color:var(--text-primary)}
+.seg > button[aria-pressed="true"]{background:var(--bg-surface);color:var(--text-primary);box-shadow:var(--shadow-1),inset 0 1px 0 var(--hairline)}
+
+/* Circular icon button — toolbar affordance, thumb-sized on purpose. */
+.icon-btn{display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;border-radius:var(--r-pill);border:none;background:transparent;color:var(--text-secondary);cursor:pointer;flex-shrink:0;transition:background var(--dur) var(--ease),color var(--dur) var(--ease),transform 140ms var(--ease)}
+.icon-btn:hover{background:var(--fill-hover);color:var(--text-primary)}
+.icon-btn:active{transform:scale(.9)}
+.icon-btn.danger:hover{background:rgba(244,63,94,.14);color:var(--danger)}
+.icon-btn svg{width:14px;height:14px}
+
+.tag-scroll{-webkit-mask-image:linear-gradient(to right,#000 calc(100% - 22px),transparent 100%);mask-image:linear-gradient(to right,#000 calc(100% - 22px),transparent 100%)}
+
+/* Row actions stay out of the way until the pointer is on the row — the
+   Finder/Mail behaviour. On touch there is no hover, so they stay visible.  */
+.task-row .icon-btn,.task-row .task-sel{opacity:0;transition:opacity var(--dur) var(--ease),background var(--dur) var(--ease),color var(--dur) var(--ease),transform 140ms var(--ease)}
+.task-row:hover .icon-btn,.task-row:focus-within .icon-btn,
+.task-row:hover .task-sel,.task-row:focus-within .task-sel,.task-row .task-sel.on{opacity:1}
+@media(hover:none){.task-row .icon-btn,.task-row .task-sel{opacity:1}}
+.task-row:hover{border-color:var(--border-strong)!important}
+
+/* A row in a grouped list — the iOS/macOS settings-table idiom. */
+.row-soft{display:flex;align-items:center;gap:11px;padding:10px 13px;border-radius:var(--r-md);background:var(--bg-surface-2);border:1px solid var(--border);transition:background var(--dur) var(--ease),border-color var(--dur) var(--ease),transform var(--dur) var(--ease)}
+.row-soft:hover{background:var(--bg-surface);border-color:var(--border-strong)}
+@keyframes fadeUp{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+.fadeUp{animation:fadeUp 300ms var(--ease) both}
 @keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
 @keyframes ping{0%{transform:scale(1);opacity:.55}75%,100%{transform:scale(2.1);opacity:0}}
-.divider{border-top:1px solid var(--border)}
+.divider{border-top:1px solid var(--hairline)}
 /* resize handle */
 .resize-handle{width:5px;cursor:col-resize;flex-shrink:0;background:transparent;transition:background 150ms}
 .resize-handle:hover{background:var(--border-strong)}
 /* sidebar collapsed */
 .sidebar-collapsed{width:52px!important;min-width:52px!important}
 /* mobile nav */
-.mobile-nav{display:none;position:fixed;bottom:0;left:0;right:0;background:var(--bg-sidebar);border-top:1px solid var(--border);z-index:100;align-items:stretch}
+.mobile-nav{display:none;position:fixed;bottom:0;left:0;right:0;background:var(--vibrancy);-webkit-backdrop-filter:blur(24px) saturate(180%);backdrop-filter:blur(24px) saturate(180%);border-top:1px solid var(--hairline);z-index:100;align-items:stretch}
 @media(max-width:768px){
   .sidebar{display:none!important}
   .mobile-nav{display:flex!important;height:calc(56px + env(safe-area-inset-bottom,0px));padding-bottom:env(safe-area-inset-bottom,0px)}
@@ -246,6 +333,38 @@ const fmtBytes = n => {
   return (b / (1024 * 1024)).toFixed(1) + ' MB';
 };
 const parseKey = s => { const [y,m,d]=s.split('-').map(Number); return new Date(y,m-1,d); };
+/* "Today" / "Tomorrow" / "Sat 30 Aug" instead of 2026-08-30. A due date is
+   read as a distance from now, so the raw ISO string makes you do the
+   subtraction yourself on every row. Overdue is called out by name because
+   it's the one case where the exact date matters less than the fact. */
+/* Markdown source makes a poor preview: "# Title - point" is the syntax
+   showing through, not the note. Strips the marks and collapses whitespace so
+   a card shows the sentence you actually wrote. */
+const notePreview = (body, len = 140) => (body || '')
+  .replace(/```[\s\S]*?```/g, ' [code] ')
+  .replace(/!\[[^\]]*\]\([^)]*\)/g, ' ')
+  .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+  .replace(/^\s{0,3}#{1,6}\s+/gm, '')
+  .replace(/^\s{0,3}>\s?/gm, '')
+  .replace(/^\s*[-*+]\s+\[[ xX]\]\s*/gm, '')
+  .replace(/^\s*[-*+]\s+/gm, '')
+  .replace(/^\s*\d+\.\s+/gm, '')
+  .replace(/[*_~`]/g, '')
+  .replace(/\s+/g, ' ')
+  .trim()
+  .slice(0, len);
+
+const friendlyDate = key => {
+  if (!key) return '';
+  const diff = Math.round((parseKey(key) - parseKey(todayKey())) / 86400000);
+  if (diff === 0) return 'Today';
+  if (diff === 1) return 'Tomorrow';
+  if (diff === -1) return 'Yesterday';
+  const d = parseKey(key);
+  const withYear = d.getFullYear() !== new Date().getFullYear();
+  return d.toLocaleDateString('en-GB', { weekday: diff > -7 && diff < 7 ? 'short' : undefined,
+    day:'numeric', month:'short', ...(withYear ? { year:'numeric' } : {}) });
+};
 
 /* ── week helpers (Monday-start) — used by the Journal week view/nav ── */
 /* Monday of the week containing `d`. Date.getDay() is 0=Sun..6=Sat, so Sunday
@@ -1161,14 +1280,139 @@ const LANG_COLORS = {
   rust:'#dea584', go:'#00ADD8', csharp:'#178600', bash:'#89e051', powershell:'#5391FE',
   sql:'#e38c00', json:'#cbcb41', css:'#563d7c', jsx:'#61dafb', mermaid:'#ff6f61',
 };
-const TAG_COLORS = { '#getting-started':'#818cf8','#work':'#22d3ee','#personal':'#10b981','#ideas':'#f59e0b','#meeting':'#f43f5e','#gratitude':'#fbbf24','#reflection':'#38bdf8','#goals':'#c084fc' };
-const tagColor = t => {
-  if (TAG_COLORS[t]) return TAG_COLORS[t];
+/* Hue only — the lightness a tag needs depends on what it sits on, so it's
+   applied per theme below rather than baked into a hex here. A pastel that
+   reads well on near-black is close to invisible on the cream theme. */
+const TAG_HUES = { '#getting-started':239,'#work':189,'#personal':160,'#ideas':38,'#meeting':350,'#gratitude':45,'#reflection':199,'#goals':275 };
+const tagHue = t => {
+  if (TAG_HUES[t] !== undefined) return TAG_HUES[t];
   let h = 0;
   for (let i = 0; i < t.length; i++) { h = t.charCodeAt(i) + ((h << 5) - h); h |= 0; }
-  return `hsl(${Math.abs(h) % 360},65%,62%)`;
+  return Math.abs(h) % 360;
 };
+const isLightTheme = () => {
+  try { return document.documentElement.dataset.theme === 'ghibli'; } catch { return false; }
+};
+const tagColor = t => isLightTheme()
+  ? `hsl(${tagHue(t)},58%,34%)`   /* dark ink on a light ground */
+  : `hsl(${tagHue(t)},65%,62%)`;  /* light ink on a dark ground */
 const PRIO = { high:'var(--danger)', medium:'var(--warning)', low:'#22d3ee', none:'var(--text-muted)' };
+
+/* ── tag display helpers ───────────────────────────────────────────────────
+   Tags accumulate. A vault with thirty of them used to render all thirty as
+   equal-weight controls on every screen that filters — a wall you have to
+   read end-to-end to find the one you want, and which pushed the actual
+   content below the fold. These two components are the fix, and both work on
+   the same principle: show the few that earn their place, and put the long
+   tail one tap away instead of on screen.                                  */
+
+/* How many tags a filter bar shows before the rest move into the overflow
+   popover. Roughly one comfortable row on a laptop. */
+const TAG_BAR_MAX = 8;
+
+/* Count how many items in `items` carry each tag, most-used first. Usage is
+   the ranking everywhere: the tag you file things under weekly should be the
+   one under your cursor, not the one that happens to sort first. */
+function tagCounts(items) {
+  const counts = new Map();
+  for (const it of items) for (const t of (it.tags || [])) counts.set(t, (counts.get(t) || 0) + 1);
+  return [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+}
+
+/* The inline tags on a note/task row, capped. Past two, tags stop labelling
+   the row and start competing with its title, so the remainder collapses to
+   a "+2" that still tells you they exist. */
+function TagChips({ tags = [], max = 2, onPick, size = 11 }) {
+  if (!tags.length) return null;
+  const shown = tags.slice(0, max);
+  const extra = tags.length - shown.length;
+  return (
+    <span style={{display:'inline-flex',alignItems:'center',gap:5,minWidth:0}}>
+      {shown.map(t => (
+        <span key={t} className="tag" style={{background:`${tagColor(t)}1f`,color:tagColor(t),fontSize:size}}
+          onClick={onPick ? e => { e.stopPropagation(); onPick(t); } : undefined}>{t}</span>
+      ))}
+      {extra > 0 && (
+        <span className="tag" title={tags.slice(max).join('  ')}
+          style={{background:'var(--fill)',color:'var(--text-secondary)',fontSize:size}}>+{extra}</span>
+      )}
+    </span>
+  );
+}
+
+/* One scrollable row of capsule filters: All, then the most-used tags, then
+   a "+N" that opens a searchable list of everything. The selected tag is
+   always pulled into the visible row even when it isn't a popular one —
+   otherwise activating a filter from the overflow would hide the only
+   control that turns it off again. */
+function TagFilterBar({ tags, counts, value, onChange, max = TAG_BAR_MAX }) {
+  const [open, setOpen]     = useState(false);
+  const [query, setQuery]   = useState('');
+  const boxRef = useRef(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = e => { if (boxRef.current && !boxRef.current.contains(e.target)) { setOpen(false); setQuery(''); } };
+    const onKey = e => { if (e.key === 'Escape') { setOpen(false); setQuery(''); } };
+    document.addEventListener('mousedown', onDoc);
+    document.addEventListener('keydown', onKey);
+    return () => { document.removeEventListener('mousedown', onDoc); document.removeEventListener('keydown', onKey); };
+  }, [open]);
+
+  if (!tags.length) return null;
+  const countOf = t => counts?.get?.(t) ?? 0;
+
+  let head = tags.slice(0, max);
+  if (value && !head.includes(value)) head = [...head.slice(0, max - 1), value];
+  const rest = tags.filter(t => !head.includes(t));
+  const matches = rest.filter(t => t.toLowerCase().includes(query.replace(/^#/, '').toLowerCase()));
+
+  return (
+    <div style={{display:'flex',alignItems:'center',gap:6,minWidth:0}}>
+      <div className="no-scrollbar tag-scroll" style={{display:'flex',alignItems:'center',gap:6,overflowX:'auto',flex:1,minWidth:0,padding:'2px 0'}}>
+        <button className="pill" onClick={() => onChange('')}
+          style={value === '' ? {background:'var(--fill-active)',color:'var(--text-primary)'} : undefined}>All</button>
+        {head.map(t => {
+          const on = value === t;
+          return (
+            <button key={t} className={`pill${on ? ' on' : ''}`} onClick={() => onChange(on ? '' : t)}
+              style={on ? {background:tagColor(t),color:'#fff'} : {color:tagColor(t)}}>
+              {t}<span className="pill-count">{countOf(t)}</span>
+            </button>
+          );
+        })}
+      </div>
+
+      {rest.length > 0 && (
+        <div ref={boxRef} style={{position:'relative',flexShrink:0}}>
+          <button className="pill" onClick={() => setOpen(o => !o)} aria-expanded={open}>+{rest.length}</button>
+          {open && (
+            <div style={{position:'absolute',top:'calc(100% + 6px)',right:0,zIndex:60,width:230,padding:6,
+                         background:'var(--vibrancy)',backdropFilter:'blur(24px) saturate(180%)',WebkitBackdropFilter:'blur(24px) saturate(180%)',
+                         border:'1px solid var(--hairline)',borderRadius:'var(--r-md)',boxShadow:'var(--shadow-3)',animation:'popIn 160ms var(--ease) both'}}>
+              <input autoFocus value={query} onChange={e => setQuery(e.target.value)} placeholder="Find a tag…"
+                className="input" style={{marginBottom:6,fontSize:12.5,padding:'7px 10px'}}/>
+              <div className="scrollbar" style={{maxHeight:230,overflowY:'auto',display:'flex',flexDirection:'column',gap:1}}>
+                {matches.map(t => (
+                  <button key={t} onClick={() => { onChange(t); setOpen(false); setQuery(''); }}
+                    style={{display:'flex',alignItems:'center',gap:8,padding:'7px 9px',borderRadius:'var(--r-xs)',border:'none',
+                            background:'transparent',cursor:'pointer',fontFamily:'Manrope,sans-serif',fontSize:12.5,color:'var(--text-tertiary)',textAlign:'left',width:'100%'}}
+                    onMouseEnter={e => e.currentTarget.style.background='var(--fill-hover)'}
+                    onMouseLeave={e => e.currentTarget.style.background='transparent'}>
+                    <span style={{width:8,height:8,borderRadius:99,background:tagColor(t),flexShrink:0}}/>
+                    <span style={{flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{t}</span>
+                    <span style={{fontSize:10.5,color:'var(--text-muted)',fontFamily:'"JetBrains Mono",monospace'}}>{countOf(t)}</span>
+                  </button>
+                ))}
+                {!matches.length && <div style={{fontSize:12,color:'var(--text-muted)',padding:'8px 9px'}}>No match.</div>}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 /* ── journal ── */
 const MOODS = [
@@ -2812,7 +3056,11 @@ function NotesView({ state, update, isMobile, fullView, setFullView }) {
   const clearSel  = () => setSelectedIds(new Set());
 
   const selectedNote = state.notes.find(n=>n.id===noteId);
-  const allTags = [...new Set(state.notes.flatMap(n=>n.tags))];
+  /* Ranked by how often you actually use them, so the filter bar's visible
+     slots go to the tags that earn them — see TagFilterBar. */
+  const noteTagRanked = useMemo(()=>tagCounts(state.notes), [state.notes]);
+  const noteTagCounts = useMemo(()=>new Map(noteTagRanked), [noteTagRanked]);
+  const allTags       = useMemo(()=>noteTagRanked.map(([t])=>t), [noteTagRanked]);
 
   /* Mobile: full-screen editor with back button */
   if (isMobile && noteId && selectedNote) {
@@ -2863,70 +3111,60 @@ function NotesView({ state, update, isMobile, fullView, setFullView }) {
       )}
       <div style={{padding:'16px 14px 10px',flexShrink:0}}>
         <div style={{display:'flex',gap:8,marginBottom:dateFilter?6:10}}>
-          <input className="input" value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search notes…" style={{flex:1}}/>
+          <input className="input" value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search notes…" style={{flex:1,borderRadius:'var(--r-pill)',minWidth:0}}/>
           {/* calendar date-filter button */}
           <div style={{position:'relative',flexShrink:0}}>
-            <button onClick={()=>setShowCal(v=>!v)} title="Filter by date"
-              style={{background:showCal||dateFilter?'var(--accent)':'var(--bg-surface)',border:`1px solid ${showCal||dateFilter?'var(--accent)':'var(--border)'}`,borderRadius:8,padding:'8px 10px',cursor:'pointer',display:'flex',alignItems:'center',transition:'all 120ms'}}>
-              <svg style={{width:15,height:15,color:showCal||dateFilter?'#fff':'var(--text-secondary)'}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+            <button onClick={()=>setShowCal(v=>!v)} title="Filter by date" className="icon-btn"
+              style={{width:34,height:34,background:showCal||dateFilter?'var(--accent)':'var(--fill)',color:showCal||dateFilter?'#fff':'var(--text-secondary)'}}>
+              <svg style={{width:15,height:15}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
             </button>
             {showCal&&<MiniCalendar value={dateFilter} onChange={d=>{setDateFilter(d);setShowCal(false);}} onClose={()=>setShowCal(false)}/>}
           </div>
           {/* favourites-only toggle */}
-          <button onClick={()=>setFavOnly(v=>!v)} title={favOnly?'Show all notes':'Show favourites only'}
-            style={{background:favOnly?'var(--warning)':'var(--bg-surface)',border:`1px solid ${favOnly?'var(--warning)':'var(--border)'}`,borderRadius:8,padding:'8px 10px',cursor:'pointer',display:'flex',alignItems:'center',flexShrink:0,transition:'all 120ms'}}>
-            <svg style={{width:15,height:15,color:favOnly?'#fff':'var(--text-secondary)'}} viewBox="0 0 24 24" fill={favOnly?'currentColor':'none'} stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+          <button onClick={()=>setFavOnly(v=>!v)} title={favOnly?'Show all notes':'Show favourites only'} className="icon-btn"
+            style={{width:34,height:34,background:favOnly?'var(--warning)':'var(--fill)',color:favOnly?'#fff':'var(--text-secondary)'}}>
+            <svg style={{width:15,height:15}} viewBox="0 0 24 24" fill={favOnly?'currentColor':'none'} stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
               <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
             </svg>
           </button>
           {/* import a PDF as its own note */}
-          <button onClick={()=>{setImporting(null);pdfNoteInputRef.current?.click();}} title="Import a PDF as a note"
-            style={{background:'var(--bg-surface)',border:'1px solid var(--border)',borderRadius:8,padding:'8px 10px',cursor:'pointer',display:'flex',alignItems:'center',flexShrink:0,transition:'all 120ms'}}
-            onMouseEnter={e=>{e.currentTarget.style.borderColor='var(--border-strong)';}}
-            onMouseLeave={e=>{e.currentTarget.style.borderColor='var(--border)';}}>
-            <svg style={{width:15,height:15,color:'var(--text-secondary)'}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+          <button onClick={()=>{setImporting(null);pdfNoteInputRef.current?.click();}} title="Import a PDF as a note" className="icon-btn"
+            style={{width:34,height:34,background:'var(--fill)'}}>
+            <svg style={{width:15,height:15}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
               <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><polyline points="9 15 12 12 15 15"/>
             </svg>
           </button>
           <input ref={pdfNoteInputRef} type="file" accept="application/pdf,.pdf" style={{display:'none'}}
             onChange={e=>{const f=e.target.files?.[0];e.target.value='';importPdfAsNote(f);}}/>
-          <button className="btn-primary" onClick={newNote} style={{padding:'8px 12px',display:'flex',alignItems:'center'}}>
+          <button className="btn-primary" onClick={newNote} title="New note" style={{padding:0,width:34,height:34,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
             {React.cloneElement(Ic.plus,{style:{width:15,height:15}})}
           </button>
         </div>
         {importing && (
-          <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:8,padding:'5px 8px',borderRadius:7,
-                       background:importing.error?'rgba(244,63,94,.10)':'rgba(129,140,248,.10)',
-                       border:`1px solid ${importing.error?'rgba(244,63,94,.30)':'rgba(129,140,248,.30)'}`}}>
+          <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:8,padding:'5px 11px',borderRadius:'var(--r-pill)',
+                       background:importing.error?'rgba(244,63,94,.10)':'var(--accent-soft)',
+                       border:`1px solid ${importing.error?'rgba(244,63,94,.30)':'var(--accent-ring)'}`}}>
             <span style={{fontSize:11,color:importing.error?'var(--danger)':'var(--accent)',flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis'}}>{importing.label}</span>
             {importing.error && <button onClick={()=>setImporting(null)} style={{background:'none',border:'none',color:'var(--danger)',cursor:'pointer',fontSize:14,lineHeight:1,padding:'0 2px'}}>×</button>}
           </div>
         )}
         {favOnly&&(
-          <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:8,padding:'5px 8px',background:'#f59e0b15',border:'1px solid #f59e0b30',borderRadius:7}}>
+          <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:8,padding:'5px 11px',background:'rgba(245,158,11,.12)',border:'1px solid rgba(245,158,11,.28)',borderRadius:'var(--r-pill)'}}>
             <svg style={{width:11,height:11,color:'var(--warning)',flexShrink:0}} viewBox="0 0 24 24" fill="currentColor" stroke="none"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
             <span style={{fontSize:11,color:'var(--warning)',flex:1}}>Favourites only</span>
             <button onClick={()=>setFavOnly(false)} style={{background:'none',border:'none',color:'var(--warning)',cursor:'pointer',fontSize:14,lineHeight:1,padding:'0 2px'}}>×</button>
           </div>
         )}
         {dateFilter&&(
-          <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:8,padding:'5px 8px',background:'#818cf815',border:'1px solid #818cf830',borderRadius:7}}>
+          <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:8,padding:'5px 11px',background:'var(--accent-soft)',border:'1px solid var(--accent-ring)',borderRadius:'var(--r-pill)'}}>
             <svg style={{width:11,height:11,color:'var(--accent)',flexShrink:0}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
             <span style={{fontSize:11,color:'var(--accent)',flex:1}}>
-              {dateFilter===todayKey()?'Today':new Date(dateFilter+'T12:00').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})}
+              {friendlyDate(dateFilter)}
             </span>
             <button onClick={()=>setDateFilter(null)} style={{background:'none',border:'none',color:'var(--accent)',cursor:'pointer',fontSize:14,lineHeight:1,padding:'0 2px'}}>×</button>
           </div>
         )}
-        <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
-          <span onClick={()=>setFilterTag('')} className="tag" style={{background:filterTag===''?'#818cf830':'none',color:filterTag===''?'var(--accent)':'var(--text-secondary)',border:'1px solid var(--border)',cursor:'pointer'}}>All</span>
-          {allTags.map(t=>(
-            <span key={t} onClick={()=>setFilterTag(filterTag===t?'':t)} className="tag"
-              style={{background:filterTag===t?`${tagColor(t)}20`:'none',color:filterTag===t?tagColor(t):'var(--text-secondary)',border:'1px solid var(--border)',cursor:'pointer'}}>
-              {t}
-            </span>
-          ))}
-        </div>
+        <TagFilterBar tags={allTags} counts={noteTagCounts} value={filterTag} onChange={setFilterTag} max={2}/>
       </div>
       <div style={{flex:1,overflow:'auto',padding:'0 10px 10px'}} className="scrollbar">
         {filtered.length===0 && <div style={{color:'var(--text-muted)',fontSize:13,padding:'20px 4px'}}>No notes found.</div>}
@@ -2962,7 +3200,7 @@ function NotesView({ state, update, isMobile, fullView, setFullView }) {
                     {folder&&!filterFolder&&<span style={{fontSize:10,color:'var(--accent)',flexShrink:0,maxWidth:54,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>📁{folder.name}</span>}
                   </div>
                   <div style={{fontSize:12,color:'var(--text-secondary)',overflow:'hidden',display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical',lineHeight:1.5,marginBottom:6,wordBreak:'break-word'}}>
-                    {(n.body||'').replace(/```[\s\S]*?```/g,'[code]').slice(0,120)}
+                    {notePreview(n.body)}
                   </div>
                   {n.tags.length>0&&(
                     <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
@@ -3117,7 +3355,9 @@ function TasksView({ state, update, isMobile, pom, setPom }) {
   const PRIO_ORDER = { high:0, medium:1, low:2, none:3 };
   const byPrio = arr => [...arr].sort((a,b)=>(PRIO_ORDER[a.priority||'none']??3)-(PRIO_ORDER[b.priority||'none']??3));
   const taskFilter = t => !tagFilter || (t.tags||[]).includes(tagFilter);
-  const allTaskTags = [...new Set(state.tasks.flatMap(t=>t.tags||[]))];
+  const taskTagRanked = useMemo(()=>tagCounts(state.tasks), [state.tasks]);
+  const taskTagCounts = useMemo(()=>new Map(taskTagRanked), [taskTagRanked]);
+  const allTaskTags   = useMemo(()=>taskTagRanked.map(([t])=>t), [taskTagRanked]);
 
   const groups = [
     { label:'Today',    items: byPrio(state.tasks.filter(t=>!t.done&&t.due===todayKey()&&taskFilter(t))) },
@@ -3141,28 +3381,22 @@ function TasksView({ state, update, isMobile, pom, setPom }) {
         )}
       </div>
       {allTaskTags.length>0&&(
-        <div style={{display:'flex',gap:4,flexWrap:'wrap',marginBottom:18}}>
-          <span onClick={()=>setTagFilter('')} className="tag" style={{background:tagFilter===''?'#818cf830':'none',color:tagFilter===''?'var(--accent)':'var(--text-secondary)',border:'1px solid var(--border)',cursor:'pointer',fontSize:11}}>All</span>
-          {allTaskTags.map(tg=>(
-            <span key={tg} onClick={()=>setTagFilter(tagFilter===tg?'':tg)} className="tag"
-              style={{background:tagFilter===tg?`${tagColor(tg)}20`:'none',color:tagFilter===tg?tagColor(tg):'var(--text-secondary)',border:'1px solid var(--border)',cursor:'pointer',fontSize:11}}>
-              {tg}
-            </span>
-          ))}
+        <div style={{marginBottom:18}}>
+          <TagFilterBar tags={allTaskTags} counts={taskTagCounts} value={tagFilter} onChange={setTagFilter}/>
         </div>
       )}
 
       {/* add task */}
-      <form onSubmit={addTask} style={{display:'flex',flexWrap:'wrap',gap:8,marginBottom:24,background:'var(--modal-bg)',border:'1px solid var(--border)',borderRadius:10,padding:'10px 14px'}}>
+      <form onSubmit={addTask} style={{display:'flex',flexWrap:'wrap',gap:8,alignItems:'center',marginBottom:24,background:'var(--bg-surface-2)',border:'1px solid var(--border)',borderRadius:'var(--r-lg)',padding:'9px 10px 9px 16px',boxShadow:'var(--shadow-1),inset 0 1px 0 var(--hairline)'}}>
         <input className="input" value={newTitle} onChange={e=>setNewTitle(e.target.value)} placeholder="New task…" style={{flex:'1 1 160px',minWidth:0,background:'transparent',border:'none',padding:0,fontSize:14}}/>
         <div style={{display:'flex',gap:8,flexShrink:0,flexWrap:'wrap',...(isMobile?{width:'100%'}:{})}}>
-          <select value={newPrio} onChange={e=>setNewPrio(e.target.value)} style={{background:'var(--bg-surface)',border:'1px solid var(--border-strong)',borderRadius:6,color:PRIO[newPrio],fontSize:12,padding:'4px 8px'}}>
+          <select value={newPrio} onChange={e=>setNewPrio(e.target.value)} style={{background:'var(--fill)',border:'1px solid var(--hairline)',borderRadius:'var(--r-pill)',color:PRIO[newPrio],fontSize:12,fontWeight:600,padding:'6px 10px',cursor:'pointer',outline:'none',fontFamily:'Manrope,sans-serif'}}>
             {Object.keys(PRIO).map(p=><option key={p} value={p}>{p}</option>)}
           </select>
-          <input type="date" value={newDue} onChange={e=>setNewDue(e.target.value)} style={{background:'var(--bg-surface)',border:'1px solid var(--border-strong)',borderRadius:6,color:'var(--text-secondary)',fontSize:12,padding:'4px 8px',maxWidth:isMobile?'100%':130}}/>
-          <button className="btn-primary" type="submit" style={{padding:'6px 14px',fontSize:13,flexShrink:0}}>Add</button>
+          <input type="date" value={newDue} onChange={e=>setNewDue(e.target.value)} style={{background:'var(--fill)',border:'1px solid var(--hairline)',borderRadius:'var(--r-pill)',color:'var(--text-secondary)',fontSize:12,padding:'6px 12px',maxWidth:isMobile?'100%':140,outline:'none',fontFamily:'Manrope,sans-serif'}}/>
+          <button className="btn-primary" type="submit" style={{padding:'7px 18px',fontSize:13,flexShrink:0}}>Add</button>
           {(newTitle||newDue)&&(
-            <button type="button" onClick={cancelAdd} style={{padding:'6px 10px',fontSize:13,flexShrink:0,background:'none',border:'1px solid var(--border-strong)',borderRadius:6,color:'var(--text-secondary)',cursor:'pointer'}}>Cancel</button>
+            <button type="button" onClick={cancelAdd} className="btn-ghost" style={{padding:'7px 14px',fontSize:13,flexShrink:0}}>Cancel</button>
           )}
         </div>
       </form>
@@ -3211,9 +3445,9 @@ function TasksView({ state, update, isMobile, pom, setPom }) {
                   </div>
                 </form>
               ) : (
-                <div className="task-row" style={{display:'flex',alignItems:'center',gap:8,padding:'9px 12px',borderRadius:8,background: selectedTaskIds.has(t.id)?'#1a1a26':'var(--modal-bg)',border:`1px solid ${selectedTaskIds.has(t.id)?'#818cf840':'var(--border)'}`,flexWrap:'wrap'}}>
-                  {/* select checkbox */}
-                  <span className={`tick${selectedTaskIds.has(t.id)?' on':''}`}
+                <div className="task-row" style={{display:'flex',alignItems:'center',gap:9,padding:'10px 13px',borderRadius:'var(--r-md)',background: selectedTaskIds.has(t.id)?'var(--accent-soft)':'var(--bg-surface-2)',border:`1px solid ${selectedTaskIds.has(t.id)?'var(--accent-ring)':'var(--border)'}`,flexWrap:'wrap',transition:'background var(--dur) var(--ease),border-color var(--dur) var(--ease)'}}>
+                  {/* select checkbox — bulk-edit affordance, see .task-sel */}
+                  <span className={`tick task-sel${selectedTaskIds.has(t.id)?' on':''}`}
                     onClick={e=>toggleTaskSel(e,t.id)}
                     style={{width:15,height:15,borderRadius:4,flexShrink:0,opacity: selectedTaskIds.has(t.id)?1:undefined}}
                     title="Select">
@@ -3223,11 +3457,10 @@ function TasksView({ state, update, isMobile, pom, setPom }) {
                     {t.done&&<svg style={{width:10,height:10}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><polyline points="20 6 9 17 4 12"/></svg>}
                   </span>
                   <span style={{fontSize:13.5,color:t.done?'var(--text-muted)':'var(--text-primary)',textDecoration:t.done?'line-through':'none',wordBreak:'break-word',overflowWrap:'anywhere',minWidth:0}}>{t.title}</span>
-                  {/* task tags */}
-                  {(t.tags||[]).map(tg=>(
-                    <span key={tg} className="tag" style={{background:`${tagColor(tg)}18`,color:tagColor(tg),fontSize:10,padding:'1px 6px',cursor:'pointer'}}
-                      onClick={e=>{e.stopPropagation();removeTaskTag(t.id,tg);}} title="Click to remove tag">{tg}</span>
-                  ))}
+                  {/* Capped: past two, tags stop labelling the row and start
+                      competing with the title. The rest are reachable — and
+                      removable — through this row's edit mode. */}
+                  <TagChips tags={t.tags||[]} max={2} size={10} onPick={tg=>removeTaskTag(t.id,tg)}/>
                   {/* quick add tag */}
                   {!t.done&&(
                     <form onSubmit={e=>{e.preventDefault();const inp=e.currentTarget.querySelector('input');const v=(inp.value||'').trim();if(v){addTaskTag(t.id,v);inp.value='';inp.blur();}}} style={{display:'inline-flex',alignItems:'center'}}>
@@ -3242,13 +3475,17 @@ function TasksView({ state, update, isMobile, pom, setPom }) {
                   )}
                   <div style={{flex:1}}/>
                   <span style={{width:8,height:8,borderRadius:99,background:PRIO[t.priority||'none'],flexShrink:0}}/>
-                  {t.due&&<span style={{fontSize:11,color:'var(--text-secondary)'}}>{t.due}</span>}
+                  {t.due&&(()=>{ const over = !t.done && t.due < todayKey(); const soon = !t.done && t.due === todayKey();
+                    return <span style={{fontSize:11,fontWeight:over||soon?600:500,color:over?'var(--danger)':soon?'var(--warning)':'var(--text-secondary)',flexShrink:0,whiteSpace:'nowrap'}}
+                      title={t.due}>{over?'Overdue · ':''}{friendlyDate(t.due)}</span>; })()}
                   {t.timeBlock&&<span style={{fontSize:10,color:'var(--warning)',display:'flex',alignItems:'center',gap:2,flexShrink:0}}
                     title={`Time cap: ${t.timeBlock}m${t.timeSpent?` · ${Math.round(t.timeSpent/60)}m spent`:''}`}>
                     <svg style={{width:9,height:9}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
                     {t.timeBlock}m
                   </span>}
-                  <button onClick={()=>setExpanded({...expanded,[t.id]:!expanded[t.id]})} style={{background:'none',border:'none',color:expanded[t.id]?'var(--accent)':'var(--text-muted)',cursor:'pointer',padding:0,display:'flex',alignItems:'center',gap:4}} title={t.subtasks.length>0?`${t.subtasks.filter(s=>s.done).length}/${t.subtasks.length} subtasks`:'Add subtasks'}>
+                  <button onClick={()=>setExpanded({...expanded,[t.id]:!expanded[t.id]})} className="icon-btn"
+                    style={{width:'auto',minWidth:30,gap:4,padding:'0 7px',color:expanded[t.id]?'var(--accent)':'var(--text-secondary)'}}
+                    title={t.subtasks.length>0?`${t.subtasks.filter(s=>s.done).length}/${t.subtasks.length} subtasks`:'Add subtasks'}>
                     <svg style={{width:13,height:13}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="9" y1="6" x2="20" y2="6"/><line x1="9" y1="12" x2="20" y2="12"/><line x1="9" y1="18" x2="20" y2="18"/><circle cx="4" cy="6" r="1.5" fill="currentColor" stroke="none"/><circle cx="4" cy="12" r="1.5" fill="currentColor" stroke="none"/><circle cx="4" cy="18" r="1.5" fill="currentColor" stroke="none"/></svg>
                     {t.subtasks.length>0&&<span style={{fontSize:10,color:expanded[t.id]?'var(--accent)':'var(--text-muted)'}}>{t.subtasks.filter(s=>s.done).length}/{t.subtasks.length}</span>}
                   </button>
@@ -3269,7 +3506,7 @@ function TasksView({ state, update, isMobile, pom, setPom }) {
                         setPom(next);
                         schedulePomodoroNotification(buildPomNotif(next,t));
                       }
-                    }} className="del-btn"
+                    }} className="icon-btn"
                       title={pom?.taskId===t.id?(pom.awaitingStart?'Start next phase':pom.paused?'Resume timer':'Pause timer'):(t.timeBlock?`Start ${t.timeBlock}m cap timer`:'Start pomodoro')}
                       style={{color:pom?.taskId===t.id?(pom.awaitingStart||pom.paused?'var(--warning)':'var(--success)'):'var(--text-muted)'}}>
                       {pom?.taskId===t.id&&!pom.paused&&!pom.awaitingStart
@@ -3279,11 +3516,11 @@ function TasksView({ state, update, isMobile, pom, setPom }) {
                     </button>
                   )}
                   {!t.done&&(
-                    <button onClick={()=>startEdit(t)} className="del-btn" style={{color:'var(--text-muted)'}} title="Edit task">
+                    <button onClick={()=>startEdit(t)} className="icon-btn" title="Edit task">
                       <svg style={{width:13,height:13}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
                     </button>
                   )}
-                  <button onClick={()=>delTask(t.id)} className="del-btn" title="Delete task">
+                  <button onClick={()=>delTask(t.id)} className="icon-btn danger" title="Delete task">
                     <svg style={{width:13,height:13}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
                   </button>
                 </div>
@@ -4030,7 +4267,7 @@ function TodayView({ state, update, isMobile }) {
                   <span style={{fontSize:14,flexShrink:0}}>{n.emoji||'📝'}</span>
                   <span style={{fontSize:13,fontWeight:600,color:'var(--text-primary)',minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{n.title||'Untitled'}</span>
                 </div>
-                <div style={{fontSize:11.5,color:'var(--text-secondary)',display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical',overflow:'hidden',wordBreak:'break-word'}}>{(n.body||'').replace(/```[\s\S]*?```/g,'[code]').slice(0,120)}</div>
+                <div style={{fontSize:11.5,color:'var(--text-secondary)',display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical',overflow:'hidden',wordBreak:'break-word'}}>{notePreview(n.body)}</div>
               </div>
             ))}
           </div>
@@ -4055,7 +4292,7 @@ function TodayView({ state, update, isMobile }) {
                     <span style={{fontSize:14,flexShrink:0}}>{n.emoji||'📝'}</span>
                     <span style={{fontSize:13,fontWeight:600,color:'var(--text-primary)',minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{n.title||'Untitled'}</span>
                   </div>
-                  <div style={{fontSize:11.5,color:'var(--text-secondary)',display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical',overflow:'hidden',wordBreak:'break-word'}}>{(n.body||'').replace(/```[\s\S]*?```/g,'[code]').slice(0,120)}</div>
+                  <div style={{fontSize:11.5,color:'var(--text-secondary)',display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical',overflow:'hidden',wordBreak:'break-word'}}>{notePreview(n.body)}</div>
                 </div>
               ))}
             </div>
@@ -4068,26 +4305,137 @@ function TodayView({ state, update, isMobile }) {
 
 /* ── TagsView ── */
 function TagsView({ state, update, isMobile }) {
-  const allTags = [...new Set(state.notes.flatMap(n=>n.tags))];
+  const [query, setQuery] = useState('');
+  const [sort, setSort]   = useState('used'); /* 'used' | 'az' */
+
+  /* Tags live on notes, tasks and journal entries. Counting all three is the
+     difference between "1 note" on almost every card — the old view's problem
+     — and a number that reflects how much a tag is actually carrying. */
+  const ranked = useMemo(() => {
+    const counts = new Map();
+    const bump = (t, kind) => {
+      const c = counts.get(t) || { tag:t, notes:0, tasks:0, journal:0, total:0 };
+      c[kind]++; c.total++; counts.set(t, c);
+    };
+    state.notes.forEach(n => (n.tags||[]).forEach(t => bump(t,'notes')));
+    state.tasks.forEach(t2 => (t2.tags||[]).forEach(t => bump(t,'tasks')));
+    (state.journal||[]).forEach(j => (j.tags||[]).forEach(t => bump(t,'journal')));
+    return [...counts.values()];
+  }, [state.notes, state.tasks, state.journal]);
+
+  const visible = useMemo(() => {
+    const q = query.trim().replace(/^#/, '').toLowerCase();
+    const list = q ? ranked.filter(c => c.tag.toLowerCase().includes(q)) : ranked;
+    return [...list].sort(sort === 'az'
+      ? (a,b) => a.tag.localeCompare(b.tag)
+      : (a,b) => b.total - a.total || a.tag.localeCompare(b.tag));
+  }, [ranked, query, sort]);
+
+  const openTag = t => update('ui', { ...state.ui, view:'notes', filterTag:t, noteId:null });
+
+  /* The most-used handful get a real card with a breakdown; everything else
+     becomes a dense capsule. A tag used once doesn't need the same footprint
+     as one used twenty times, and giving it that footprint is exactly what
+     made this screen a wall to scan. Suppressed while searching or sorting
+     A–Z, where a single uniform list is what you actually want. */
+  const featured = (sort === 'used' && !query.trim()) ? visible.slice(0, 6) : [];
+  const rest     = featured.length ? visible.slice(featured.length) : visible;
+
+  const totalUses = ranked.reduce((n,c) => n + c.total, 0);
+
   return (
     <div style={{flex:1,overflow:'auto',padding:isMobile?'18px 16px':'28px 32px'}} className="scrollbar">
-      <h1 style={{fontFamily:'Fraunces,serif',fontSize:isMobile?22:26,fontWeight:600,marginBottom:24}}>Tags</h1>
-      <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(200px,1fr))',gap:12}}>
-        {allTags.map(t=>{
-          const count = state.notes.filter(n=>n.tags.includes(t)).length;
-          return (
-            <div key={t} className="card" style={{padding:'16px 18px',cursor:'pointer',transition:'border-color 150ms'}}
-              onClick={()=>update('ui',{...state.ui,view:'notes',filterTag:t})}
-              onMouseEnter={e=>e.currentTarget.style.borderColor=tagColor(t)}
-              onMouseLeave={e=>e.currentTarget.style.borderColor='var(--border)'}>
-              <div style={{width:10,height:10,borderRadius:99,background:tagColor(t),marginBottom:8}}/>
-              <div style={{fontSize:14,fontWeight:600,color:'var(--text-primary)',marginBottom:3}}>{t}</div>
-              <div style={{fontSize:12,color:'var(--text-secondary)'}}>{count} note{count!==1?'s':''}</div>
-            </div>
-          );
-        })}
-        {allTags.length===0&&<div style={{color:'var(--text-muted)',fontSize:13}}>No tags yet. Add tags to your notes.</div>}
+      <div style={{display:'flex',alignItems:'flex-end',justifyContent:'space-between',gap:16,flexWrap:'wrap',marginBottom:18}}>
+        <div>
+          <h1 style={{fontFamily:'Fraunces,serif',fontSize:isMobile?22:26,fontWeight:600}}>Tags</h1>
+          <div style={{fontSize:12.5,color:'var(--text-secondary)',marginTop:3}}>
+            {ranked.length} tag{ranked.length!==1?'s':''} · {totalUses} use{totalUses!==1?'s':''}
+          </div>
+        </div>
+        {ranked.length > 1 && (
+          <div className="seg" role="group" aria-label="Sort tags">
+            <button aria-pressed={sort==='used'} onClick={()=>setSort('used')}>Most used</button>
+            <button aria-pressed={sort==='az'}   onClick={()=>setSort('az')}>A–Z</button>
+          </div>
+        )}
       </div>
+
+      {ranked.length === 0 ? (
+        <div style={{color:'var(--text-muted)',fontSize:13}}>No tags yet. Add tags to your notes.</div>
+      ) : (<>
+        {ranked.length > 8 && (
+          <div style={{position:'relative',maxWidth:340,marginBottom:22}}>
+            <svg style={{position:'absolute',left:11,top:'50%',transform:'translateY(-50%)',width:13,height:13,color:'var(--text-muted)',pointerEvents:'none'}}
+              viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+              <circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+            </svg>
+            <input className="input" value={query} onChange={e=>setQuery(e.target.value)}
+              placeholder="Filter tags…" style={{paddingLeft:32,borderRadius:'var(--r-pill)'}}/>
+            {query && (
+              <button onClick={()=>setQuery('')} className="icon-btn"
+                style={{position:'absolute',right:4,top:'50%',transform:'translateY(-50%)',width:24,height:24}} title="Clear">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+              </button>
+            )}
+          </div>
+        )}
+
+        {featured.length > 0 && (
+          <div style={{marginBottom:26}}>
+            <div style={{fontSize:10,fontWeight:700,letterSpacing:'.09em',color:'var(--text-muted)',textTransform:'uppercase',marginBottom:10}}>Most used</div>
+            <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr 1fr':'repeat(auto-fill,minmax(190px,1fr))',gap:10}}>
+              {featured.map(c => (
+                <button key={c.tag} onClick={()=>openTag(c.tag)} className="card"
+                  style={{padding:'14px 15px',cursor:'pointer',textAlign:'left',border:'1px solid var(--border)',
+                          fontFamily:'Manrope,sans-serif',transition:'transform var(--dur) var(--ease),border-color var(--dur) var(--ease),box-shadow var(--dur) var(--ease)'}}
+                  onMouseEnter={e=>{e.currentTarget.style.borderColor=`${tagColor(c.tag)}66`;e.currentTarget.style.transform='translateY(-2px)';e.currentTarget.style.boxShadow='var(--shadow-2)';}}
+                  onMouseLeave={e=>{e.currentTarget.style.borderColor='var(--border)';e.currentTarget.style.transform='none';e.currentTarget.style.boxShadow='var(--shadow-1)';}}>
+                  <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:9}}>
+                    <span style={{width:26,height:26,borderRadius:'var(--r-sm)',background:`${tagColor(c.tag)}24`,color:tagColor(c.tag),
+                                  display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,fontSize:13,fontWeight:700}}>#</span>
+                    <span style={{fontSize:13.5,fontWeight:600,color:'var(--text-primary)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',minWidth:0,flex:1}}>
+                      {c.tag.replace(/^#/,'')}
+                    </span>
+                    <span style={{fontSize:15,fontWeight:700,color:tagColor(c.tag),fontFamily:'"JetBrains Mono",monospace'}}>{c.total}</span>
+                  </div>
+                  <div style={{display:'flex',gap:8,fontSize:11,color:'var(--text-secondary)',flexWrap:'wrap'}}>
+                    {c.notes>0   && <span>{c.notes} note{c.notes!==1?'s':''}</span>}
+                    {c.tasks>0   && <span>{c.tasks} task{c.tasks!==1?'s':''}</span>}
+                    {c.journal>0 && <span>{c.journal} entr{c.journal!==1?'ies':'y'}</span>}
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {rest.length > 0 && (
+          <div>
+            {featured.length > 0 && (
+              <div style={{fontSize:10,fontWeight:700,letterSpacing:'.09em',color:'var(--text-muted)',textTransform:'uppercase',marginBottom:10}}>
+                Everything else
+              </div>
+            )}
+            {/* A capsule cloud, not a card grid: one line each, so thirty tags
+                read as one block you can scan rather than thirty objects. */}
+            <div style={{display:'flex',flexWrap:'wrap',gap:7}}>
+              {rest.map(c => (
+                <button key={c.tag} onClick={()=>openTag(c.tag)} className="pill"
+                  style={{color:tagColor(c.tag),background:`${tagColor(c.tag)}14`}}
+                  title={`${c.notes} notes · ${c.tasks} tasks · ${c.journal} journal`}
+                  onMouseEnter={e=>e.currentTarget.style.background=`${tagColor(c.tag)}26`}
+                  onMouseLeave={e=>e.currentTarget.style.background=`${tagColor(c.tag)}14`}>
+                  {c.tag}<span className="pill-count">{c.total}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {visible.length === 0 && (
+          <div style={{color:'var(--text-muted)',fontSize:13}}>No tags match "{query}".</div>
+        )}
+      </>)}
     </div>
   );
 }
@@ -4596,7 +4944,9 @@ function KanbanView({ state, update, isMobile }) {
                         draggable={!open}
                         onDragStart={e=>onCardDragStart(e, t.id)}
                         onDragEnd={onCardDragEnd}
-                        style={{background:'var(--modal-bg)',border:`1px solid ${t.blocker?.active?'rgba(244,63,94,.45)':'var(--border)'}`,borderRadius:8,overflow:'hidden',transition:'opacity 120ms,border-color 120ms',opacity:isBeingDragged?0.35:1,cursor:open?'default':'grab'}}>
+                        style={{background:'var(--bg-surface-2)',border:`1px solid ${t.blocker?.active?'rgba(244,63,94,.45)':'var(--border)'}`,borderRadius:'var(--r-md)',overflow:'hidden',boxShadow:'var(--shadow-1)',transition:'opacity var(--dur) var(--ease),border-color var(--dur) var(--ease),transform var(--dur) var(--ease),box-shadow var(--dur) var(--ease)',opacity:isBeingDragged?0.35:1,cursor:open?'default':'grab'}}
+                        onMouseEnter={e=>{if(!open){e.currentTarget.style.transform='translateY(-1px)';e.currentTarget.style.boxShadow='var(--shadow-2)';}}}
+                        onMouseLeave={e=>{e.currentTarget.style.transform='none';e.currentTarget.style.boxShadow='var(--shadow-1)';}}>
                         {/* card face */}
                         <div style={{padding:'8px 8px 8px 4px',display:'flex',alignItems:'flex-start',gap:4}}>
                           <Grip/>
@@ -4607,7 +4957,9 @@ function KanbanView({ state, update, isMobile }) {
                         </div>
                         {/* card meta */}
                         <div style={{padding:'0 10px 7px',display:'flex',gap:5,alignItems:'center',flexWrap:'wrap'}}>
-                          {t.due && <span style={{fontSize:10,color:'var(--text-secondary)'}}>{t.due}</span>}
+                          {t.due && (()=>{ const over = !t.done && t.due < todayKey();
+                            return <span style={{fontSize:10,fontWeight:over?600:500,color:over?'var(--danger)':'var(--text-secondary)',whiteSpace:'nowrap'}}
+                              title={t.due}>{friendlyDate(t.due)}</span>; })()}
                           {linkedNote && (
                             <span style={{fontSize:10,color:'var(--accent)',display:'flex',alignItems:'center',gap:2,cursor:'pointer'}}
                               onClick={e=>{e.stopPropagation();update('ui',{...state.ui,view:'notes',noteId:linkedNote.id});}}>
@@ -4615,9 +4967,7 @@ function KanbanView({ state, update, isMobile }) {
                             </span>
                           )}
                           {t.taskNotes && <span style={{fontSize:10,color:'var(--text-secondary)'}}>💬</span>}
-                          {(t.tags||[]).map(tg=>(
-                            <span key={tg} className="tag" style={{background:`${tagColor(tg)}18`,color:tagColor(tg),fontSize:10,padding:'1px 5px'}}>{tg}</span>
-                          ))}
+                          <TagChips tags={t.tags||[]} max={2} size={10}/>
                           {(t.subtasks||[]).length>0&&(
                             <span style={{fontSize:10,color: t.subtasks.filter(s=>s.done).length===t.subtasks.length?'var(--success)':'var(--text-secondary)',display:'flex',alignItems:'center',gap:2}}>
                               <svg style={{width:9,height:9}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="9 11 12 14 22 4"/></svg>
@@ -4932,7 +5282,7 @@ function Sidebar({ state, update, syncStatus, onSync, collapsed, onToggle }) {
       {/* folders */}
       <div style={{padding:'4px 8px 0',flexShrink:0}}>
         <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'4px 4px 4px'}}>
-          <span style={{fontSize:10,fontWeight:700,letterSpacing:'.08em',color:'var(--text-muted)',textTransform:'uppercase'}}>Folders</span>
+          <span style={{fontSize:10.5,fontWeight:700,letterSpacing:'.07em',color:'var(--text-secondary)',textTransform:'uppercase',opacity:.75}}>Folders</span>
           <button onClick={()=>{setAddingFolder(true);setNewFolderName('');}}
             style={{background:'none',border:'none',color:'var(--text-muted)',cursor:'pointer',padding:'1px 4px',borderRadius:4,fontSize:14,lineHeight:1,transition:'color 110ms'}}
             title="New folder"
@@ -4996,7 +5346,7 @@ function Sidebar({ state, update, syncStatus, onSync, collapsed, onToggle }) {
 
       {/* recent notes */}
       <div style={{flex:1,overflow:'auto',padding:'8px 8px'}} className="scrollbar">
-        <div style={{fontSize:10,fontWeight:700,letterSpacing:'.08em',color:'var(--text-muted)',textTransform:'uppercase',padding:'4px 4px 8px'}}>Recent</div>
+        <div style={{fontSize:10.5,fontWeight:700,letterSpacing:'.07em',color:'var(--text-secondary)',textTransform:'uppercase',opacity:.75,padding:'4px 4px 8px'}}>Recent</div>
         {recent.map(n=>(
           <div key={n.id} className={`nav-item${state.ui.noteId===n.id&&view==='notes'?' active':''}`}
             onClick={()=>update('ui',{...state.ui,view:'notes',noteId:n.id})}
