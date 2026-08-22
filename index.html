@@ -235,10 +235,11 @@ input:focus,textarea:focus{outline:none}
 
 /* Row actions stay out of the way until the pointer is on the row — the
    Finder/Mail behaviour. On touch there is no hover, so they stay visible.  */
-.task-row .icon-btn,.task-row .task-sel{opacity:0;transition:opacity var(--dur) var(--ease),background var(--dur) var(--ease),color var(--dur) var(--ease),transform 140ms var(--ease)}
+.task-row .icon-btn,.task-row .task-sel,.task-row .task-tagbtn{opacity:0;transition:opacity var(--dur) var(--ease),background var(--dur) var(--ease),color var(--dur) var(--ease),transform 140ms var(--ease)}
 .task-row:hover .icon-btn,.task-row:focus-within .icon-btn,
 .task-row:hover .task-sel,.task-row:focus-within .task-sel,.task-row .task-sel.on{opacity:1}
-@media(hover:none){.task-row .icon-btn,.task-row .task-sel{opacity:1}}
+.task-row:hover .task-tagbtn,.task-row:focus-within .task-tagbtn{opacity:1}
+@media(hover:none){.task-row .icon-btn,.task-row .task-sel,.task-row .task-tagbtn{opacity:1}}
 .task-row:hover{border-color:var(--border-strong)!important}
 
 /* A row in a grouped list — the iOS/macOS settings-table idiom. */
@@ -316,7 +317,7 @@ body.pwa-install-banner #app{padding-top:52px}
 <script src="/vendor/prism-csharp.min.js"></script>
 
 <script type="text/babel" data-presets="react">
-const { useState, useEffect, useRef, useMemo, useCallback } = React;
+const { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback } = React;
 
 /* ── utils ── */
 const uid = () => Math.random().toString(36).slice(2,9);
@@ -1766,30 +1767,131 @@ function EmojiPicker({ onSelect, onClose }) {
   );
 }
 
-/* ── MiniCalendar (for notes date filter) ── */
+/* ── date + tag popover primitives ── */
 const MCAL_MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 const MCAL_DAYS   = ['S','M','T','W','T','F','S'];
 
-function MiniCalendar({ value, onChange, onClose }) {
+/* ── Popover ───────────────────────────────────────────────────────────────
+   Anchored floating panel, rendered through a portal into <body>.
+
+   The portal is the point: an absolutely-positioned panel inside a narrow
+   scrolling column (the notes list, a task row) gets clipped by that column's
+   own bounds, which is how the notes date picker ended up half off-screen.
+   Out here it only has to fit the viewport, and it flips above or slides
+   sideways to do that.                                                     */
+function Popover({ anchorRef, onClose, children, width = 250, align = 'start', gap = 6 }) {
   const ref = useRef(null);
+  const [pos, setPos] = useState(null);
+
+  useLayoutEffect(() => {
+    const place = () => {
+      const a = anchorRef.current?.getBoundingClientRect();
+      if (!a) return;
+      const h  = ref.current?.offsetHeight || 300;
+      const vw = window.innerWidth, vh = window.innerHeight, m = 8;
+
+      let left = align === 'end' ? a.right - width : a.left;
+      left = Math.max(m, Math.min(left, vw - width - m));
+
+      /* Below by default; above when that would run off the bottom and there
+         is more room up top. */
+      const below = a.bottom + gap;
+      const top   = (below + h > vh - m && a.top - gap - h > m) ? a.top - gap - h : below;
+
+      setPos({ left, top: Math.max(m, Math.min(top, vh - h - m)), maxHeight: vh - 2 * m });
+    };
+    place();
+    window.addEventListener('resize', place);
+    window.addEventListener('scroll', place, true);
+    return () => { window.removeEventListener('resize', place); window.removeEventListener('scroll', place, true); };
+  }, [anchorRef, width, align, gap]);
+
+  useEffect(() => {
+    const onDown = e => {
+      if (ref.current?.contains(e.target) || anchorRef.current?.contains(e.target)) return;
+      onClose();
+    };
+    const onKey = e => { if (e.key === 'Escape') { e.stopPropagation(); onClose(); } };
+    setTimeout(() => document.addEventListener('mousedown', onDown), 0);
+    document.addEventListener('keydown', onKey);
+    return () => { document.removeEventListener('mousedown', onDown); document.removeEventListener('keydown', onKey); };
+  }, [onClose, anchorRef]);
+
+  return ReactDOM.createPortal(
+    <div ref={ref} style={{position:'fixed',zIndex:400,width,left:pos?.left ?? -9999,top:pos?.top ?? -9999,
+                           maxHeight:pos?.maxHeight,overflow:'auto',visibility:pos?'visible':'hidden',
+                           background:'var(--vibrancy)',WebkitBackdropFilter:'blur(24px) saturate(180%)',backdropFilter:'blur(24px) saturate(180%)',
+                           border:'1px solid var(--hairline)',borderRadius:'var(--r-md)',boxShadow:'var(--shadow-3)',
+                           padding:8,animation:'popIn 160ms var(--ease) both'}}
+      className="scrollbar">
+      {children}
+    </div>,
+    document.body,
+  );
+}
+
+/* ── DateField ─────────────────────────────────────────────────────────────
+   Replaces <input type="date">. The native control renders as whatever the OS
+   decides — a grey dd/mm/yyyy stub on desktop Chrome with a picker that owes
+   nothing to the rest of the app — so it was the one control on the page that
+   always looked borrowed. This one shows the date the way the task rows do
+   ("Today", "Tomorrow", "Mon 24 Aug") and opens the app's own calendar.    */
+function DateField({ value, onChange, placeholder = 'Add date', allowClear = true, tone }) {
+  const btnRef = useRef(null);
+  const [open, setOpen] = useState(false);
+  const overdue = value && value < todayKey();
+  return (
+    <>
+      <button ref={btnRef} type="button" onClick={() => setOpen(o => !o)} aria-expanded={open}
+        className="pill" style={{gap:7,color:value ? (tone || (overdue ? 'var(--danger)' : 'var(--text-primary)')) : 'var(--text-secondary)'}}>
+        <svg style={{width:12,height:12,flexShrink:0,opacity:.85}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+          <rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>
+        </svg>
+        {value ? friendlyDate(value) : placeholder}
+      </button>
+      {open && (
+        <Popover anchorRef={btnRef} onClose={() => setOpen(false)} width={252}>
+          <CalendarPanel value={value} allowClear={allowClear}
+            onPick={k => { onChange(k); setOpen(false); }}
+            onClear={() => { onChange(''); setOpen(false); }}/>
+        </Popover>
+      )}
+    </>
+  );
+}
+
+/* The calendar grid itself, shared by DateField and the notes date filter, so
+   picking a date looks the same everywhere it happens. */
+function CalendarPanel({ value, onPick, onClear, allowClear = true, clearLabel = 'Clear' }) {
   const init = value ? parseKey(value) : new Date();
   const [view, setView] = useState(new Date(init.getFullYear(), init.getMonth(), 1));
-  useEffect(() => {
-    const h = e => { if (!ref.current?.contains(e.target)) onClose(); };
-    setTimeout(() => document.addEventListener('mousedown', h), 0);
-    return () => document.removeEventListener('mousedown', h);
-  }, []);
   const yr = view.getFullYear(), mo = view.getMonth();
   const firstDow = new Date(yr, mo, 1).getDay();
-  const days     = new Date(yr, mo + 1, 0).getDate();
-  const cells    = Array(firstDow).fill(null).concat(Array.from({length:days},(_,i)=>i+1));
+  const days  = new Date(yr, mo + 1, 0).getDate();
+  const cells = Array(firstDow).fill(null).concat(Array.from({length:days},(_,i)=>i+1));
+  const shift = d => { const x = new Date(); x.setDate(x.getDate()+d); return fmtKey(x); };
+
+  const navBtn = {background:'none',border:'none',color:'var(--text-secondary)',fontSize:16,cursor:'pointer',
+                  lineHeight:1,padding:'2px 8px',borderRadius:'var(--r-pill)',fontFamily:'Manrope,sans-serif'};
+
   return (
-    <div ref={ref} style={{position:'absolute',top:'calc(100% + 4px)',right:0,zIndex:200,background:'var(--bg-surface)',border:'1px solid var(--border-strong)',borderRadius:12,padding:'12px 12px 10px',width:224,boxShadow:'0 12px 40px rgba(0,0,0,.8)'}}>
-      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:8}}>
-        <button onClick={()=>setView(new Date(yr,mo-1,1))} style={{background:'none',border:'none',color:'var(--text-secondary)',fontSize:17,cursor:'pointer',lineHeight:1,padding:'0 6px',borderRadius:5}} onMouseEnter={e=>e.currentTarget.style.color='var(--text-primary)'} onMouseLeave={e=>e.currentTarget.style.color='var(--text-secondary)'}>‹</button>
-        <span style={{fontSize:12,fontWeight:700,color:'var(--text-primary)'}}>{MCAL_MONTHS[mo]} {yr}</span>
-        <button onClick={()=>setView(new Date(yr,mo+1,1))} style={{background:'none',border:'none',color:'var(--text-secondary)',fontSize:17,cursor:'pointer',lineHeight:1,padding:'0 6px',borderRadius:5}} onMouseEnter={e=>e.currentTarget.style.color='var(--text-primary)'} onMouseLeave={e=>e.currentTarget.style.color='var(--text-secondary)'}>›</button>
+    <div>
+      {/* Shortcuts first: most dates you set are one of these three, and
+          reaching them through the grid is three interactions instead of one. */}
+      <div style={{display:'flex',gap:5,marginBottom:8}}>
+        {[['Today',0],['Tomorrow',1],['Next week',7]].map(([label,d])=>(
+          <button key={label} type="button" onClick={()=>onPick(shift(d))} className="pill"
+            style={{flex:1,justifyContent:'center',padding:'5px 6px',fontSize:11,
+                    ...(value===shift(d)?{background:'var(--accent)',color:'#fff'}:{})}}>{label}</button>
+        ))}
       </div>
+
+      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:6}}>
+        <button type="button" onClick={()=>setView(new Date(yr,mo-1,1))} style={navBtn} aria-label="Previous month">‹</button>
+        <span style={{fontSize:12.5,fontWeight:700,color:'var(--text-primary)'}}>{MCAL_MONTHS[mo]} {yr}</span>
+        <button type="button" onClick={()=>setView(new Date(yr,mo+1,1))} style={navBtn} aria-label="Next month">›</button>
+      </div>
+
       <div style={{display:'grid',gridTemplateColumns:'repeat(7,1fr)',gap:2,marginBottom:3}}>
         {MCAL_DAYS.map((d,i)=><div key={i} style={{textAlign:'center',fontSize:10,color:'var(--text-muted)',fontWeight:700,padding:'2px 0'}}>{d}</div>)}
       </div>
@@ -1797,26 +1899,110 @@ function MiniCalendar({ value, onChange, onClose }) {
         {cells.map((d,i)=>{
           if (!d) return <div key={i}/>;
           const key = fmtKey(new Date(yr,mo,d));
-          const sel = key === value;
-          const isToday = key === todayKey();
+          const sel = key === value, isToday = key === todayKey();
           return (
-            <button key={i} onClick={()=>{ onChange(sel ? null : key); if (!sel) onClose(); }}
-              style={{background:sel?'var(--accent)':isToday&&!sel?'var(--bg-surface)':'none',border:isToday&&!sel?'1px solid #818cf840':'1px solid transparent',borderRadius:6,color:sel?'#fff':isToday?'var(--accent)':'var(--text-tertiary)',fontSize:11,padding:'4px 0',cursor:'pointer',transition:'all 80ms',textAlign:'center',lineHeight:1.4}}
-              onMouseEnter={e=>{ if(!sel) e.currentTarget.style.background='var(--border-strong)'; }}
-              onMouseLeave={e=>{ if(!sel) e.currentTarget.style.background=isToday?'var(--bg-surface)':'none'; }}>
+            <button key={i} type="button" onClick={()=>onPick(sel ? '' : key)}
+              style={{background:sel?'var(--accent)':'none',border:'1px solid '+(isToday&&!sel?'var(--accent-ring)':'transparent'),
+                      borderRadius:'var(--r-pill)',color:sel?'#fff':isToday?'var(--accent)':'var(--text-tertiary)',
+                      fontSize:11.5,padding:'5px 0',cursor:'pointer',transition:'background 100ms var(--ease)',
+                      textAlign:'center',lineHeight:1.4,fontFamily:'Manrope,sans-serif',fontWeight:sel||isToday?700:500}}
+              onMouseEnter={e=>{ if(!sel) e.currentTarget.style.background='var(--fill-hover)'; }}
+              onMouseLeave={e=>{ if(!sel) e.currentTarget.style.background='none'; }}>
               {d}
             </button>
           );
         })}
       </div>
-      {value&&<button onClick={()=>onChange(null)} style={{marginTop:8,width:'100%',background:'none',border:'1px solid var(--border-strong)',borderRadius:6,color:'var(--text-secondary)',fontSize:11,padding:'5px',cursor:'pointer',fontFamily:'Manrope,sans-serif',transition:'all 110ms'}} onMouseEnter={e=>{e.currentTarget.style.borderColor='var(--accent)';e.currentTarget.style.color='var(--accent)';}} onMouseLeave={e=>{e.currentTarget.style.borderColor='var(--border-strong)';e.currentTarget.style.color='var(--text-secondary)';}}>Clear date filter</button>}
+      {allowClear && value && (
+        <button type="button" onClick={onClear} className="btn-ghost"
+          style={{marginTop:8,width:'100%',fontSize:11.5,padding:'6px'}}>{clearLabel}</button>
+      )}
     </div>
   );
 }
 
-/* ── JournalDatePicker — like MiniCalendar, but adds year stepping too
-   («/»), since browsing a journal reasonably means jumping whole years back,
-   not just months. Selecting a day hands its key up and closes. ── */
+/* ── TagEditor ─────────────────────────────────────────────────────────────
+   Adding a tag used to mean typing into a 1-character-wide box and trusting a
+   <datalist> to offer the tags you already had — which meant re-typing an
+   existing tag was as likely as reusing it, and typos quietly became new
+   tags. This shows what already exists, ticks off what's applied, and only
+   offers to create when nothing matches.                                   */
+function TagEditor({ tags = [], allTags = [], onChange, label = 'Tag', compact }) {
+  const btnRef = useRef(null);
+  const [open, setOpen]   = useState(false);
+  const [query, setQuery] = useState('');
+
+  const q = query.trim().replace(/^#+/, '');
+  const applied = new Set(tags);
+  /* What's already on the item sorts to the top, so opening the picker answers
+     "what does this have?" before you've read a single row. Tags applied but
+     never registered elsewhere still appear, or removing one would be
+     impossible from here. */
+  const options = [...new Set([...tags, ...allTags])]
+    .filter(t => t.replace(/^#/,'').toLowerCase().includes(q.toLowerCase()))
+    .sort((a,b) => (applied.has(b) ? 1 : 0) - (applied.has(a) ? 1 : 0) || a.localeCompare(b));
+  const canCreate = q.length > 0 && !allTags.some(t => t.toLowerCase() === ('#'+q).toLowerCase());
+
+  const toggle = t => onChange(applied.has(t) ? tags.filter(x => x !== t) : [...tags, t]);
+  const create = () => {
+    const clean = '#' + q.replace(/\s+/g, '-');
+    if (!applied.has(clean)) onChange([...tags, clean]);
+    setQuery('');
+  };
+
+  return (
+    <>
+      <button ref={btnRef} type="button" onClick={() => setOpen(o => !o)} aria-expanded={open}
+        className="pill" title="Add or remove tags"
+        style={compact ? {padding:'3px 9px',fontSize:11,gap:4} : {gap:5}}>
+        <svg style={{width:11,height:11,flexShrink:0}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round">
+          <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+        </svg>
+        {label}
+      </button>
+      {open && (
+        <Popover anchorRef={btnRef} onClose={() => { setOpen(false); setQuery(''); }} width={230}>
+          <input autoFocus value={query} onChange={e => setQuery(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); if (canCreate) create(); else if (options[0]) toggle(options[0]); } }}
+            placeholder="Find or create…" className="input" style={{marginBottom:6,fontSize:12.5,padding:'7px 10px'}}/>
+          <div className="scrollbar" style={{maxHeight:220,overflowY:'auto',display:'flex',flexDirection:'column',gap:1}}>
+            {options.map(t => {
+              const on = applied.has(t);
+              return (
+                <button key={t} type="button" onClick={() => toggle(t)}
+                  style={{display:'flex',alignItems:'center',gap:8,padding:'7px 9px',borderRadius:'var(--r-xs)',border:'none',
+                          background:'transparent',cursor:'pointer',fontFamily:'Manrope,sans-serif',fontSize:12.5,
+                          color:on?'var(--text-primary)':'var(--text-tertiary)',textAlign:'left',width:'100%'}}
+                  onMouseEnter={e => e.currentTarget.style.background='var(--fill-hover)'}
+                  onMouseLeave={e => e.currentTarget.style.background='transparent'}>
+                  <span style={{width:8,height:8,borderRadius:99,background:tagColor(t),flexShrink:0}}/>
+                  <span style={{flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{t}</span>
+                  {on && <svg style={{width:12,height:12,color:'var(--accent)',flexShrink:0}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>}
+                </button>
+              );
+            })}
+            {canCreate && (
+              <button type="button" onClick={create}
+                style={{display:'flex',alignItems:'center',gap:8,padding:'7px 9px',borderRadius:'var(--r-xs)',border:'none',
+                        background:'transparent',cursor:'pointer',fontFamily:'Manrope,sans-serif',fontSize:12.5,
+                        color:'var(--accent)',textAlign:'left',width:'100%'}}
+                onMouseEnter={e => e.currentTarget.style.background='var(--fill-hover)'}
+                onMouseLeave={e => e.currentTarget.style.background='transparent'}>
+                <svg style={{width:11,height:11,flexShrink:0}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                <span style={{flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>Create #{q.replace(/\s+/g,'-')}</span>
+              </button>
+            )}
+            {!options.length && !canCreate && <div style={{fontSize:12,color:'var(--text-muted)',padding:'8px 9px'}}>No tags yet.</div>}
+          </div>
+        </Popover>
+      )}
+    </>
+  );
+}
+
+/* ── JournalDatePicker — the same idea as CalendarPanel, but with year
+   stepping («/»), since browsing a journal reasonably means jumping whole
+   years back, not just months. Selecting a day hands its key up and closes. ── */
 function JournalDatePicker({ value, onChange, onClose }) {
   const ref = useRef(null);
   const init = value ? parseKey(value) : new Date();
@@ -2904,6 +3090,7 @@ function NotesView({ state, update, isMobile, fullView, setFullView }) {
   const [ctxMenu, setCtxMenu] = useState(null);
   const [dateFilter, setDateFilter] = useState(null); // 'YYYY-MM-DD' or null
   const [showCal, setShowCal] = useState(false);
+  const calBtnRef = useRef(null);
   const [favOnly, setFavOnly] = useState(false);
   const filterTag = state.ui.filterTag || '';
   const filterFolder = state.ui.folderId || null;
@@ -3113,12 +3300,18 @@ function NotesView({ state, update, isMobile, fullView, setFullView }) {
         <div style={{display:'flex',gap:8,marginBottom:dateFilter?6:10}}>
           <input className="input" value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search notes…" style={{flex:1,borderRadius:'var(--r-pill)',minWidth:0}}/>
           {/* calendar date-filter button */}
-          <div style={{position:'relative',flexShrink:0}}>
-            <button onClick={()=>setShowCal(v=>!v)} title="Filter by date" className="icon-btn"
+          <div style={{flexShrink:0}}>
+            <button ref={calBtnRef} onClick={()=>setShowCal(v=>!v)} title="Filter by date" className="icon-btn" aria-expanded={showCal}
               style={{width:34,height:34,background:showCal||dateFilter?'var(--accent)':'var(--fill)',color:showCal||dateFilter?'#fff':'var(--text-secondary)'}}>
               <svg style={{width:15,height:15}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
             </button>
-            {showCal&&<MiniCalendar value={dateFilter} onChange={d=>{setDateFilter(d);setShowCal(false);}} onClose={()=>setShowCal(false)}/>}
+            {showCal&&(
+              <Popover anchorRef={calBtnRef} onClose={()=>setShowCal(false)} width={252}>
+                <CalendarPanel value={dateFilter} clearLabel="Clear date filter"
+                  onPick={d=>{setDateFilter(d||null);setShowCal(false);}}
+                  onClear={()=>{setDateFilter(null);setShowCal(false);}}/>
+              </Popover>
+            )}
           </div>
           {/* favourites-only toggle */}
           <button onClick={()=>setFavOnly(v=>!v)} title={favOnly?'Show all notes':'Show favourites only'} className="icon-btn"
@@ -3297,8 +3490,15 @@ function TasksView({ state, update, isMobile, pom, setPom }) {
   const [editingSub, setEditingSub] = useState(null);
   const [selectedTaskIds, setSelectedTaskIds] = useState(new Set());
   const [ctxMenu, setCtxMenu] = useState(null);
-  const [tagFilter, setTagFilter] = useState('');
-  const [editTagInput, setEditTagInput] = useState('');
+  const [tagFilter, setTagFilter] = useState(() => state.ui.filterTag || '');
+  /* The Tags view navigates here with ui.filterTag set. Consume it into this
+     view's own filter and clear it, so it applies once rather than pinning the
+     screen to that tag for the rest of the session. */
+  useEffect(() => {
+    if (!state.ui.filterTag) return;
+    setTagFilter(state.ui.filterTag);
+    update('ui', { ...state.ui, filterTag:'' });
+  }, [state.ui.filterTag]);
 
   const toggleTask = id => update('tasks', state.tasks.map(t=>t.id===id?{...t,done:!t.done,updated:Date.now()}:t));
   const toggleSub = (tid,sid) => update('tasks', state.tasks.map(t=>t.id===tid?{...t,subtasks:t.subtasks.map(s=>s.id===sid?{...s,done:!s.done}:s),updated:Date.now()}:t));
@@ -3319,6 +3519,23 @@ function TasksView({ state, update, isMobile, pom, setPom }) {
     if (!state.tags.includes(c)) update('tags',[...state.tags,c]);
   };
   const removeTaskTag = (id, tag) => update('tasks',state.tasks.map(t=>t.id===id?{...t,tags:(t.tags||[]).filter(tg=>tg!==tag),updated:Date.now()}:t));
+  /* Whole-set write, for the tag picker — it hands back the final list rather
+     than one add or one remove at a time. Any genuinely new tag is registered
+     in state.tags so it shows up as an option everywhere else. */
+  const setTaskTags = (id, next) => {
+    update('tasks', state.tasks.map(t => t.id===id ? {...t, tags:next, updated:Date.now()} : t));
+    const fresh = next.filter(tg => !state.tags.includes(tg));
+    if (fresh.length) update('tags', [...state.tags, ...fresh]);
+  };
+  /* Every tag the vault knows about, not just the ones already on a task —
+     otherwise tagging a task with a tag you only use on notes means retyping
+     it and risking a near-duplicate. */
+  const knownTags = useMemo(() => [...new Set([
+    ...(state.tags||[]),
+    ...state.tasks.flatMap(t => t.tags||[]),
+    ...state.notes.flatMap(n => n.tags||[]),
+    ...(state.journal||[]).flatMap(j => j.tags||[]),
+  ])].sort((a,b)=>a.localeCompare(b)), [state.tags, state.tasks, state.notes, state.journal]);
 
   const addTask = e => {
     e.preventDefault();
@@ -3393,7 +3610,7 @@ function TasksView({ state, update, isMobile, pom, setPom }) {
           <select value={newPrio} onChange={e=>setNewPrio(e.target.value)} style={{background:'var(--fill)',border:'1px solid var(--hairline)',borderRadius:'var(--r-pill)',color:PRIO[newPrio],fontSize:12,fontWeight:600,padding:'6px 10px',cursor:'pointer',outline:'none',fontFamily:'Manrope,sans-serif'}}>
             {Object.keys(PRIO).map(p=><option key={p} value={p}>{p}</option>)}
           </select>
-          <input type="date" value={newDue} onChange={e=>setNewDue(e.target.value)} style={{background:'var(--fill)',border:'1px solid var(--hairline)',borderRadius:'var(--r-pill)',color:'var(--text-secondary)',fontSize:12,padding:'6px 12px',maxWidth:isMobile?'100%':140,outline:'none',fontFamily:'Manrope,sans-serif'}}/>
+          <DateField value={newDue} onChange={setNewDue} placeholder="Due date"/>
           <button className="btn-primary" type="submit" style={{padding:'7px 18px',fontSize:13,flexShrink:0}}>Add</button>
           {(newTitle||newDue)&&(
             <button type="button" onClick={cancelAdd} className="btn-ghost" style={{padding:'7px 14px',fontSize:13,flexShrink:0}}>Cancel</button>
@@ -3416,8 +3633,7 @@ function TasksView({ state, update, isMobile, pom, setPom }) {
                       style={{background:'var(--bg-surface)',border:'1px solid var(--border-strong)',borderRadius:6,color:PRIO[editing.priority],fontSize:12,padding:'3px 7px'}}>
                       {Object.keys(PRIO).map(p=><option key={p} value={p}>{p}</option>)}
                     </select>
-                    <input type="date" value={editing.due} onChange={e=>setEditing({...editing,due:e.target.value})}
-                      style={{background:'var(--bg-surface)',border:'1px solid var(--border-strong)',borderRadius:6,color:'var(--text-secondary)',fontSize:12,padding:'3px 7px',maxWidth:isMobile?'100%':130}}/>
+                    <DateField value={editing.due} onChange={d=>setEditing({...editing,due:d})} placeholder="Due date"/>
                     <input type="number" min="1" value={editing.timeBlock} onChange={e=>setEditing({...editing,timeBlock:e.target.value})}
                       placeholder="cap (min)" title="Time cap: max total minutes allowed on this task"
                       style={{background:'var(--bg-surface)',border:'1px solid var(--border-strong)',borderRadius:6,color:'var(--warning)',fontSize:12,padding:'3px 7px',width:78}}/>
@@ -3429,17 +3645,12 @@ function TasksView({ state, update, isMobile, pom, setPom }) {
                       style={{background:'var(--bg-surface)',border:'1px solid #10b98130',borderRadius:6,color:'var(--success)',fontSize:12,padding:'3px 7px',width:56}}/>
                     {/* tag management in edit */}
                     {(editing.tags||[]).map(tg=>(
-                      <span key={tg} className="tag" style={{background:`${tagColor(tg)}18`,color:tagColor(tg),fontSize:11,padding:'2px 7px'}}>
+                      <span key={tg} className="tag" style={{background:`${tagColor(tg)}22`,color:tagColor(tg),fontSize:11,padding:'3px 8px'}}>
                         {tg}<span onClick={()=>setEditing({...editing,tags:(editing.tags||[]).filter(x=>x!==tg)})} style={{cursor:'pointer',marginLeft:3,opacity:.7}}>×</span>
                       </span>
                     ))}
-                    <form onSubmit={e=>{e.preventDefault();const v=editTagInput.trim();if(!v)return;const c=v.startsWith('#')?v:'#'+v;if(!(editing.tags||[]).includes(c))setEditing({...editing,tags:[...(editing.tags||[]),c]});setEditTagInput('');}} style={{display:'inline-flex'}}>
-                      <input value={editTagInput} onChange={e=>setEditTagInput(e.target.value)} list="task-edit-tag-opts"
-                        placeholder="+tag" style={{background:'var(--bg-surface)',border:'1px solid var(--border-strong)',borderRadius:6,color:'var(--text-secondary)',fontSize:11,padding:'3px 6px',width:68,outline:'none',fontFamily:'Manrope,sans-serif'}}/>
-                      <datalist id="task-edit-tag-opts">
-                        {state.tags.filter(tg=>!(editing.tags||[]).includes(tg)).map(tg=><option key={tg} value={tg}/>)}
-                      </datalist>
-                    </form>
+                    <TagEditor tags={editing.tags||[]} allTags={knownTags} compact
+                      onChange={next=>setEditing({...editing,tags:next})}/>
                     <button className="btn-primary" type="submit" style={{padding:'4px 12px',fontSize:12}}>Save</button>
                     <button type="button" onClick={()=>setEditing(null)} style={{padding:'4px 10px',fontSize:12,background:'none',border:'1px solid var(--border-strong)',borderRadius:6,color:'var(--text-secondary)',cursor:'pointer'}}>Cancel</button>
                   </div>
@@ -3461,17 +3672,14 @@ function TasksView({ state, update, isMobile, pom, setPom }) {
                       competing with the title. The rest are reachable — and
                       removable — through this row's edit mode. */}
                   <TagChips tags={t.tags||[]} max={2} size={10} onPick={tg=>removeTaskTag(t.id,tg)}/>
-                  {/* quick add tag */}
+                  {/* Quick tag edit — same picker as edit mode, so the row and
+                      the form can't drift apart. Hidden until hover, like the
+                      other row actions. */}
                   {!t.done&&(
-                    <form onSubmit={e=>{e.preventDefault();const inp=e.currentTarget.querySelector('input');const v=(inp.value||'').trim();if(v){addTaskTag(t.id,v);inp.value='';inp.blur();}}} style={{display:'inline-flex',alignItems:'center'}}>
-                      <input list={`qtags-${t.id}`} placeholder="#"
-                        style={{width:'1.1em',background:'none',border:'none',color:'var(--text-muted)',fontSize:11,padding:0,outline:'none',fontFamily:'Manrope,sans-serif',cursor:'pointer',transition:'width 150ms,color 150ms'}}
-                        onFocus={e=>{e.target.style.width='72px';e.target.style.color='var(--text-secondary)';}}
-                        onBlur={e=>{e.target.style.width='1.1em';e.target.style.color='var(--text-muted)';e.target.value='';}}/>
-                      <datalist id={`qtags-${t.id}`}>
-                        {state.tags.filter(tg=>!(t.tags||[]).includes(tg)).map(tg=><option key={tg} value={tg}/>)}
-                      </datalist>
-                    </form>
+                    <span className="task-tagbtn">
+                      <TagEditor tags={t.tags||[]} allTags={knownTags} compact label="Tag"
+                        onChange={next=>setTaskTags(t.id,next)}/>
+                    </span>
                   )}
                   <div style={{flex:1}}/>
                   <span style={{width:8,height:8,borderRadius:99,background:PRIO[t.priority||'none'],flexShrink:0}}/>
@@ -4304,9 +4512,18 @@ function TodayView({ state, update, isMobile }) {
 }
 
 /* ── TagsView ── */
+const TAG_SOURCES = [
+  { id:'all',     label:'All',     key:null,      noun:'use'   },
+  { id:'notes',   label:'Notes',   key:'notes',   noun:'note'  },
+  { id:'tasks',   label:'Tasks',   key:'tasks',   noun:'task'  },
+  { id:'journal', label:'Journal', key:'journal', noun:'entry' },
+];
+const plural = (n, noun) => n === 1 ? noun : noun === 'entry' ? 'entries' : noun + 's';
+
 function TagsView({ state, update, isMobile }) {
-  const [query, setQuery] = useState('');
-  const [sort, setSort]   = useState('used'); /* 'used' | 'az' */
+  const [query, setQuery]   = useState('');
+  const [sort, setSort]     = useState('used'); /* 'used' | 'az' */
+  const [source, setSource] = useState('all');  /* see TAG_SOURCES */
 
   /* Tags live on notes, tasks and journal entries. Counting all three is the
      difference between "1 note" on almost every card — the old view's problem
@@ -4323,13 +4540,25 @@ function TagsView({ state, update, isMobile }) {
     return [...counts.values()];
   }, [state.notes, state.tasks, state.journal]);
 
+  /* Which count the screen is ranking and showing. Filtering by source is not
+     the same as filtering the list: a tag used on ten notes and one task is a
+     different thing under Notes than under Tasks, so the count switches with
+     the source and the ordering follows it. */
+  const src   = TAG_SOURCES.find(s => s.id === source) || TAG_SOURCES[0];
+  const countOf = c => src.key ? c[src.key] : c.total;
+
+  const inSource = useMemo(
+    () => src.key ? ranked.filter(c => c[src.key] > 0) : ranked,
+    [ranked, src.key],
+  );
+
   const visible = useMemo(() => {
     const q = query.trim().replace(/^#/, '').toLowerCase();
-    const list = q ? ranked.filter(c => c.tag.toLowerCase().includes(q)) : ranked;
+    const list = q ? inSource.filter(c => c.tag.toLowerCase().includes(q)) : inSource;
     return [...list].sort(sort === 'az'
       ? (a,b) => a.tag.localeCompare(b.tag)
-      : (a,b) => b.total - a.total || a.tag.localeCompare(b.tag));
-  }, [ranked, query, sort]);
+      : (a,b) => countOf(b) - countOf(a) || a.tag.localeCompare(b.tag));
+  }, [inSource, query, sort, src.key]);
 
   const openTag = t => update('ui', { ...state.ui, view:'notes', filterTag:t, noteId:null });
 
@@ -4341,7 +4570,15 @@ function TagsView({ state, update, isMobile }) {
   const featured = (sort === 'used' && !query.trim()) ? visible.slice(0, 6) : [];
   const rest     = featured.length ? visible.slice(featured.length) : visible;
 
-  const totalUses = ranked.reduce((n,c) => n + c.total, 0);
+  const totalUses = inSource.reduce((n,c) => n + countOf(c), 0);
+  /* Where a tag click should land. Following the source you're browsing is the
+     only behaviour that isn't a surprise — clicking a tag under Tasks used to
+     drop you into filtered Notes. */
+  const openTagIn = t => source === 'tasks'
+    ? update('ui', { ...state.ui, view:'tasks', filterTag:t })
+    : source === 'journal'
+      ? update('ui', { ...state.ui, view:'journal', filterTag:t })
+      : openTag(t);
 
   return (
     <div style={{flex:1,overflow:'auto',padding:isMobile?'18px 16px':'28px 32px'}} className="scrollbar">
@@ -4349,7 +4586,7 @@ function TagsView({ state, update, isMobile }) {
         <div>
           <h1 style={{fontFamily:'Fraunces,serif',fontSize:isMobile?22:26,fontWeight:600}}>Tags</h1>
           <div style={{fontSize:12.5,color:'var(--text-secondary)',marginTop:3}}>
-            {ranked.length} tag{ranked.length!==1?'s':''} · {totalUses} use{totalUses!==1?'s':''}
+            {inSource.length} tag{inSource.length!==1?'s':''} · {totalUses} {plural(totalUses, src.noun)}
           </div>
         </div>
         {ranked.length > 1 && (
@@ -4363,7 +4600,23 @@ function TagsView({ state, update, isMobile }) {
       {ranked.length === 0 ? (
         <div style={{color:'var(--text-muted)',fontSize:13}}>No tags yet. Add tags to your notes.</div>
       ) : (<>
-        {ranked.length > 8 && (
+        {/* Where a tag is used is usually the question — a task tag and a note
+            tag do different jobs even when they share a name. */}
+        <div className="no-scrollbar" style={{display:'flex',gap:6,marginBottom:18,overflowX:'auto',paddingBottom:2}}>
+          {TAG_SOURCES.map(o => {
+            const n = o.key ? ranked.filter(c => c[o.key] > 0).length : ranked.length;
+            const on = source === o.id;
+            return (
+              <button key={o.id} onClick={()=>setSource(o.id)} aria-pressed={on}
+                className={`pill${on ? ' on' : ''}`} disabled={n === 0 && !on}
+                style={n === 0 && !on ? {opacity:.4,cursor:'default'} : undefined}>
+                {o.label}<span className="pill-count">{n}</span>
+              </button>
+            );
+          })}
+        </div>
+
+        {inSource.length > 8 && (
           <div style={{position:'relative',maxWidth:340,marginBottom:22}}>
             <svg style={{position:'absolute',left:11,top:'50%',transform:'translateY(-50%)',width:13,height:13,color:'var(--text-muted)',pointerEvents:'none'}}
               viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
@@ -4385,7 +4638,7 @@ function TagsView({ state, update, isMobile }) {
             <div style={{fontSize:10,fontWeight:700,letterSpacing:'.09em',color:'var(--text-muted)',textTransform:'uppercase',marginBottom:10}}>Most used</div>
             <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr 1fr':'repeat(auto-fill,minmax(190px,1fr))',gap:10}}>
               {featured.map(c => (
-                <button key={c.tag} onClick={()=>openTag(c.tag)} className="card"
+                <button key={c.tag} onClick={()=>openTagIn(c.tag)} className="card"
                   style={{padding:'14px 15px',cursor:'pointer',textAlign:'left',border:'1px solid var(--border)',
                           fontFamily:'Manrope,sans-serif',transition:'transform var(--dur) var(--ease),border-color var(--dur) var(--ease),box-shadow var(--dur) var(--ease)'}}
                   onMouseEnter={e=>{e.currentTarget.style.borderColor=`${tagColor(c.tag)}66`;e.currentTarget.style.transform='translateY(-2px)';e.currentTarget.style.boxShadow='var(--shadow-2)';}}
@@ -4396,12 +4649,18 @@ function TagsView({ state, update, isMobile }) {
                     <span style={{fontSize:13.5,fontWeight:600,color:'var(--text-primary)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',minWidth:0,flex:1}}>
                       {c.tag.replace(/^#/,'')}
                     </span>
-                    <span style={{fontSize:15,fontWeight:700,color:tagColor(c.tag),fontFamily:'"JetBrains Mono",monospace'}}>{c.total}</span>
+                    <span style={{fontSize:15,fontWeight:700,color:tagColor(c.tag),fontFamily:'"JetBrains Mono",monospace'}}>{countOf(c)}</span>
                   </div>
+                  {/* Under All, the breakdown is the interesting part; under a
+                      single source there is nothing to break down. */}
                   <div style={{display:'flex',gap:8,fontSize:11,color:'var(--text-secondary)',flexWrap:'wrap'}}>
-                    {c.notes>0   && <span>{c.notes} note{c.notes!==1?'s':''}</span>}
-                    {c.tasks>0   && <span>{c.tasks} task{c.tasks!==1?'s':''}</span>}
-                    {c.journal>0 && <span>{c.journal} entr{c.journal!==1?'ies':'y'}</span>}
+                    {src.key
+                      ? <span>{countOf(c)} {plural(countOf(c), src.noun)}</span>
+                      : <>
+                          {c.notes>0   && <span>{c.notes} {plural(c.notes,'note')}</span>}
+                          {c.tasks>0   && <span>{c.tasks} {plural(c.tasks,'task')}</span>}
+                          {c.journal>0 && <span>{c.journal} {plural(c.journal,'entry')}</span>}
+                        </>}
                   </div>
                 </button>
               ))}
@@ -4420,12 +4679,12 @@ function TagsView({ state, update, isMobile }) {
                 read as one block you can scan rather than thirty objects. */}
             <div style={{display:'flex',flexWrap:'wrap',gap:7}}>
               {rest.map(c => (
-                <button key={c.tag} onClick={()=>openTag(c.tag)} className="pill"
+                <button key={c.tag} onClick={()=>openTagIn(c.tag)} className="pill"
                   style={{color:tagColor(c.tag),background:`${tagColor(c.tag)}14`}}
                   title={`${c.notes} notes · ${c.tasks} tasks · ${c.journal} journal`}
                   onMouseEnter={e=>e.currentTarget.style.background=`${tagColor(c.tag)}26`}
                   onMouseLeave={e=>e.currentTarget.style.background=`${tagColor(c.tag)}14`}>
-                  {c.tag}<span className="pill-count">{c.total}</span>
+                  {c.tag}<span className="pill-count">{countOf(c)}</span>
                 </button>
               ))}
             </div>
@@ -4433,7 +4692,9 @@ function TagsView({ state, update, isMobile }) {
         )}
 
         {visible.length === 0 && (
-          <div style={{color:'var(--text-muted)',fontSize:13}}>No tags match "{query}".</div>
+          <div style={{color:'var(--text-muted)',fontSize:13}}>
+            {query.trim() ? `No tags match "${query}".` : `No tags used on ${src.label.toLowerCase()} yet.`}
+          </div>
         )}
       </>)}
     </div>
@@ -4512,7 +4773,14 @@ function JournalView({ state, update, isMobile }) {
   const [editText, setEditText]           = useState('');
   const [editMood, setEditMood]           = useState(null);
   const [editTags, setEditTags]           = useState([]);
-  const [search, setSearch]               = useState('');
+  const [search, setSearch]               = useState(() => state.ui.filterTag || '');
+  /* Handed over from the Tags view — journal search already matches tags, so
+     the tag becomes the query. Cleared once consumed. */
+  useEffect(() => {
+    if (!state.ui.filterTag) return;
+    setSearch(state.ui.filterTag);
+    update('ui', { ...state.ui, filterTag:'' });
+  }, [state.ui.filterTag]);
   /* Which Monday–Sunday week the feed shows. Defaults to the week containing
      today, so a fresh week starts empty and fills in day by day — browsing
      history via JournalWeekNav moves this without touching "today" itself. */
