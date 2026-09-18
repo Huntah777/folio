@@ -3574,16 +3574,6 @@ function TasksView({ state, update, isMobile, pom, setPom }) {
     const fresh = next.filter(tg => !state.tags.includes(tg));
     if (fresh.length) update('tags', [...state.tags, ...fresh]);
   };
-  /* Every tag the vault knows about, not just the ones already on a task —
-     otherwise tagging a task with a tag you only use on notes means retyping
-     it and risking a near-duplicate. */
-  const knownTags = useMemo(() => [...new Set([
-    ...(state.tags||[]),
-    ...state.tasks.flatMap(t => t.tags||[]),
-    ...state.notes.flatMap(n => n.tags||[]),
-    ...(state.journal||[]).flatMap(j => j.tags||[]),
-  ])].sort((a,b)=>a.localeCompare(b)), [state.tags, state.tasks, state.notes, state.journal]);
-
   const taskOnlyTags = useMemo(() => [...new Set([
     ...(state.tags||[]),
     ...state.tasks.flatMap(t => t.tags||[]),
@@ -3739,7 +3729,7 @@ function TasksView({ state, update, isMobile, pom, setPom }) {
                         {tg}<span onClick={()=>setEditing({...editing,tags:(editing.tags||[]).filter(x=>x!==tg)})} style={{cursor:'pointer',marginLeft:3,opacity:.7}}>×</span>
                       </span>
                     ))}
-                    <TagEditor tags={editing.tags||[]} allTags={knownTags} compact
+                    <TagEditor tags={editing.tags||[]} allTags={taskOnlyTags} compact
                       onChange={next=>setEditing({...editing,tags:next})}/>
                     <button className="btn-primary" type="submit" style={{padding:'4px 12px',fontSize:12}}>Save</button>
                     <button type="button" onClick={()=>setEditing(null)} style={{padding:'4px 10px',fontSize:12,background:'none',border:'1px solid var(--border-strong)',borderRadius:6,color:'var(--text-secondary)',cursor:'pointer'}}>Cancel</button>
@@ -3773,7 +3763,7 @@ function TasksView({ state, update, isMobile, pom, setPom }) {
                       other row actions. */}
                   {!t.done&&(
                     <span className="task-tagbtn">
-                      <TagEditor tags={t.tags||[]} allTags={knownTags} compact label="Tag"
+                      <TagEditor tags={t.tags||[]} allTags={taskOnlyTags} compact label="Tag"
                         onChange={next=>setTaskTags(t.id,next)}/>
                     </span>
                   )}
