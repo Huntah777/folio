@@ -657,16 +657,33 @@ async function activatePush() {
   return registerPush();
 }
 
-async function scheduleNotifications(meetings, salah) {
+async function scheduleNotifications(state) {
   /* Local timers for while the page is open… */
   if (('Notification' in window) && Notification.permission === 'granted' && navigator.serviceWorker?.controller) {
-    const schedule = await buildSchedule(meetings, salah);
+    const schedule = await buildSchedule(state?.meetings || [], state?.salah);
     navigator.serviceWorker.controller.postMessage({ type: 'SCHEDULE_NOTIFICATIONS', notifications: schedule });
   }
   /* …and make sure the server still knows about this device. */
   registerPush();
 }
-const scheduleCalendarNotifications = (m) => scheduleNotifications(m, null);
+
+/* Routes an immediate notification through the SW so it works on iOS PWA where
+   new Notification() is blocked and the controller may be null on first load. */
+async function showNotificationViaSW(title, body, tag) {
+  const ctrl = navigator.serviceWorker?.controller;
+  const t = tag || 'folio';
+  if (ctrl) {
+    ctrl.postMessage({ type: 'SHOW_NOTIFICATION', title, body: body || '', tag: t });
+    return true;
+  }
+  const reg = await navigator.serviceWorker?.ready.catch(() => null);
+  if (!reg?.showNotification) return false;
+  await reg.showNotification(title, {
+    body: body || '', icon: '/icons/icon-192.png', badge: '/icons/icon-192.png',
+    tag: t, renotify: true, vibrate: [200, 100, 200],
+  });
+  return true;
+}
 
 /* ── storage + sync ── */
 const STORE     = 'folio_v1';
@@ -3894,7 +3911,7 @@ function CalendarView({ state, update, isMobile }) {
     const perm = await Notification.requestPermission();
     setNotifPerm(perm);
     if (perm !== 'granted') return;
-    scheduleNotifications(state.meetings, state.salah);
+    scheduleNotifications(state);
     const ok = await activatePush();
     if (ok) setPushActive(true);
     setPushToast(ok ? 'active' : 'foreground');
@@ -6389,8 +6406,7 @@ function NotificationsSettings({ state }) {
   const [deviceSub, setDeviceSub] = useState(null);   /* null=checking, false=none, PushSubscription */
   const [serverInfo, setServerInfo] = useState(null); /* null=checking, false=not registered, {updatedAt,sentToday} */
   const [pushBusy, setPushBusy]   = useState(false);
-  const [pushMsg, setPushMsg]     = useState(null);
-  const [testMsg, setTestMsg]     = useState(null);
+  const [msg, setMsg]             = useState(null);   /* plain string — reconnect and test share one slot */
   const [upcoming, setUpcoming]   = useState(null);
   const [history, setHistory]     = useState(null);
 
@@ -6439,7 +6455,7 @@ function NotificationsSettings({ state }) {
       const perm = await Notification.requestPermission();
       setNotifPerm(perm);
       if (perm === 'granted') {
-        scheduleNotifications(state.meetings, state.salah);
+        scheduleNotifications(state);
         await activatePush();
         await refreshDeviceStatus();
       }
@@ -6450,7 +6466,7 @@ function NotificationsSettings({ state }) {
      first matters: if the old subscription is the broken one, re-POSTing it
      would just re-register the same dead endpoint. */
   const reconnectPush = async () => {
-    setPushBusy(true); setPushMsg(null);
+    setPushBusy(true); setMsg(null);
     try {
       const reg = await navigator.serviceWorker.ready;
       const old = await reg.pushManager.getSubscription();
@@ -6467,25 +6483,19 @@ function NotificationsSettings({ state }) {
       }
       const ok = await registerPush();
       await refreshDeviceStatus();
-      setPushMsg(ok
-        ? { text: 'Reconnected — this device is registered for background alerts.' }
-        : { text: 'Could not reconnect. Check the sync token and notification permission.', error: true });
+      setMsg(ok
+        ? 'Reconnected — this device is registered for background alerts.'
+        : 'Could not reconnect. Check the sync token and notification permission.');
     } catch (e) {
-      setPushMsg({ text: e?.message || 'Could not reconnect.', error: true });
+      setMsg(e?.message || 'Could not reconnect.');
     }
     setPushBusy(false);
   };
 
   const sendTestNotification = async () => {
-    setTestMsg(null);
-    try {
-      const reg = await navigator.serviceWorker.ready;
-      await reg.showNotification('Test notification', {
-        body: "If you can see this, notifications are working on this device.",
-        icon: '/icons/icon-192.png', badge: '/icons/icon-192.png', tag: 'admin-test', renotify: true,
-      });
-      setTestMsg({ text: 'Sent — check your notification tray.' });
-    } catch { setTestMsg({ text: 'Could not show a test notification.', error: true }); }
+    setMsg(null);
+    const ok = await showNotificationViaSW('Test notification', 'If you can see this, notifications are working on this device.', 'folio-test');
+    setMsg(ok ? 'Sent — check your notification tray.' : 'Could not show a test notification.');
   };
 
   const fmtWhen = ms => new Date(ms).toLocaleString([], { weekday:'short', month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' });
@@ -6528,8 +6538,7 @@ function NotificationsSettings({ state }) {
               <button type="button" className="btn-ghost" onClick={reconnectPush} disabled={pushBusy}>{pushBusy ? 'Reconnecting…' : 'Reconnect'}</button>
               <button type="button" className="btn-ghost" onClick={sendTestNotification}>Send test notification</button>
             </div>
-            {pushMsg && <div style={{fontSize:11,color:pushMsg.error?'var(--danger)':'var(--success)'}}>{pushMsg.text}</div>}
-            {testMsg && <div style={{fontSize:11,color:testMsg.error?'var(--danger)':'var(--success)'}}>{testMsg.text}</div>}
+            {msg && <div data-testid="push-msg" style={{fontSize:11,color:'var(--text-secondary)',padding:'6px 10px',background:'var(--bg-surface)',border:'1px solid var(--border)',borderRadius:6}}>{msg}</div>}
           </div>
         </div>
       )}
@@ -7197,7 +7206,7 @@ function App() {
 
   /* ── reschedule notifications whenever meetings or salah settings change ── */
   useEffect(() => {
-    if (state?.meetings) scheduleNotifications(state.meetings, state?.salah);
+    if (state?.meetings) scheduleNotifications(state);
   }, [state?.meetings, state?.salah]);
 
   /* Back-fills the SW-readable token cache for devices that connected before
@@ -7241,8 +7250,7 @@ function App() {
   /* ── reschedule notifications when app comes back to foreground ── */
   useEffect(() => {
     if (!state?.meetings) return;
-    const { meetings, salah } = state;
-    const onVisible = () => { if (document.visibilityState === 'visible') scheduleNotifications(meetings, salah); };
+    const onVisible = () => { if (document.visibilityState === 'visible') scheduleNotifications(state); };
     document.addEventListener('visibilitychange', onVisible);
     return () => document.removeEventListener('visibilitychange', onVisible);
   }, [state?.meetings, state?.salah]);

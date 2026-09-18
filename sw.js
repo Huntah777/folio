@@ -133,6 +133,30 @@ self.addEventListener('fetch', (event) => {
   );
 });
 
+// Prevents double-buzz when a local timer and a server push fire within 5 min of each other
+const recentlyShown = new Map();
+const DEDUPE_MS = 5 * 60_000;
+function alreadyShown(tag) {
+  const now = Date.now();
+  for (const [k, t] of recentlyShown) if (now - t > DEDUPE_MS) recentlyShown.delete(k);
+  if (recentlyShown.has(tag)) return true;
+  recentlyShown.set(tag, now);
+  return false;
+}
+
+// Single place that controls what every notification looks like
+function swNotify(title, body, tag, renotify, extraOpts) {
+  return self.registration.showNotification(title, {
+    body:     body || '',
+    icon:     '/icons/icon-192.png',
+    badge:    '/icons/icon-192.png',
+    tag:      tag || 'folio',
+    renotify: !!renotify,
+    vibrate:  [200, 100, 200],
+    ...extraOpts,
+  });
+}
+
 // Calendar meeting alerts — page posts SCHEDULE_NOTIFICATIONS with a timetable
 const pendingTimers = new Map();
 
@@ -141,6 +165,13 @@ const pendingTimers = new Map();
 let pomodoroTimer = null;
 
 self.addEventListener('message', (event) => {
+  // Immediate display — used by the test button and any other instant notification path
+  if (event.data?.type === 'SHOW_NOTIFICATION') {
+    const { title, body, tag } = event.data;
+    swNotify(title, body || '', tag || 'folio-test', true);
+    return;
+  }
+
   if (event.data?.type === 'SCHEDULE_POMODORO') {
     if (pomodoroTimer) { clearTimeout(pomodoroTimer); pomodoroTimer = null; }
     const n = event.data.notification;
@@ -148,15 +179,10 @@ self.addEventListener('message', (event) => {
     const delay = n.fireAt - Date.now();
     if (delay <= 0 || delay > 4 * 60 * 60 * 1000) return; // sanity cap: 4h
     pomodoroTimer = setTimeout(() => {
-      self.registration.showNotification(n.title, {
-        body:     n.body,
-        icon:     '/icons/icon-192.png',
-        badge:    '/icons/icon-192.png',
-        tag:      'pomodoro',
-        renotify: true,
-        data:     { url: '/' },
-      });
-      logNotification({ id: 'pomodoro', title: n.title, body: n.body, firedAt: Date.now(), source: 'pomodoro' });
+      if (!alreadyShown('pomodoro')) {
+        swNotify(n.title, n.body, 'pomodoro', true, { data: { url: '/' } });
+        logNotification({ id: 'pomodoro', title: n.title, body: n.body, firedAt: Date.now(), source: 'pomodoro' });
+      }
       pomodoroTimer = null;
     }, delay);
     return;
@@ -170,14 +196,10 @@ self.addEventListener('message', (event) => {
     const delay = fireAt - now;
     if (delay <= 0 || delay > 7 * 24 * 60 * 60 * 1000) return;
     const timer = setTimeout(() => {
-      self.registration.showNotification(title, {
-        body,
-        icon:     '/icons/icon-192.png',
-        badge:    '/icons/icon-192.png',
-        tag:      id,
-        renotify: false,
-      });
-      logNotification({ id, title, body, firedAt: Date.now(), source: 'local' });
+      if (!alreadyShown(id)) {
+        swNotify(title, body, id, false);
+        logNotification({ id, title, body, firedAt: Date.now(), source: 'local' });
+      }
       pendingTimers.delete(id);
     }, delay);
     pendingTimers.set(id, timer);
@@ -188,19 +210,16 @@ self.addEventListener('message', (event) => {
 self.addEventListener('push', (event) => {
   const d = event.data?.json() ?? {};
   const { title = 'Folio', body = '', id, type, prayer } = d;
+  const tag = id || type || title;
+  const isDupe = alreadyShown(tag);
 
-  const options = {
-    body,
-    icon:     '/icons/icon-192.png',
-    badge:    '/icons/icon-192.png',
-    tag:      id || type || title,
-    renotify: false,
-    data:     { type, prayer, url: '/' },
-    vibrate:  type === 'salah_athan' ? [200, 100, 200, 100, 200] : [200],
-  };
-
-  const notify = self.registration.showNotification(title, options);
-  const logged = logNotification({ id: id || type || title, title, body, firedAt: Date.now(), source: 'push' });
+  const notify = isDupe
+    ? Promise.resolve()
+    : swNotify(title, body, tag, false, {
+        data:    { type, prayer, url: '/' },
+        vibrate: type === 'salah_athan' ? [200, 100, 200, 100, 200] : [200, 100, 200],
+      });
+  const logged = isDupe ? Promise.resolve() : logNotification({ id: tag, title, body, firedAt: Date.now(), source: 'push' });
 
   if (type === 'salah_athan') {
     event.waitUntil(
@@ -251,7 +270,7 @@ self.addEventListener('notificationclick', (event) => {
   event.waitUntil(
     clients.matchAll({ type: 'window' }).then((list) => {
       if (list.length) return list[0].focus();
-      return clients.openWindow(event.notification.data || '/');
+      return clients.openWindow(event.notification.data?.url || '/');
     })
   );
 });
