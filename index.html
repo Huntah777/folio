@@ -1442,36 +1442,117 @@ const MOODS = [
 const moodById = id => MOODS.find(m=>m.id===id) || null;
 
 const PROMPTS_MORNING = [
+  /* intention & focus */
   'What would make today great?',
-  'What are you looking forward to today?',
-  'What is one thing you want to focus on today?',
-  'How do you want to feel by the end of today?',
-  'What is within your control today, and what isn’t?',
-  'What is a small win you can get today?',
-  'Who do you want to be today?',
-  'What are you grateful for this morning?',
-  'What would today look like if it went perfectly?',
   'What is the one thing that, if done, would make today a success?',
+  'What do you want to focus on, and what will you let go of?',
+  'How do you want to show up today — for yourself and for others?',
+  'What is one thing you can do today that your future self will thank you for?',
+  'What does a great version of today look like?',
+  'What habit or behaviour do you want to practice today?',
+  /* stoic: dichotomy of control */
+  'What is within your control today, and what isn\'t? How will you respond to both?',
+  'What are you anxious about today? Is any of it actually within your power to change?',
+  'If you could only control your own actions and attitudes today, what would you choose?',
+  'What would Marcus Aurelius do in your position today?',
+  'What obstacle are you likely to face today? How will you turn it to your advantage?',
+  /* stoic: virtue & character */
+  'Which virtue — wisdom, courage, justice, or self-discipline — do you most need today?',
+  'What does acting with integrity look like for you today?',
+  'Who do you want to be today? Describe that person\'s actions.',
+  'How can you be more patient, kinder, or more honest today?',
+  'What would the best version of you do first thing this morning?',
+  /* stoic: memento mori */
+  'If today were your last, would you spend it the way you\'re planning? Why or why not?',
+  'What have you been putting off that you would regret not doing?',
+  'What truly matters today when everything else is stripped away?',
+  /* gratitude & perspective */
+  'What are you grateful for this morning?',
+  'What is something most people take for granted that you appreciate right now?',
+  'What is going well in your life that deserves more acknowledgement?',
+  'Name three people who have shaped you positively. What did you learn from them?',
+  /* growth & learning */
+  'What is a belief you hold that you\'ve never seriously questioned?',
+  'What are you afraid of? Is that fear rational or a habit of mind?',
+  'What skill or area of your life are you neglecting right now?',
+  'What would you attempt today if you knew failure was not permanent?',
+  'What does progress look like for you — not success, just honest progress?',
+  /* relationships */
+  'Who deserves more of your attention today?',
+  'Is there anyone you need to forgive, including yourself?',
+  'How can you add value to someone\'s day today without any expectation?',
 ];
 const PROMPTS_EVENING = [
-  'What made today different from other days?',
-  'What did you do well today? What could you improve?',
-  'What is something you learned today?',
-  'What are three things you’re grateful for today?',
-  'What challenged you today, and how did you respond?',
+  /* daily review */
+  'What did you do well today? Be specific.',
+  'What is one thing you would do differently if you could replay today?',
   'What moment from today do you want to remember?',
-  'Did today go as expected? Why or why not?',
-  'What is on your mind right now?',
-  'What did you procrastinate on today, and why?',
-  'What would you tell a friend who had the day you just had?',
+  'Did today go as planned? What surprised you?',
+  'What task did you avoid, and what does that tell you?',
+  'At what point today did you feel most like yourself?',
+  /* stoic evening exam */
+  'Where did you fall short of your own standards today? What caused it?',
+  'Did your actions today match your values? Where did they diverge?',
+  'What passion or desire led you astray today — or kept you steady?',
+  'Were you master of your mind today, or did events dictate your mood?',
+  'What would Epictetus say about how you handled today\'s challenges?',
+  'In what moments today were you at the mercy of things outside your control?',
+  'Where did you waste energy on things that didn\'t matter?',
+  /* learning & growth */
+  'What is one thing you learned today — about work, people, or yourself?',
+  'What assumption did you make today that turned out to be wrong?',
+  'What is still unresolved in your mind? What is the next step to resolve it?',
+  'What conversation from today is still on your mind, and why?',
+  /* gratitude */
+  'What are three things you\'re grateful for today?',
+  'What small pleasure did you notice today that you usually ignore?',
+  'Who helped you today, even in a small way?',
+  /* relationships & character */
+  'How did you make someone else\'s day better — or harder?',
+  'Were you fully present in your interactions, or distracted?',
+  'Is there something you said today that you wish you could take back?',
+  'Did you listen more than you spoke? If not, why?',
+  /* stoic: perspective & mortality */
+  'If today were a chapter in your life story, what would it be called?',
+  'What would you tell a close friend who had your exact day?',
+  'What are you holding onto right now that would be lighter if you let it go?',
+  'What does today reveal about what you actually value — not what you say you value?',
+  /* mental health & rest */
+  'How is your energy right now? What drained you, and what restored you?',
+  'What do you need tomorrow that you didn\'t give yourself today?',
+  'What are you taking to bed with you — in your mind — and can it wait until morning?',
+  'On a scale of 0–10, how intentional were you today? What would move the needle?',
+];
+const PROMPTS_DEEP = [
+  /* meaning & purpose */
+  'What are you building toward, and does your daily life reflect that?',
+  'What would you regret most if you stayed exactly as you are five years from now?',
+  'What does a meaningful life look like to you — not a successful one, a meaningful one?',
+  'What is the story you tell yourself about who you are? Is it still true?',
+  'What would you pursue if external validation were taken off the table entirely?',
+  /* stoic philosophy */
+  '"You have power over your mind, not outside events." Where in your life have you forgotten this?',
+  '"The impediment to action advances action. What stands in the way becomes the way." What obstacle is actually your path right now?',
+  '"Waste no more time arguing what a good person should be. Be one." Where are you still arguing instead of acting?',
+  '"He who fears death will never do anything worthy of a living man." What are you not doing because of fear?',
+  '"First say to yourself what you would be; and then do what you have to do." What do you want to become?',
+  /* identity */
+  'What parts of yourself have you been ignoring or suppressing lately?',
+  'If your actions over the past month were your only autobiography, what would it say about you?',
+  'What version of yourself are you grieving? What are you becoming?',
+  'What do you believe now that you didn\'t believe five years ago? What changed?',
 ];
 function dayOfYear(date) {
   const start = new Date(date.getFullYear(), 0, 0);
   return Math.floor((date - start) / 86400000);
 }
 function dailyPrompt(date = new Date()) {
-  const pool = date.getHours() < 14 ? PROMPTS_MORNING : PROMPTS_EVENING;
-  return pool[dayOfYear(date) % pool.length];
+  const h = date.getHours();
+  const d = dayOfYear(date);
+  /* Deep prompts surface every ~4 days to avoid fatigue */
+  if (d % 4 === 0) return PROMPTS_DEEP[d % PROMPTS_DEEP.length];
+  const pool = h < 14 ? PROMPTS_MORNING : PROMPTS_EVENING;
+  return pool[d % pool.length];
 }
 function computeStreak(entries) {
   const days = new Set(entries.map(e => e.date));
@@ -4938,13 +5019,15 @@ function JournalView({ state, update, isMobile }) {
   const entries = state.journal || [];
   const [composerText, setComposerText]   = useState('');
   const [composerMood, setComposerMood]   = useState(null);
-  const [composerTags, setComposerTags]   = useState(() => entries[0]?.tags || []);
+  const [composerTags, setComposerTags]   = useState([]);
   const [usePrompt, setUsePrompt]         = useState(true);
   const [editingId, setEditingId]         = useState(null);
   const [editText, setEditText]           = useState('');
   const [editMood, setEditMood]           = useState(null);
   const [editTags, setEditTags]           = useState([]);
   const [search, setSearch]               = useState(() => state.ui.filterTag || '');
+  const [tagFilter, setTagFilter]         = useState('');
+  const [timeRange, setTimeRange]         = useState('all');
   /* Handed over from the Tags view — journal search already matches tags, so
      the tag becomes the query. Cleared once consumed. */
   useEffect(() => {
@@ -4964,21 +5047,42 @@ function JournalView({ state, update, isMobile }) {
      reach for constantly (#gratitude…) sits at the top of the suggestion list
      — see JournalEntryTags. Built from the whole history, not the currently
      viewed week, so it doesn't thin out to nothing right after a new week starts. */
-  const allJournalTags = useMemo(() => {
+  const { allJournalTags, journalTagCounts } = useMemo(() => {
     const counts = {};
     entries.forEach(e => (e.tags||[]).forEach(t => { counts[t] = (counts[t]||0) + 1; }));
-    return Object.keys(counts).sort((a,b) => counts[b]-counts[a] || a.localeCompare(b));
+    const sorted = Object.keys(counts).sort((a,b) => counts[b]-counts[a] || a.localeCompare(b));
+    return { allJournalTags: sorted, journalTagCounts: new Map(sorted.map(t=>[t, counts[t]])) };
   }, [entries]);
+
+  const getTimeCutoff = range => {
+    const now = new Date();
+    if (range === 'week') {
+      const d = new Date(now);
+      const day = d.getDay();
+      d.setDate(d.getDate() - (day === 0 ? 6 : day - 1));
+      return fmtKey(d);
+    }
+    if (range === 'month') return `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-01`;
+    if (range === '3months') { const d = new Date(now); d.setMonth(d.getMonth()-3); return fmtKey(d); }
+    return null;
+  };
   const { startKey: weekStart, endKey: weekEnd } = useMemo(() => weekRangeKeys(viewDate), [viewDate]);
 
   const grouped = useMemo(() => {
     const q = search.trim().toLowerCase();
-    /* A search is a "find it wherever it is" action — it deliberately searches
-       every entry ever written, not just the week currently in view. Only when
-       there's no search does the feed restrict itself to the viewed week. */
-    const visible = q
-      ? entries.filter(e => e.body.toLowerCase().includes(q) || (e.prompt||'').toLowerCase().includes(q) || (e.tags||[]).some(t=>t.toLowerCase().includes(q)))
+    const isFiltering = q || tagFilter;
+    let visible = isFiltering
+      ? entries.filter(e => {
+          const textMatch = !q || e.body.toLowerCase().includes(q) || (e.prompt||'').toLowerCase().includes(q);
+          const tagMatch  = !tagFilter || (e.tags||[]).includes(tagFilter);
+          return textMatch && tagMatch;
+        })
       : entries.filter(e => e.date >= weekStart && e.date <= weekEnd);
+    /* Time range only applies when filtering by text */
+    if (q && timeRange !== 'all') {
+      const cutoff = getTimeCutoff(timeRange);
+      if (cutoff) visible = visible.filter(e => (e.date||'') >= cutoff);
+    }
     const today = todayKey();
     const yesterday = fmtKey(new Date(Date.now() - 86400000));
     const byKey = {};
@@ -4989,7 +5093,7 @@ function JournalView({ state, update, isMobile }) {
       byKey[key].items.push(e);
     });
     return Object.entries(byKey).sort(([a],[b])=>b.localeCompare(a)).map(([,v])=>v);
-  }, [entries, search, weekStart, weekEnd]);
+  }, [entries, search, tagFilter, timeRange, weekStart, weekEnd]);
 
   const addEntry = () => {
     if (!composerText.trim()) return;
@@ -5044,13 +5148,13 @@ function JournalView({ state, update, isMobile }) {
       {/* composer */}
       <div className="card" style={{padding:'16px 18px',maxWidth:900,marginBottom:26,display:'flex',flexDirection:'column',gap:12}}>
         <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:10}}>
-          <span style={{fontSize:11.5,color:'var(--text-muted)'}}>{usePrompt ? 'Replying to today’s prompt' : 'Writing freely'}</span>
+          <span style={{fontSize:11.5,color:'var(--text-muted)'}}>{usePrompt ? "Replying to today's prompt" : 'Writing freely'}</span>
           <span onClick={()=>setUsePrompt(v=>!v)} style={{fontSize:11.5,color:'var(--accent)',cursor:'pointer',userSelect:'none'}}>
-            {usePrompt ? 'Skip prompt' : 'Use today’s prompt'}
+            {usePrompt ? 'Skip prompt' : "Use today's prompt"}
           </span>
         </div>
         <textarea value={composerText} onChange={e=>setComposerText(e.target.value)}
-          placeholder={usePrompt ? prompt : 'Write whatever’s on your mind…'} rows={3}
+          placeholder={usePrompt ? prompt : "Write whatever's on your mind…"} rows={3}
           style={{background:'transparent',border:'none',outline:'none',resize:'vertical',fontFamily:'Manrope,sans-serif',fontSize:14,color:'var(--text-primary)',lineHeight:1.6,width:'100%'}}/>
         <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:10}}>
           <div style={{display:'flex',alignItems:'center',gap:14,flexWrap:'wrap'}}>
@@ -5062,15 +5166,30 @@ function JournalView({ state, update, isMobile }) {
         </div>
       </div>
 
-      {/* dedicated journal search — scoped to journal entries only, separate from Notes/Tags search */}
-      <div style={{maxWidth:900,marginBottom:18}}>
-        <input className="input" value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search journal entries…"/>
+      {/* tag filter bar — filter entries by journal tags */}
+      {allJournalTags.length > 0 && (
+        <div style={{maxWidth:900,marginBottom:14}}>
+          <TagFilterBar tags={allJournalTags} counts={journalTagCounts} value={tagFilter} onChange={setTagFilter}/>
+        </div>
+      )}
+
+      {/* search + time range */}
+      <div style={{maxWidth:900,marginBottom:18,display:'flex',flexDirection:'column',gap:8}}>
+        <input className="input" value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search entries by text…"/>
+        {search.trim() && (
+          <div style={{display:'flex',gap:5,flexWrap:'wrap'}}>
+            {[['all','All time'],['week','This week'],['month','This month'],['3months','3 months']].map(([val,label])=>(
+              <button key={val} onClick={()=>setTimeRange(val)}
+                style={{fontSize:11,padding:'4px 11px',borderRadius:99,border:`1px solid ${timeRange===val?'var(--accent)':'var(--border-strong)'}`,background:timeRange===val?'var(--accent)':'transparent',color:timeRange===val?'#fff':'var(--text-secondary)',cursor:'pointer',fontFamily:'Manrope,sans-serif',transition:'all 100ms'}}>
+                {label}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
-      {/* week navigator — the feed below always shows exactly one Monday–
-          Sunday week; hidden while actively searching since search spans
-          every entry regardless of week (see the `grouped` memo above). */}
-      {!search.trim() && <JournalWeekNav viewDate={viewDate} onChange={setViewDate}/>}
+      {/* week navigator */}
+      {!search.trim() && !tagFilter && <JournalWeekNav viewDate={viewDate} onChange={setViewDate}/>}
 
       {/* entries feed */}
       {grouped.map(({label,items})=>(
@@ -5114,7 +5233,12 @@ function JournalView({ state, update, isMobile }) {
                   <MarkdownView content={e.body}/>
                   {e.tags?.length>0 && (
                     <div style={{display:'flex',gap:6,flexWrap:'wrap',marginTop:8}}>
-                      {e.tags.map(t=>(<span key={t} className="tag" style={{background:`${tagColor(t)}18`,color:tagColor(t)}}>{t}</span>))}
+                      {e.tags.map(t=>(
+                        <span key={t} className="tag" onClick={()=>setTagFilter(tagFilter===t?'':t)}
+                          style={{background:`${tagColor(t)}18`,color:tagColor(t),cursor:'pointer',outline:tagFilter===t?`1px solid ${tagColor(t)}`:'none'}}>
+                          {t}
+                        </span>
+                      ))}
                     </div>
                   )}
                 </>)}
@@ -5126,8 +5250,12 @@ function JournalView({ state, update, isMobile }) {
       {entries.length===0 && (
         <div style={{color:'var(--text-muted)',fontSize:13}}>No entries yet — write your first one above.</div>
       )}
-      {entries.length>0 && grouped.length===0 && search.trim() && (
-        <div style={{color:'var(--text-muted)',fontSize:13}}>No entries match "{search}".</div>
+      {entries.length>0 && grouped.length===0 && (search.trim()||tagFilter) && (
+        <div style={{color:'var(--text-muted)',fontSize:13}}>
+          No entries match{search.trim()?` "${search}"`:''}
+          {tagFilter ? ` tagged ${tagFilter}` : ''}
+          {search.trim() && timeRange!=='all' ? ` in this time range` : ''}.
+        </div>
       )}
       {/* Week has entries elsewhere but none in the currently viewed range —
           this is the expected state right after a new week starts, not an
