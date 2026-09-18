@@ -3530,6 +3530,7 @@ function TasksView({ state, update, isMobile, pom, setPom }) {
   const [newPomWork, setNewPomWork] = useState(25);
   const [newPomBreak, setNewPomBreak] = useState(5);
   const [blockerEdit, setBlockerEdit] = useState(null);
+  const [noteEditing, setNoteEditing] = useState({});
   const [expanded, setExpanded] = useState({});
   const [subInput, setSubInput] = useState({});
   const [editing, setEditing] = useState(null);
@@ -3613,7 +3614,6 @@ function TasksView({ state, update, isMobile, pom, setPom }) {
     const newTags = (editing.tags||[]).filter(tg=>!state.tags.includes(tg));
     if (newTags.length) update('tags',[...state.tags,...newTags]);
     setEditing(null);
-    setEditTagInput('');
   };
   const startEditSub = (tid,s) => setEditingSub({ tid, sid:s.id, title:s.title });
   const saveEditSub = e => {
@@ -3623,6 +3623,20 @@ function TasksView({ state, update, isMobile, pom, setPom }) {
     setEditingSub(null);
   };
   const delSub = (tid,sid) => update('tasks', state.tasks.map(t=>t.id===tid?{...t,subtasks:t.subtasks.filter(s=>s.id!==sid),updated:Date.now()}:t));
+
+  const updateTaskNotes = (id, text) =>
+    update('tasks', state.tasks.map(t => t.id===id ? {...t, taskNotes:text, updated:Date.now()} : t));
+
+  const promoteToNote = t => {
+    const subList = (t.subtasks||[]).map(s=>`- [${s.done?'x':' '}] ${s.title}`).join('\n');
+    const parts = [];
+    if (t.taskNotes) parts.push(t.taskNotes);
+    if (subList) parts.push(`## Checklist\n\n${subList}`);
+    const body = parts.join('\n\n');
+    const n = {id:uid(),emoji:'📝',title:t.title,body,tags:t.tags||[],links:[],images:[],files:[],folderId:null,created:Date.now(),updated:Date.now()};
+    update('notes',[n,...state.notes]);
+    update('ui',{...state.ui,view:'notes',noteId:n.id});
+  };
 
   const PRIO_ORDER = { high:0, medium:1, low:2, none:3 };
   const byPrio = arr => [...arr].sort((a,b)=>(PRIO_ORDER[a.priority||'none']??3)-(PRIO_ORDER[b.priority||'none']??3));
@@ -3773,6 +3787,11 @@ function TasksView({ state, update, isMobile, pom, setPom }) {
                     <svg style={{width:9,height:9}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
                     {t.timeBlock}m
                   </span>}
+                  {t.taskNotes&&!t.done&&(
+                    <span style={{display:'flex',alignItems:'center',flexShrink:0,color:'var(--text-muted)'}} title="Has notes">
+                      <svg style={{width:10,height:10}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+                    </span>
+                  )}
                   <button onClick={()=>setExpanded({...expanded,[t.id]:!expanded[t.id]})} className="icon-btn"
                     style={{width:'auto',minWidth:30,gap:4,padding:'0 7px',color:expanded[t.id]?'var(--accent)':'var(--text-secondary)'}}
                     title={t.subtasks.length>0?`${t.subtasks.filter(s=>s.done).length}/${t.subtasks.length} subtasks`:'Add subtasks'}>
@@ -3856,6 +3875,7 @@ function TasksView({ state, update, isMobile, pom, setPom }) {
               )}
               {expanded[t.id]&&(
                 <div style={{paddingLeft:32,marginTop:4}}>
+                  {/* subtasks */}
                   {t.subtasks.map(s=>(
                     <div key={s.id}>
                       {editingSub&&editingSub.tid===t.id&&editingSub.sid===s.id ? (
@@ -3888,6 +3908,46 @@ function TasksView({ state, update, isMobile, pom, setPom }) {
                       placeholder="Add subtask…" style={{background:'transparent',border:'none',borderBottom:'1px solid var(--border-strong)',color:'var(--text-secondary)',fontSize:12,padding:'3px 0',outline:'none',flex:1,minWidth:0}}/>
                     <button type="submit" style={{background:'none',border:'none',color:'var(--accent)',fontSize:12,cursor:'pointer'}}>add</button>
                   </form>
+
+                  {/* task notes */}
+                  <div style={{marginTop:12,borderTop:'1px solid var(--border)',paddingTop:8}}>
+                    <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:5}}>
+                      <span style={{fontSize:10,fontWeight:700,letterSpacing:'.07em',color:'var(--text-muted)',textTransform:'uppercase'}}>Notes</span>
+                      <div style={{display:'flex',alignItems:'center',gap:10}}>
+                        {(t.taskNotes||noteEditing[t.id])&&(
+                          <button onClick={()=>setNoteEditing({...noteEditing,[t.id]:!noteEditing[t.id]})}
+                            style={{background:'none',border:'none',fontSize:11,color:'var(--text-muted)',cursor:'pointer',padding:0,fontFamily:'Manrope,sans-serif'}}>
+                            {noteEditing[t.id]?'Preview':'Edit'}
+                          </button>
+                        )}
+                        <button onClick={()=>promoteToNote(t)}
+                          title="Convert task notes + subtasks into a full markdown note"
+                          style={{background:'none',border:'none',fontSize:11,color:'var(--accent)',cursor:'pointer',display:'flex',alignItems:'center',gap:3,padding:0,fontFamily:'Manrope,sans-serif'}}>
+                          <svg style={{width:11,height:11}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+                          Open as note
+                        </button>
+                      </div>
+                    </div>
+                    {noteEditing[t.id] ? (
+                      <textarea
+                        autoFocus
+                        value={t.taskNotes||''}
+                        onChange={e=>updateTaskNotes(t.id,e.target.value)}
+                        onBlur={()=>{ if(!t.taskNotes) setNoteEditing({...noteEditing,[t.id]:false}); }}
+                        placeholder="Add notes, links, findings… supports markdown"
+                        style={{width:'100%',background:'transparent',border:'1px solid var(--border-strong)',borderRadius:6,color:'var(--text-primary)',fontSize:12.5,padding:'7px 9px',outline:'none',resize:'vertical',minHeight:80,fontFamily:'Manrope,sans-serif',boxSizing:'border-box',lineHeight:1.6}}
+                      />
+                    ) : t.taskNotes ? (
+                      <div onClick={()=>setNoteEditing({...noteEditing,[t.id]:true})} style={{cursor:'text'}} className="md-view task-note-preview">
+                        <MarkdownView content={t.taskNotes}/>
+                      </div>
+                    ) : (
+                      <div onClick={()=>setNoteEditing({...noteEditing,[t.id]:true})}
+                        style={{cursor:'text',padding:'4px 0',fontSize:12,color:'var(--text-muted)',fontStyle:'italic'}}>
+                        Click to add notes… supports markdown
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
             </div>
