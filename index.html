@@ -379,14 +379,14 @@ const FOLDER_ICON_OPTS = [
   {id:'leaf',     d:'M17 8C8 10 5.9 16.17 3.82 22c3.22-1 6.37-2 9.18-4 2.97-2.1 5-5.71 5-9.5C18 7.82 17.5 7 17 8z'},
   {id:'flag',     d:'M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1zM4 22v-7'},
 ];
-const FolderIconSvg = ({color, iconId, size=15}) => {
+const FolderIconSvg = ({color, iconId, size=20}) => {
   const {hex} = FOLDER_COLORS.find(c=>c.id===color) || FOLDER_COLORS[0];
   const ic = FOLDER_ICON_OPTS.find(i=>i.id===iconId);
   return (
     <svg viewBox="0 0 24 24" width={size} height={size} style={{flexShrink:0,display:'block'}}>
       <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" fill={hex}/>
       <path d="M2 5a2 2 0 0 1 2-2h5l2 3h11v1H2V5z" fill="rgba(255,255,255,0.18)"/>
-      {ic?.d&&<g transform="translate(7,9) scale(0.417)" fill="none" stroke="rgba(255,255,255,0.9)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d={ic.d}/></g>}
+      {ic?.d&&<g transform="translate(5.5,7.5) scale(0.54)" fill="none" stroke="rgba(255,255,255,0.95)" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d={ic.d}/></g>}
     </svg>
   );
 };
@@ -5542,7 +5542,7 @@ function Sidebar({ state, update, syncStatus, onSync, collapsed, onToggle }) {
         {isRenaming ? (
           <form onSubmit={saveRename}
             style={{display:'flex',gap:4,padding:'3px 8px',paddingLeft:8+indent}}>
-            <FolderIconSvg color={fColor} iconId={node.icon} size={14}/>
+            <FolderIconSvg color={fColor} iconId={node.icon} size={18}/>
             <input autoFocus value={renameVal} onChange={e=>setRenameVal(e.target.value)}
               style={folderInputStyle}/>
             <button type="submit" style={{background:'none',border:'none',color:'var(--accent)',fontSize:11,cursor:'pointer',flexShrink:0}}>ok</button>
@@ -5571,7 +5571,7 @@ function Sidebar({ state, update, syncStatus, onSync, collapsed, onToggle }) {
               onClick={e=>{e.stopPropagation();setPickerOpenId(isPickerOpen?null:node.id);}}
               style={{display:'flex',borderRadius:4,padding:1,cursor:'pointer',flexShrink:0,
                       transition:'opacity 120ms',opacity:isActive?1:0.82}}>
-              <FolderIconSvg color={fColor} iconId={node.icon} size={14}/>
+              <FolderIconSvg color={fColor} iconId={node.icon} size={20}/>
             </span>
             {/* name */}
             <span style={{flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{node.name}</span>
@@ -5606,19 +5606,19 @@ function Sidebar({ state, update, syncStatus, onSync, collapsed, onToggle }) {
               ))}
             </div>
             <div style={{fontSize:9.5,fontWeight:700,letterSpacing:'.07em',textTransform:'uppercase',color:'var(--text-muted)',marginBottom:5}}>Icon</div>
-            <div style={{display:'grid',gridTemplateColumns:'repeat(9,1fr)',gap:2}}>
+            <div style={{display:'grid',gridTemplateColumns:'repeat(6,1fr)',gap:3}}>
               {FOLDER_ICON_OPTS.map(ic=>{
                 const isSel = ic.id==='none' ? !node.icon : node.icon===ic.id;
                 return (
                   <button key={ic.id} title={ic.id}
                     onClick={()=>updateFolderMeta(node.id,{icon:ic.id==='none'?null:ic.id})}
-                    style={{width:24,height:24,display:'flex',alignItems:'center',justifyContent:'center',
-                            borderRadius:5,cursor:'pointer',padding:0,border:'none',outline:'none',
+                    style={{width:34,height:34,display:'flex',alignItems:'center',justifyContent:'center',
+                            borderRadius:7,cursor:'pointer',padding:0,border:'none',outline:'none',
                             background:isSel?'var(--accent-soft)':'transparent',
                             transition:'background 100ms'}}>
                     {ic.id==='none'
-                      ? <svg viewBox="0 0 24 24" width="14" height="14"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" fill="var(--text-muted)" opacity="0.4"/></svg>
-                      : <FolderIconSvg color={fColor} iconId={ic.id} size={15}/>
+                      ? <svg viewBox="0 0 24 24" width="22" height="22"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" fill="var(--text-muted)" opacity="0.35"/></svg>
+                      : <FolderIconSvg color={fColor} iconId={ic.id} size={26}/>
                     }
                   </button>
                 );
@@ -5630,7 +5630,7 @@ function Sidebar({ state, update, syncStatus, onSync, collapsed, onToggle }) {
         {isAddingSub && (
           <form onSubmit={e=>createFolder(e,node.id)}
             style={{display:'flex',gap:4,padding:'3px 8px 4px',paddingLeft:8+indent+14}}>
-            <FolderIconSvg color={fColor} iconId={node.icon} size={12}/>
+            <FolderIconSvg color={fColor} iconId={node.icon} size={16}/>
             <input autoFocus value={newFolderName} onChange={e=>setNewFolderName(e.target.value)}
               placeholder="Subfolder name…" style={folderInputStyle}/>
             <button type="submit" style={{background:'none',border:'none',color:'var(--accent)',fontSize:11,cursor:'pointer',flexShrink:0}}>add</button>
