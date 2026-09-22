@@ -149,11 +149,23 @@ html,body{height:100%;background:var(--bg-app);color:var(--text-primary);font-fa
 /* bulk action bar */
 .bulk-bar{position:sticky;bottom:8px;background:var(--vibrancy);-webkit-backdrop-filter:blur(24px) saturate(180%);backdrop-filter:blur(24px) saturate(180%);border:1px solid var(--accent-ring);border-radius:var(--r-lg);padding:9px 13px;display:flex;align-items:center;gap:8px;margin-top:8px;box-shadow:var(--shadow-3)}
 /* folder action buttons */
-.folder-action{background:none;border:1px solid transparent;cursor:pointer;padding:3px 6px;border-radius:5px;font-size:12px;line-height:1;font-family:'Manrope',sans-serif;font-weight:600;transition:all 110ms}
-.folder-action.rename{color:var(--text-secondary)}
-.folder-action.rename:hover{background:var(--border-strong);border-color:var(--border-strong);color:var(--text-primary)}
-.folder-action.del{color:var(--text-secondary)}
+.folder-action{background:none;border:1px solid transparent;cursor:pointer;padding:2px 5px;border-radius:4px;font-size:11px;line-height:1;font-family:'Manrope',sans-serif;font-weight:600;transition:all 110ms}
+.folder-action.rename{color:var(--text-muted)}
+.folder-action.rename:hover{background:var(--fill-hover);border-color:var(--border-strong);color:var(--text-primary)}
+.folder-action.del{color:var(--text-muted)}
 .folder-action.del:hover{background:rgba(244,63,94,.12);border-color:rgba(244,63,94,.3);color:var(--danger)}
+.folder-action.add-sub{color:var(--text-muted)}
+.folder-action.add-sub:hover{background:var(--accent-soft);border-color:var(--accent-ring);color:var(--accent)}
+.folder-row{display:flex;align-items:center;gap:5px;padding:5px 8px;margin:1px 4px;border-radius:var(--r-sm);cursor:pointer;transition:background var(--dur) var(--ease),color var(--dur) var(--ease);user-select:none;font-size:12.5px;font-weight:500;color:var(--text-secondary);position:relative}
+.folder-row:hover{background:var(--fill);color:var(--text-primary)}
+.folder-row.active{background:var(--accent-soft);color:var(--accent);font-weight:600}
+.folder-row.active:hover{background:var(--accent-soft)}
+.folder-chevron{width:12px;height:12px;display:flex;align-items:center;justify-content:center;flex-shrink:0;color:var(--text-muted);transition:transform 180ms var(--ease)}
+.folder-chevron.open{transform:rotate(90deg)}
+.folder-actions{display:none;align-items:center;gap:1px;flex-shrink:0}
+.folder-row:hover .folder-actions{display:flex}
+.folder-count{font-size:10px;color:var(--text-muted);flex-shrink:0;font-variant-numeric:tabular-nums;transition:opacity 120ms}
+.folder-row:hover .folder-count{opacity:0}
 
 /* editor */
 .editor-title{background:transparent;border:none;outline:none;font-family:'Fraunces',serif;font-size:30px;font-weight:600;color:var(--text-primary);width:100%;resize:none;line-height:1.25}
@@ -321,6 +333,63 @@ const { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback } = R
 
 /* ── utils ── */
 const uid = () => Math.random().toString(36).slice(2,9);
+/* Returns fid + all descendant folder IDs (used for nested-folder filtering) */
+const getFolderDescIds = (fid, folders) => {
+  const result = [fid];
+  const add = id => folders.filter(f => f.parentId === id).forEach(f => { result.push(f.id); add(f.id); });
+  add(fid);
+  return result;
+};
+/* Build a tree from flat folder array; each node gets a `children` array */
+const buildFolderTree = folders => {
+  const byParent = {};
+  folders.forEach(f => {
+    const pid = f.parentId || null;
+    if (!byParent[pid]) byParent[pid] = [];
+    byParent[pid].push(f);
+  });
+  const build = pid => (byParent[pid] || []).map(f => ({...f, children: build(f.id)}));
+  return build(null);
+};
+/* Flat sorted list for <select> pickers: [{id, name, depth}] */
+const flattenFolderTree = (nodes, depth = 0) =>
+  nodes.flatMap(n => [{id:n.id, name:n.name, depth, color:n.color, icon:n.icon}, ...flattenFolderTree(n.children, depth+1)]);
+
+const FOLDER_COLORS = [
+  {id:'slate',  hex:'#6B7280'},{id:'red',    hex:'#EF4444'},{id:'orange', hex:'#F97316'},
+  {id:'amber',  hex:'#F59E0B'},{id:'green',  hex:'#22C55E'},{id:'teal',   hex:'#14B8A6'},
+  {id:'sky',    hex:'#0EA5E9'},{id:'violet', hex:'#8B5CF6'},{id:'pink',   hex:'#EC4899'},
+  {id:'rose',   hex:'#F43F5E'},
+];
+const FOLDER_ICON_OPTS = [
+  {id:'none'},
+  {id:'star',     d:'M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z'},
+  {id:'heart',    d:'M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z'},
+  {id:'home',     d:'M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2zM9 22V12h6v10'},
+  {id:'work',     d:'M20 7H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2zM16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2'},
+  {id:'book',     d:'M4 19.5A2.5 2.5 0 0 1 6.5 17H20M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z'},
+  {id:'code',     d:'M16 18l6-6-6-6M8 6l-6 6 6 6'},
+  {id:'tag',      d:'M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82zM7 7h.01'},
+  {id:'zap',      d:'M13 2L3 14h9l-1 8 10-12h-9l1-8z'},
+  {id:'globe',    d:'M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20zM2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z'},
+  {id:'user',     d:'M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2M12 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8z'},
+  {id:'shield',   d:'M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z'},
+  {id:'music',    d:'M9 18V5l12-2v13M9 18a3 3 0 1 1-6 0 3 3 0 0 1 6 0zM21 16a3 3 0 1 1-6 0 3 3 0 0 1 6 0z'},
+  {id:'lock',     d:'M19 11H5a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7a2 2 0 0 0-2-2zM7 11V7a5 5 0 0 1 10 0v4'},
+  {id:'leaf',     d:'M17 8C8 10 5.9 16.17 3.82 22c3.22-1 6.37-2 9.18-4 2.97-2.1 5-5.71 5-9.5C18 7.82 17.5 7 17 8z'},
+  {id:'flag',     d:'M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1zM4 22v-7'},
+];
+const FolderIconSvg = ({color, iconId, size=15}) => {
+  const {hex} = FOLDER_COLORS.find(c=>c.id===color) || FOLDER_COLORS[0];
+  const ic = FOLDER_ICON_OPTS.find(i=>i.id===iconId);
+  return (
+    <svg viewBox="0 0 24 24" width={size} height={size} style={{flexShrink:0,display:'block'}}>
+      <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" fill={hex}/>
+      <path d="M2 5a2 2 0 0 1 2-2h5l2 3h11v1H2V5z" fill="rgba(255,255,255,0.18)"/>
+      {ic?.d&&<g transform="translate(7,9) scale(0.417)" fill="none" stroke="rgba(255,255,255,0.9)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d={ic.d}/></g>}
+    </svg>
+  );
+};
 /* decode a URI-encoded [url:title|url] token part, tolerating older unencoded values already in storage */
 const decodeUrlPart = s => { try { return decodeURIComponent(s); } catch { return s; } };
 const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
@@ -2805,12 +2874,13 @@ function NoteEditor({ note, state, update, isMobile }) {
           {(()=>{
             const folders = state.folders||[];
             const cur = folders.find(f=>f.id===note.folderId);
+            const flat = flattenFolderTree(buildFolderTree(folders));
             return (
               <div style={{marginLeft:'auto',flexShrink:0}}>
                 <select value={note.folderId||''} onChange={e=>upNote({folderId:e.target.value||null})}
-                  style={{background:'var(--bg-surface)',border:'1px solid var(--border-strong)',borderRadius:6,color:cur?'var(--accent)':'var(--text-muted)',fontSize:11,padding:'2px 7px',cursor:'pointer',outline:'none'}}>
+                  style={{background:'var(--bg-surface)',border:'1px solid var(--border-strong)',borderRadius:6,color:cur?'var(--accent)':'var(--text-muted)',fontSize:11,padding:'2px 7px',cursor:'pointer',outline:'none',maxWidth:140}}>
                   <option value=''>📁 No folder</option>
-                  {folders.map(f=><option key={f.id} value={f.id}>📁 {f.name}</option>)}
+                  {flat.map(f=><option key={f.id} value={f.id}>{'  '.repeat(f.depth)}{f.depth>0?'↳ ':''}{f.name}</option>)}
                 </select>
               </div>
             );
@@ -3256,16 +3326,20 @@ function NotesView({ state, update, isMobile, fullView, setFullView }) {
     if (id === noteId) openNote(next[idx] ?? next[idx - 1] ?? null);
   };
 
+  const filterFolderDescIds = useMemo(
+    () => filterFolder ? new Set(getFolderDescIds(filterFolder, state.folders||[])) : null,
+    [filterFolder, state.folders]
+  );
   const filtered = useMemo(() => state.notes.filter(n => {
     const q = search.toLowerCase();
     const dateStr = n.created ? new Date(n.created).toLocaleDateString('en-US',{month:'long',day:'numeric',year:'numeric'}).toLowerCase() : '';
     const matchQ = !q || n.title.toLowerCase().includes(q) || (n.body||'').toLowerCase().includes(q) || dateStr.includes(q);
     const matchT = !filterTag || n.tags.includes(filterTag);
-    const matchF = !filterFolder || n.folderId === filterFolder;
+    const matchF = !filterFolderDescIds || filterFolderDescIds.has(n.folderId);
     const matchD = !dateFilter || (n.created && fmtKey(new Date(n.created)) === dateFilter);
     const matchFav = !favOnly || n.pinned;
     return matchQ && matchT && matchF && matchD && matchFav;
-  }), [state.notes, search, filterTag, filterFolder, dateFilter, favOnly]);
+  }), [state.notes, search, filterTag, filterFolderDescIds, dateFilter, favOnly]);
 
   const grouped = useMemo(() => {
     const today = todayKey();
@@ -3480,6 +3554,24 @@ function NotesView({ state, update, isMobile, fullView, setFullView }) {
           </div>
         )}
         <TagFilterBar tags={allTags} counts={noteTagCounts} value={filterTag} onChange={setFilterTag} max={2}/>
+        {filterFolder&&(()=>{
+          const fldrs = state.folders||[];
+          const path = [];
+          let cur = fldrs.find(f=>f.id===filterFolder);
+          while (cur) { path.unshift(cur); cur = cur.parentId ? fldrs.find(f=>f.id===cur.parentId) : null; }
+          return (
+            <div style={{display:'flex',alignItems:'center',gap:4,padding:'6px 0 2px',flexWrap:'wrap'}}>
+              <svg style={{width:11,height:11,color:'var(--accent)',flexShrink:0}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+              {path.map((f,i)=>(
+                <React.Fragment key={f.id}>
+                  {i>0&&<span style={{fontSize:10,color:'var(--text-muted)'}}>›</span>}
+                  <span onClick={()=>update('ui',{...state.ui,folderId:f.id})} style={{fontSize:11,color:f.id===filterFolder?'var(--accent)':'var(--text-secondary)',cursor:'pointer',fontWeight:600}}>{f.name}</span>
+                </React.Fragment>
+              ))}
+              <button onClick={()=>update('ui',{...state.ui,folderId:null})} style={{background:'none',border:'none',color:'var(--text-muted)',cursor:'pointer',fontSize:13,lineHeight:1,padding:'0 2px',marginLeft:2}}>×</button>
+            </div>
+          );
+        })()}
       </div>
       <div style={{flex:1,overflow:'auto',padding:'0 10px 10px'}} className="scrollbar">
         {filtered.length===0 && <div style={{color:'var(--text-muted)',fontSize:13,padding:'20px 4px'}}>No notes found.</div>}
@@ -5347,11 +5439,39 @@ function Sidebar({ state, update, syncStatus, onSync, collapsed, onToggle }) {
   const { view } = state.ui;
   const recent = [...state.notes].sort((a,b)=>b.updated-a.updated).slice(0,5);
   const folders = state.folders || [];
-  const [addingFolder, setAddingFolder] = useState(false);
+  const [addingRootFolder, setAddingRootFolder] = useState(false);
+  const [addingSubId, setAddingSubId] = useState(null);
   const [newFolderName, setNewFolderName] = useState('');
   const [renamingId, setRenamingId] = useState(null);
   const [renameVal, setRenameVal] = useState('');
   const [hoveredFolder, setHoveredFolder] = useState(null);
+  const [expandedFolders, setExpandedFolders] = useState(() => new Set());
+  const [pickerOpenId, setPickerOpenId] = useState(null);
+
+  const folderTree = useMemo(() => buildFolderTree(folders), [folders]);
+
+  /* Note counts per folder ID (direct only; descendants accumulated at render) */
+  const noteCounts = useMemo(() => {
+    const c = {};
+    state.notes.forEach(n => { if (n.folderId) c[n.folderId] = (c[n.folderId]||0)+1; });
+    return c;
+  }, [state.notes]);
+
+  const countWithDesc = fid => getFolderDescIds(fid, folders).reduce((s,id)=>s+(noteCounts[id]||0),0);
+
+  /* Auto-expand ancestors when navigating to a nested folder */
+  useEffect(() => {
+    if (!state.ui.folderId) return;
+    const ancestors = new Set();
+    let cur = folders.find(f=>f.id===state.ui.folderId);
+    while (cur?.parentId) { ancestors.add(cur.parentId); cur = folders.find(f=>f.id===cur.parentId); }
+    if (ancestors.size) setExpandedFolders(prev => new Set([...prev,...ancestors]));
+  }, [state.ui.folderId]);
+
+  const toggleExpand = (fid, e) => {
+    e.stopPropagation();
+    setExpandedFolders(prev => { const n=new Set(prev); n.has(fid)?n.delete(fid):n.add(fid); return n; });
+  };
 
   const nav = v => update('ui',{...state.ui,view:v,folderId:null,...(v==='calendar'?{calDate:todayKey()}:{})});
   const navFolder = fid => update('ui',{...state.ui,view:'notes',folderId:fid});
@@ -5362,23 +5482,31 @@ function Sidebar({ state, update, syncStatus, onSync, collapsed, onToggle }) {
     update('ui',{...state.ui,view:'notes',noteId:n.id});
   };
 
-  const createFolder = e => {
+  const createFolder = (e, parentId = null) => {
     e.preventDefault();
     if (!newFolderName.trim()) return;
-    update('folders',[...folders,{id:uid(),name:newFolderName.trim()}]);
-    setNewFolderName(''); setAddingFolder(false);
+    const nf = {id:uid(), name:newFolderName.trim(), parentId};
+    update('folders',[...folders, nf]);
+    setNewFolderName(''); setAddingRootFolder(false); setAddingSubId(null);
+    if (parentId) setExpandedFolders(prev => new Set([...prev, parentId]));
   };
+
   const deleteFolder = fid => {
-    update('folders', folders.filter(f=>f.id!==fid));
-    update('notes', state.notes.map(n=>n.folderId===fid?{...n,folderId:null}:n));
-    if (state.ui.folderId===fid) update('ui',{...state.ui,folderId:null});
+    const allIds = getFolderDescIds(fid, folders);
+    update('folders', folders.filter(f=>!allIds.includes(f.id)));
+    update('notes', state.notes.map(n=>allIds.includes(n.folderId)?{...n,folderId:null}:n));
+    if (allIds.includes(state.ui.folderId)) update('ui',{...state.ui,folderId:null});
   };
+
   const saveRename = e => {
     e.preventDefault();
     if (!renameVal.trim()) return;
     update('folders', folders.map(f=>f.id===renamingId?{...f,name:renameVal.trim()}:f));
     setRenamingId(null);
   };
+
+  const updateFolderMeta = (fid, meta) =>
+    update('folders', folders.map(f => f.id===fid ? {...f,...meta} : f));
 
   const navItems = [
     {id:'today',    label:'Today',    icon:Ic.today},
@@ -5390,13 +5518,136 @@ function Sidebar({ state, update, syncStatus, onSync, collapsed, onToggle }) {
     {id:'admin',    label:'Admin',    icon:Ic.admin},
   ];
 
-  const FolderIcon = ({open}) => (
-    <svg style={{width:13,height:13,flexShrink:0}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
-      {open
-        ? <><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/><line x1="12" y1="11" x2="12" y2="17"/><line x1="9" y1="14" x2="15" y2="14"/></>
-        : <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>}
-    </svg>
-  );
+  /* Shared inline-input style for folder name inputs */
+  const folderInputStyle = {
+    flex:1, background:'var(--bg-surface-2)', border:'1px solid var(--accent-ring)',
+    borderRadius:6, color:'var(--text-primary)', fontSize:12, padding:'3px 7px',
+    outline:'none', minWidth:0, fontFamily:'Manrope,sans-serif',
+  };
+
+  /* Recursive folder tree node */
+  const FolderNode = ({node, depth}) => {
+    const isActive   = state.ui.folderId === node.id;
+    const isExpanded = expandedFolders.has(node.id);
+    const hasChildren = node.children.length > 0;
+    const isRenaming  = renamingId === node.id;
+    const isAddingSub = addingSubId === node.id;
+    const isPickerOpen = pickerOpenId === node.id;
+    const count  = countWithDesc(node.id);
+    const indent = depth * 14;
+    const fColor = node.color || 'slate';
+
+    return (
+      <div>
+        {isRenaming ? (
+          <form onSubmit={saveRename}
+            style={{display:'flex',gap:4,padding:'3px 8px',paddingLeft:8+indent}}>
+            <FolderIconSvg color={fColor} iconId={node.icon} size={14}/>
+            <input autoFocus value={renameVal} onChange={e=>setRenameVal(e.target.value)}
+              style={folderInputStyle}/>
+            <button type="submit" style={{background:'none',border:'none',color:'var(--accent)',fontSize:11,cursor:'pointer',flexShrink:0}}>ok</button>
+            <button type="button" onClick={()=>setRenamingId(null)} style={{background:'none',border:'none',color:'var(--text-secondary)',fontSize:11,cursor:'pointer',flexShrink:0}}>×</button>
+          </form>
+        ) : (
+          <div
+            className={`folder-row${isActive?' active':''}`}
+            style={{paddingLeft:8+indent}}
+            onClick={()=>{navFolder(node.id);setPickerOpenId(null);}}
+            onMouseEnter={()=>setHoveredFolder(node.id)}
+            onMouseLeave={()=>setHoveredFolder(null)}>
+            {/* chevron */}
+            {hasChildren ? (
+              <span className={`folder-chevron${isExpanded?' open':''}`}
+                onClick={e=>toggleExpand(node.id,e)}>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" style={{width:9,height:9}}>
+                  <polyline points="9 18 15 12 9 6"/>
+                </svg>
+              </span>
+            ) : (
+              <span style={{width:12,flexShrink:0}}/>
+            )}
+            {/* folder icon — click to open style picker */}
+            <span title="Change color & icon"
+              onClick={e=>{e.stopPropagation();setPickerOpenId(isPickerOpen?null:node.id);}}
+              style={{display:'flex',borderRadius:4,padding:1,cursor:'pointer',flexShrink:0,
+                      transition:'opacity 120ms',opacity:isActive?1:0.82}}>
+              <FolderIconSvg color={fColor} iconId={node.icon} size={14}/>
+            </span>
+            {/* name */}
+            <span style={{flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{node.name}</span>
+            {/* note count — hidden on hover */}
+            {count > 0 && <span className="folder-count">{count}</span>}
+            {/* action buttons */}
+            <span className="folder-actions" onClick={e=>e.stopPropagation()}>
+              <button className="folder-action add-sub" title="Add subfolder"
+                onClick={()=>{setAddingSubId(node.id);setNewFolderName('');setAddingRootFolder(false);setPickerOpenId(null);}}>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" style={{width:9,height:9,pointerEvents:'none'}}><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+              </button>
+              <button className="folder-action rename" title="Rename"
+                onClick={()=>{setRenamingId(node.id);setRenameVal(node.name);setPickerOpenId(null);}}>✎</button>
+              <button className="folder-action del" title="Delete"
+                onClick={()=>deleteFolder(node.id)}>✕</button>
+            </span>
+          </div>
+        )}
+        {/* style picker */}
+        {isPickerOpen && (
+          <div onClick={e=>e.stopPropagation()}
+            style={{margin:'0 6px 4px',paddingLeft:8+indent,background:'var(--bg-surface-2)',
+                    border:'1px solid var(--border-strong)',borderRadius:8,padding:'9px 10px',
+                    boxShadow:'0 4px 20px rgba(0,0,0,.28)'}}>
+            <div style={{fontSize:9.5,fontWeight:700,letterSpacing:'.07em',textTransform:'uppercase',color:'var(--text-muted)',marginBottom:6}}>Color</div>
+            <div style={{display:'flex',gap:4,marginBottom:9,flexWrap:'wrap'}}>
+              {FOLDER_COLORS.map(c=>(
+                <button key={c.id} title={c.id} onClick={()=>updateFolderMeta(node.id,{color:c.id})}
+                  style={{width:17,height:17,borderRadius:'50%',background:c.hex,border:fColor===c.id?'2px solid #fff':'2px solid transparent',
+                          boxShadow:fColor===c.id?`0 0 0 2px ${c.hex}`:'none',
+                          cursor:'pointer',padding:0,outline:'none',flexShrink:0,transition:'transform 100ms'}}/>
+              ))}
+            </div>
+            <div style={{fontSize:9.5,fontWeight:700,letterSpacing:'.07em',textTransform:'uppercase',color:'var(--text-muted)',marginBottom:5}}>Icon</div>
+            <div style={{display:'grid',gridTemplateColumns:'repeat(9,1fr)',gap:2}}>
+              {FOLDER_ICON_OPTS.map(ic=>{
+                const isSel = ic.id==='none' ? !node.icon : node.icon===ic.id;
+                return (
+                  <button key={ic.id} title={ic.id}
+                    onClick={()=>updateFolderMeta(node.id,{icon:ic.id==='none'?null:ic.id})}
+                    style={{width:24,height:24,display:'flex',alignItems:'center',justifyContent:'center',
+                            borderRadius:5,cursor:'pointer',padding:0,border:'none',outline:'none',
+                            background:isSel?'var(--accent-soft)':'transparent',
+                            transition:'background 100ms'}}>
+                    {ic.id==='none'
+                      ? <svg viewBox="0 0 24 24" width="14" height="14"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" fill="var(--text-muted)" opacity="0.4"/></svg>
+                      : <FolderIconSvg color={fColor} iconId={ic.id} size={15}/>
+                    }
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+        {/* inline subfolder add form */}
+        {isAddingSub && (
+          <form onSubmit={e=>createFolder(e,node.id)}
+            style={{display:'flex',gap:4,padding:'3px 8px 4px',paddingLeft:8+indent+14}}>
+            <FolderIconSvg color={fColor} iconId={node.icon} size={12}/>
+            <input autoFocus value={newFolderName} onChange={e=>setNewFolderName(e.target.value)}
+              placeholder="Subfolder name…" style={folderInputStyle}/>
+            <button type="submit" style={{background:'none',border:'none',color:'var(--accent)',fontSize:11,cursor:'pointer',flexShrink:0}}>add</button>
+            <button type="button" onClick={()=>setAddingSubId(null)} style={{background:'none',border:'none',color:'var(--text-secondary)',fontSize:11,cursor:'pointer',flexShrink:0}}>×</button>
+          </form>
+        )}
+        {/* children */}
+        {hasChildren && isExpanded && (
+          <div style={{borderLeft:'1px solid var(--border)',marginLeft:20+indent}}>
+            {node.children.map(child=>(
+              <FolderNode key={child.id} node={child} depth={depth+1}/>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  };
 
   if (collapsed) {
     return (
@@ -5456,56 +5707,36 @@ function Sidebar({ state, update, syncStatus, onSync, collapsed, onToggle }) {
       <div className="divider" style={{margin:'4px 8px'}}/>
 
       {/* folders */}
-      <div style={{padding:'4px 8px 0',flexShrink:0}}>
-        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'4px 4px 4px'}}>
+      <div style={{padding:'4px 0 0',flexShrink:0}}>
+        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'4px 12px 4px 12px'}}>
           <span style={{fontSize:10.5,fontWeight:700,letterSpacing:'.07em',color:'var(--text-secondary)',textTransform:'uppercase',opacity:.75}}>Folders</span>
-          <button onClick={()=>{setAddingFolder(true);setNewFolderName('');}}
-            style={{background:'none',border:'none',color:'var(--text-muted)',cursor:'pointer',padding:'1px 4px',borderRadius:4,fontSize:14,lineHeight:1,transition:'color 110ms'}}
+          <button onClick={()=>{setAddingRootFolder(true);setAddingSubId(null);setNewFolderName('');}}
+            style={{background:'none',border:'none',color:'var(--text-muted)',cursor:'pointer',padding:'2px 5px',borderRadius:5,fontSize:13,lineHeight:1,transition:'all 110ms',display:'flex',alignItems:'center',gap:3}}
             title="New folder"
-            onMouseEnter={e=>e.currentTarget.style.color='var(--accent)'}
-            onMouseLeave={e=>e.currentTarget.style.color='var(--text-muted)'}>+</button>
+            onMouseEnter={e=>{e.currentTarget.style.color='var(--accent)';e.currentTarget.style.background='var(--accent-soft)';}}
+            onMouseLeave={e=>{e.currentTarget.style.color='var(--text-muted)';e.currentTarget.style.background='none';}}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" style={{width:10,height:10}}><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            <span style={{fontSize:10}}>New</span>
+          </button>
         </div>
-        {addingFolder&&(
-          <form onSubmit={createFolder} style={{display:'flex',gap:4,padding:'2px 0 6px'}}>
+        {addingRootFolder&&(
+          <form onSubmit={e=>createFolder(e,null)} style={{display:'flex',gap:4,padding:'2px 8px 6px'}}>
+            <svg style={{width:11,height:11,flexShrink:0,color:'var(--text-secondary)',alignSelf:'center'}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
             <input autoFocus value={newFolderName} onChange={e=>setNewFolderName(e.target.value)}
               placeholder="Folder name…"
-              style={{flex:1,background:'var(--bg-surface)',border:'1px solid var(--border-strong)',borderRadius:6,color:'var(--text-primary)',fontSize:12,padding:'3px 7px',outline:'none',minWidth:0}}/>
-            <button type="submit" style={{background:'none',border:'none',color:'var(--accent)',fontSize:12,cursor:'pointer',flexShrink:0}}>add</button>
-            <button type="button" onClick={()=>setAddingFolder(false)} style={{background:'none',border:'none',color:'var(--text-secondary)',fontSize:12,cursor:'pointer',flexShrink:0}}>×</button>
+              style={folderInputStyle}/>
+            <button type="submit" style={{background:'none',border:'none',color:'var(--accent)',fontSize:11,cursor:'pointer',flexShrink:0}}>add</button>
+            <button type="button" onClick={()=>setAddingRootFolder(false)} style={{background:'none',border:'none',color:'var(--text-secondary)',fontSize:11,cursor:'pointer',flexShrink:0}}>×</button>
           </form>
         )}
-        {folders.map(f=>(
-          <div key={f.id} style={{position:'relative'}}>
-            {renamingId===f.id ? (
-              <form onSubmit={saveRename} style={{display:'flex',gap:4,padding:'2px 4px 4px'}}>
-                <input autoFocus value={renameVal} onChange={e=>setRenameVal(e.target.value)}
-                  style={{flex:1,background:'var(--bg-surface)',border:'1px solid var(--accent)',borderRadius:6,color:'var(--text-primary)',fontSize:12,padding:'2px 6px',outline:'none',minWidth:0}}/>
-                <button type="submit" style={{background:'none',border:'none',color:'var(--accent)',fontSize:11,cursor:'pointer'}}>ok</button>
-                <button type="button" onClick={()=>setRenamingId(null)} style={{background:'none',border:'none',color:'var(--text-secondary)',fontSize:11,cursor:'pointer'}}>×</button>
-              </form>
-            ) : (
-              <div className={`nav-item${state.ui.folderId===f.id?' active':''}`}
-                onClick={()=>navFolder(f.id)}
-                onMouseEnter={()=>setHoveredFolder(f.id)}
-                onMouseLeave={()=>setHoveredFolder(null)}
-                style={{fontSize:12.5,gap:6,paddingRight:4}}>
-                <FolderIcon open={state.ui.folderId===f.id}/>
-                <span style={{flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{f.name}</span>
-                {hoveredFolder===f.id&&(
-                  <span style={{display:'flex',gap:2}} onClick={e=>e.stopPropagation()}>
-                    <button onClick={()=>{setRenamingId(f.id);setRenameVal(f.name);}}
-                      className="folder-action rename" title="Rename folder">✎</button>
-                    <button onClick={()=>deleteFolder(f.id)}
-                      className="folder-action del" title="Delete folder">✕</button>
-                  </span>
-                )}
-              </div>
-            )}
-          </div>
-        ))}
-        {folders.length===0&&!addingFolder&&(
-          <div style={{fontSize:11,color:'var(--text-muted)',padding:'2px 4px 6px'}}>No folders yet</div>
+        {folderTree.length===0&&!addingRootFolder&&(
+          <div style={{fontSize:11,color:'var(--text-muted)',padding:'2px 12px 6px'}}>No folders yet</div>
         )}
+        <div>
+          {folderTree.map(node=>(
+            <FolderNode key={node.id} node={node} depth={0}/>
+          ))}
+        </div>
       </div>
 
       <div className="divider" style={{margin:'4px 8px'}}/>
