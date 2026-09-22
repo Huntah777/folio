@@ -3554,7 +3554,32 @@ function NotesView({ state, update, isMobile, fullView, setFullView }) {
           </div>
         )}
         <TagFilterBar tags={allTags} counts={noteTagCounts} value={filterTag} onChange={setFilterTag} max={2}/>
-        {filterFolder&&(()=>{
+        {/* mobile folder strip — horizontal scrollable chips */}
+        {isMobile && (state.folders||[]).length > 0 && (
+          <div style={{overflowX:'auto',display:'flex',gap:5,margin:'6px -14px 0',padding:'2px 14px 4px',scrollbarWidth:'none',flexShrink:0}}>
+            <button onClick={()=>update('ui',{...state.ui,folderId:null})}
+              style={{display:'flex',alignItems:'center',gap:4,padding:'5px 11px',borderRadius:99,border:'1.5px solid',flexShrink:0,fontSize:12,fontWeight:600,cursor:'pointer',whiteSpace:'nowrap',fontFamily:'Manrope,sans-serif',
+                background:!filterFolder?'var(--accent-soft)':'transparent',
+                borderColor:!filterFolder?'var(--accent-ring)':'var(--border)',
+                color:!filterFolder?'var(--accent)':'var(--text-secondary)'}}>
+              All
+            </button>
+            {flattenFolderTree(buildFolderTree(state.folders||[])).map(f=>(
+              <button key={f.id} onClick={()=>update('ui',{...state.ui,view:'notes',folderId:f.id})}
+                style={{display:'flex',alignItems:'center',gap:5,padding:'4px 10px',borderRadius:99,border:'1.5px solid',flexShrink:0,fontSize:12,fontWeight:600,cursor:'pointer',whiteSpace:'nowrap',fontFamily:'Manrope,sans-serif',
+                  paddingLeft:f.depth>0?8+f.depth*4:10,
+                  background:filterFolder===f.id?'var(--accent-soft)':'transparent',
+                  borderColor:filterFolder===f.id?'var(--accent-ring)':'var(--border)',
+                  color:filterFolder===f.id?'var(--accent)':'var(--text-secondary)'}}>
+                <FolderIconSvg color={f.color||'slate'} iconId={f.icon} size={15}/>
+                {f.depth>0&&<span style={{opacity:0.45,fontSize:10,marginRight:-2}}>{'›'.repeat(f.depth)}</span>}
+                {f.name}
+              </button>
+            ))}
+          </div>
+        )}
+        {/* desktop folder breadcrumb */}
+        {!isMobile && filterFolder&&(()=>{
           const fldrs = state.folders||[];
           const path = [];
           let cur = fldrs.find(f=>f.id===filterFolder);
