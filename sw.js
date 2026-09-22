@@ -1,4 +1,4 @@
-const CACHE = 'folio-v28';
+const CACHE = 'folio-v29';
 
 /* Caches used as cross-context storage rather than HTTP caching — a SW has no
    localStorage, so the sync token (needed to re-register a subscription with

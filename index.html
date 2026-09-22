@@ -1103,7 +1103,7 @@ const BANNERS_KEY = 'folio_banners';
 const LegacyBannerPrefs = {
   get() { try { return JSON.parse(localStorage.getItem(BANNERS_KEY)) || {}; } catch { return {}; } },
 };
-const SECTION_LABELS = { today:'Today', notes:'Notes', journal:'Journal', tasks:'Tasks', calendar:'Calendar', tags:'Tags', admin:'Admin' };
+const SECTION_LABELS = { today:'Today', notes:'Notes', journal:'Journal', tasks:'Tasks', calendar:'Calendar', tags:'Tags', folders:'Folders', admin:'Admin' };
 const BANNER_GRADIENTS = [
   'linear-gradient(135deg,#667eea,#764ba2)',
   'linear-gradient(135deg,#f093fb,#f5576c)',
@@ -1354,6 +1354,7 @@ const Ic = {
   expand:  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>,
   shrink:  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/></svg>,
   admin:   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2"/></svg>,
+  folders: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/><line x1="2" y1="10" x2="22" y2="10"/></svg>,
 };
 
 /* `mermaid` is a real fenced language here — a ```mermaid block renders as a
@@ -4889,6 +4890,289 @@ const TAG_SOURCES = [
 ];
 const plural = (n, noun) => n === 1 ? noun : noun === 'entry' ? 'entries' : noun + 's';
 
+/* ── FoldersView — full-page folder management ── */
+function FoldersView({ state, update, isMobile }) {
+  const folders = state.folders || [];
+  const [expandedFolders, setExpandedFolders] = useState(() => new Set(folders.map(f => f.id)));
+  const [addingRootFolder, setAddingRootFolder] = useState(false);
+  const [addingSubId, setAddingSubId] = useState(null);
+  const [newFolderName, setNewFolderName] = useState('');
+  const [renamingId, setRenamingId] = useState(null);
+  const [renameVal, setRenameVal] = useState('');
+  const [pickerOpenId, setPickerOpenId] = useState(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState(null);
+
+  const folderTree = useMemo(() => buildFolderTree(folders), [folders]);
+
+  const noteCounts = useMemo(() => {
+    const c = {};
+    state.notes.forEach(n => { if (n.folderId) c[n.folderId] = (c[n.folderId]||0)+1; });
+    return c;
+  }, [state.notes]);
+
+  const countWithDesc = fid =>
+    getFolderDescIds(fid, folders).reduce((s, id) => s + (noteCounts[id]||0), 0);
+
+  const toggleExpand = fid =>
+    setExpandedFolders(prev => {
+      const n = new Set(prev); n.has(fid) ? n.delete(fid) : n.add(fid); return n;
+    });
+
+  const updateFolderMeta = (fid, meta) =>
+    update('folders', folders.map(f => f.id===fid ? {...f,...meta} : f));
+
+  const createFolder = (e, parentId = null) => {
+    e.preventDefault();
+    if (!newFolderName.trim()) return;
+    const nf = {id:uid(), name:newFolderName.trim(), parentId};
+    update('folders', [...folders, nf]);
+    setNewFolderName(''); setAddingRootFolder(false); setAddingSubId(null);
+    if (parentId) setExpandedFolders(prev => new Set([...prev, parentId]));
+  };
+
+  const saveRename = e => {
+    e.preventDefault();
+    if (!renameVal.trim()) return;
+    update('folders', folders.map(f => f.id===renamingId ? {...f, name:renameVal.trim()} : f));
+    setRenamingId(null);
+  };
+
+  const deleteFolderFv = fid => {
+    const allIds = getFolderDescIds(fid, folders);
+    update('folders', folders.filter(f => !allIds.includes(f.id)));
+    update('notes', state.notes.map(n => allIds.includes(n.folderId) ? {...n, folderId:null} : n));
+    if (allIds.includes(state.ui.folderId)) update('ui', {...state.ui, folderId:null});
+    setConfirmDeleteId(null);
+  };
+
+  const totalNotes = folders.reduce((s, f) => s + (noteCounts[f.id]||0), 0);
+  const allExpandable = folders.filter(f => folders.some(c => c.parentId === f.id)).map(f => f.id);
+  const allExpanded = allExpandable.length > 0 && allExpandable.every(id => expandedFolders.has(id));
+
+  const inputStyle = {
+    flex:1, background:'var(--bg-surface)', border:'1px solid var(--accent-ring)',
+    borderRadius:6, color:'var(--text-primary)', fontSize:13, padding:'6px 10px',
+    outline:'none', fontFamily:'Manrope,sans-serif', minWidth:0,
+  };
+  const btnSm = (extra={}) => ({
+    border:'1px solid var(--border)', background:'none', color:'var(--text-secondary)',
+    fontSize:11, padding:'4px 9px', borderRadius:6, cursor:'pointer',
+    fontFamily:'Manrope,sans-serif', flexShrink:0, ...extra,
+  });
+
+  const FolderCard = ({node, depth}) => {
+    const isExpanded   = expandedFolders.has(node.id);
+    const hasChildren  = node.children.length > 0;
+    const isRenaming   = renamingId === node.id;
+    const isAddingSub  = addingSubId === node.id;
+    const isPickerOpen = pickerOpenId === node.id;
+    const isConfirmDel = confirmDeleteId === node.id;
+    const count        = countWithDesc(node.id);
+    const fColor       = node.color || 'slate';
+    const indent       = depth * 20;
+
+    return (
+      <div>
+        {/* main row */}
+        <div style={{display:'flex',alignItems:'center',gap:8,padding:'9px 12px',
+          paddingLeft:12+indent,borderRadius:10,background:'var(--bg-surface-2)',
+          border:'1px solid var(--border)',marginBottom:4,minHeight:50,flexWrap:'wrap'}}>
+          {/* chevron */}
+          {hasChildren ? (
+            <button onClick={()=>toggleExpand(node.id)} style={{background:'none',border:'none',cursor:'pointer',
+              padding:3,color:'var(--text-muted)',display:'flex',flexShrink:0,
+              transform:isExpanded?'rotate(90deg)':'none',transition:'transform 150ms'}}>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" style={{width:12,height:12}}><polyline points="9 18 15 12 9 6"/></svg>
+            </button>
+          ) : <span style={{width:18,flexShrink:0}}/>}
+          {/* folder icon */}
+          <button onClick={()=>setPickerOpenId(isPickerOpen?null:node.id)} title="Customise"
+            style={{background:'none',border:'none',padding:2,cursor:'pointer',display:'flex',flexShrink:0,borderRadius:6}}>
+            <FolderIconSvg color={fColor} iconId={node.icon} size={30}/>
+          </button>
+          {/* name / rename form */}
+          {isRenaming ? (
+            <form onSubmit={saveRename} style={{flex:1,display:'flex',gap:6,alignItems:'center',minWidth:160}}>
+              <input autoFocus value={renameVal} onChange={e=>setRenameVal(e.target.value)} style={inputStyle}/>
+              <button type="submit" style={btnSm({background:'var(--accent-soft)',border:'1px solid var(--accent-ring)',color:'var(--accent)',fontWeight:600})}>Save</button>
+              <button type="button" onClick={()=>setRenamingId(null)} style={btnSm()}>Cancel</button>
+            </form>
+          ) : (
+            <span style={{flex:1,fontWeight:500,fontSize:14,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
+              {node.name}
+            </span>
+          )}
+          {/* note count */}
+          {count > 0 && (
+            <span style={{fontSize:11,color:'var(--text-muted)',background:'var(--fill)',borderRadius:99,padding:'2px 8px',flexShrink:0}}>
+              {count}
+            </span>
+          )}
+          {/* actions */}
+          {!isRenaming && !isConfirmDel && (
+            <div style={{display:'flex',gap:4,flexShrink:0}}>
+              <button onClick={()=>update('ui',{...state.ui,view:'notes',folderId:node.id})} style={btnSm()}>View</button>
+              <button onClick={()=>{setAddingSubId(node.id);setNewFolderName('');setAddingRootFolder(false);setPickerOpenId(null);setExpandedFolders(prev=>new Set([...prev,node.id]));}}
+                style={btnSm({padding:'4px 7px'})} title="Add subfolder">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" style={{width:10,height:10,display:'block'}}>
+                  <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+                </svg>
+              </button>
+              <button onClick={()=>{setRenamingId(node.id);setRenameVal(node.name);setPickerOpenId(null);}} style={btnSm({fontSize:14,padding:'1px 7px'})}>&#9998;</button>
+              <button onClick={()=>setConfirmDeleteId(node.id)} style={btnSm({color:'var(--danger)',opacity:0.8})}>&#10005;</button>
+            </div>
+          )}
+          {/* delete confirm */}
+          {isConfirmDel && (
+            <div style={{display:'flex',gap:6,alignItems:'center',flexShrink:0,flexWrap:'wrap'}}>
+              <span style={{fontSize:11,color:'var(--text-secondary)'}}>
+                {node.children.length > 0 ? 'Delete folder and subfolders?' : 'Delete this folder?'}
+              </span>
+              <button onClick={()=>deleteFolderFv(node.id)}
+                style={{background:'var(--danger)',border:'none',color:'#fff',fontSize:11,fontWeight:600,padding:'3px 10px',borderRadius:6,cursor:'pointer'}}>
+                Delete
+              </button>
+              <button onClick={()=>setConfirmDeleteId(null)} style={btnSm()}>Cancel</button>
+            </div>
+          )}
+        </div>
+        {/* style picker */}
+        {isPickerOpen && (
+          <div onClick={e=>e.stopPropagation()}
+            style={{marginLeft:12+indent,marginBottom:6,background:'var(--bg-surface-2)',
+              border:'1px solid var(--border-strong)',borderRadius:10,padding:'12px',
+              overflow:'hidden',boxShadow:'0 4px 20px rgba(0,0,0,.28)'}}>
+            <div style={{fontSize:10,fontWeight:700,letterSpacing:'.07em',textTransform:'uppercase',color:'var(--text-muted)',marginBottom:8}}>Color</div>
+            <div style={{display:'flex',gap:6,marginBottom:12,flexWrap:'wrap'}}>
+              {FOLDER_COLORS.map(c=>(
+                <button key={c.id} title={c.id} onClick={()=>updateFolderMeta(node.id,{color:c.id})}
+                  style={{width:24,height:24,borderRadius:'50%',background:c.hex,
+                    border:fColor===c.id?'2.5px solid #fff':'2.5px solid transparent',
+                    boxShadow:fColor===c.id?`0 0 0 2.5px ${c.hex}`:'none',
+                    cursor:'pointer',padding:0,outline:'none',flexShrink:0}}/>
+              ))}
+            </div>
+            <div style={{fontSize:10,fontWeight:700,letterSpacing:'.07em',textTransform:'uppercase',color:'var(--text-muted)',marginBottom:8}}>Icon</div>
+            <div style={{display:'grid',gridTemplateColumns:'repeat(6,1fr)',gap:4}}>
+              {FOLDER_ICON_OPTS.map(ic=>{
+                const isSel = ic.id==='none' ? !node.icon : node.icon===ic.id;
+                return (
+                  <button key={ic.id} title={ic.id}
+                    onClick={()=>updateFolderMeta(node.id,{icon:ic.id==='none'?null:ic.id})}
+                    style={{aspectRatio:'1',display:'flex',alignItems:'center',justifyContent:'center',
+                      borderRadius:8,cursor:'pointer',padding:0,border:'none',outline:'none',
+                      background:isSel?'var(--accent-soft)':'transparent',transition:'background 100ms'}}>
+                    {ic.id==='none'
+                      ? <svg viewBox="0 0 24 24" width="24" height="24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" fill="var(--text-muted)" opacity="0.35"/></svg>
+                      : <FolderIconSvg color={fColor} iconId={ic.id} size={28}/>
+                    }
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+        {/* add subfolder form */}
+        {isAddingSub && (
+          <form onSubmit={e=>createFolder(e,node.id)}
+            style={{display:'flex',gap:6,alignItems:'center',marginLeft:12+indent+18+8,marginBottom:6}}>
+            <FolderIconSvg color="slate" iconId={null} size={20}/>
+            <input autoFocus value={newFolderName} onChange={e=>setNewFolderName(e.target.value)}
+              placeholder="Subfolder name" style={inputStyle}/>
+            <button type="submit" style={btnSm({background:'var(--accent-soft)',border:'1px solid var(--accent-ring)',color:'var(--accent)',fontWeight:600})}>Add</button>
+            <button type="button" onClick={()=>setAddingSubId(null)} style={btnSm()}>&#10005;</button>
+          </form>
+        )}
+        {/* children */}
+        {isExpanded && node.children.length > 0 && (
+          <div style={{marginLeft:20,paddingLeft:8,borderLeft:'2px solid var(--border)',marginBottom:2}}>
+            {node.children.map(child => <FolderCard key={child.id} node={child} depth={depth+1}/>)}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  return (
+    <div style={{flex:1,overflow:'auto',padding:isMobile?'18px 14px 80px':'28px 32px'}} className="scrollbar">
+      {/* header */}
+      <div style={{display:'flex',alignItems:'flex-start',justifyContent:'space-between',gap:12,marginBottom:22,flexWrap:'wrap'}}>
+        <div>
+          <h1 style={{fontFamily:'Fraunces,serif',fontSize:isMobile?22:26,fontWeight:600}}>Folders</h1>
+          <div style={{fontSize:12.5,color:'var(--text-secondary)',marginTop:3}}>
+            {folders.length} folder{folders.length!==1?'s':''}
+            {totalNotes > 0 ? ' · ' + totalNotes + ' note' + (totalNotes!==1?'s':'') : ''}
+          </div>
+        </div>
+        <div style={{display:'flex',gap:8,alignItems:'center',flexShrink:0}}>
+          {allExpandable.length > 0 && (
+            <button onClick={()=>setExpandedFolders(allExpanded ? new Set() : new Set(allExpandable))}
+              style={{background:'var(--fill)',border:'1px solid var(--border)',color:'var(--text-secondary)',
+                fontSize:12,padding:'6px 12px',borderRadius:8,cursor:'pointer',fontFamily:'Manrope,sans-serif'}}>
+              {allExpanded ? 'Collapse all' : 'Expand all'}
+            </button>
+          )}
+          <button onClick={()=>{setAddingRootFolder(true);setNewFolderName('');setAddingSubId(null);setPickerOpenId(null);}}
+            style={{background:'var(--accent-soft)',border:'1px solid var(--accent-ring)',color:'var(--accent)',
+              fontSize:13,fontWeight:600,padding:'7px 14px',borderRadius:8,cursor:'pointer',
+              display:'flex',alignItems:'center',gap:6,fontFamily:'Manrope,sans-serif',flexShrink:0}}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" style={{width:14,height:14}}><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            New Folder
+          </button>
+        </div>
+      </div>
+
+      {/* empty state */}
+      {folders.length === 0 && !addingRootFolder && (
+        <div style={{textAlign:'center',padding:'60px 20px',color:'var(--text-muted)'}}>
+          <div style={{marginBottom:14}}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" style={{width:52,height:52,opacity:0.3,display:'inline-block'}}>
+              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+            </svg>
+          </div>
+          <div style={{fontSize:15,fontWeight:600,marginBottom:6,color:'var(--text-secondary)'}}>No folders yet</div>
+          <div style={{fontSize:13,marginBottom:20}}>Organise your notes into folders and subfolders</div>
+          <button onClick={()=>{setAddingRootFolder(true);setNewFolderName('');}}
+            style={{background:'var(--accent-soft)',border:'1px solid var(--accent-ring)',color:'var(--accent)',
+              fontSize:13,fontWeight:600,padding:'8px 18px',borderRadius:8,cursor:'pointer'}}>
+            Create your first folder
+          </button>
+        </div>
+      )}
+
+      {/* folder tree */}
+      {(folders.length > 0 || addingRootFolder) && (
+        <div style={{display:'flex',flexDirection:'column'}}>
+          {folderTree.map(node => <FolderCard key={node.id} node={node} depth={0}/>)}
+          {/* root create form */}
+          {addingRootFolder && (
+            <form onSubmit={e=>createFolder(e,null)}
+              style={{display:'flex',gap:8,alignItems:'center',padding:'10px 12px',
+                background:'var(--bg-surface-2)',border:'1px dashed var(--accent-ring)',
+                borderRadius:10,marginTop:4}}>
+              <FolderIconSvg color="slate" iconId={null} size={26}/>
+              <input autoFocus value={newFolderName} onChange={e=>setNewFolderName(e.target.value)}
+                placeholder="Folder name" style={inputStyle}/>
+              <button type="submit" style={btnSm({background:'var(--accent-soft)',border:'1px solid var(--accent-ring)',color:'var(--accent)',fontWeight:600,fontSize:12,padding:'6px 14px'})}>Create</button>
+              <button type="button" onClick={()=>setAddingRootFolder(false)} style={btnSm({fontSize:12,padding:'6px 10px'})}>Cancel</button>
+            </form>
+          )}
+          {!addingRootFolder && (
+            <button onClick={()=>{setAddingRootFolder(true);setNewFolderName('');}}
+              style={{display:'flex',alignItems:'center',gap:6,marginTop:6,padding:'8px 12px',
+                background:'none',border:'1px dashed var(--border)',borderRadius:10,
+                color:'var(--text-muted)',fontSize:13,cursor:'pointer',
+                fontFamily:'Manrope,sans-serif',width:'100%',justifyContent:'flex-start'}}>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" style={{width:14,height:14}}><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+              Add root folder
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function TagsView({ state, update, isMobile }) {
   const [query, setQuery]   = useState('');
   const [sort, setSort]     = useState('used'); /* 'used' | 'az' */
@@ -5540,6 +5824,7 @@ function Sidebar({ state, update, syncStatus, onSync, collapsed, onToggle }) {
     {id:'tasks',    label:'Tasks',    icon:Ic.tasks},
     {id:'calendar', label:'Calendar', icon:Ic.cal},
     {id:'tags',     label:'Tags',     icon:Ic.tags},
+    {id:'folders',  label:'Folders',  icon:Ic.folders},
     {id:'admin',    label:'Admin',    icon:Ic.admin},
   ];
 
@@ -5844,6 +6129,7 @@ function MobileNav({ state, update, syncStatus }) {
         {id:'tasks',   label:'Tasks',  icon:Ic.tasks},
         {id:'calendar',label:'Cal',    icon:Ic.cal},
         {id:'tags',    label:'Tags',   icon:Ic.tags},
+        {id:'folders', label:'Folder', icon:Ic.folders},
       ].map(({id,label,icon})=>(
         <button key={id} onClick={()=>nav(id)} style={navBtnStyle(view===id)}>
           <span style={{width:20,height:20,display:'flex',alignItems:'center',justifyContent:'center'}}>{icon}</span>
@@ -7515,7 +7801,7 @@ function App() {
     </div>
   );
 
-  const views = { today:TodayView, notes:NotesView, journal:JournalView, tasks:TasksView, calendar:CalendarView, tags:TagsView, admin:AdminView };
+  const views = { today:TodayView, notes:NotesView, journal:JournalView, tasks:TasksView, calendar:CalendarView, tags:TagsView, folders:FoldersView, admin:AdminView };
   const View  = views[state.ui.view] || TodayView;
 
   const notesFullView = isNotesFullView(fullView, state, isMobile);
