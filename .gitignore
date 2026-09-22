@@ -5,3 +5,4 @@ node_modules/
 wrangler.toml
 push-worker/wrangler.toml
 .fake
+.git_local_repo_credentials
