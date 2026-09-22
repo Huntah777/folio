@@ -6212,38 +6212,102 @@ function Sidebar({ state, update, syncStatus, onSync, collapsed, onToggle }) {
 
       <div className="divider" style={{margin:'4px 8px'}}/>
 
-      {/* folders */}
-      <div style={{padding:'4px 0 0',flexShrink:0}}>
-        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'4px 12px 4px 12px'}}>
-          <span style={{fontSize:10.5,fontWeight:700,letterSpacing:'.07em',color:'var(--text-secondary)',textTransform:'uppercase',opacity:.75}}>Folders</span>
-          <button onClick={()=>{setAddingRootFolder(true);setAddingSubId(null);setNewFolderName('');}}
-            style={{background:'none',border:'none',color:'var(--text-muted)',cursor:'pointer',padding:'2px 5px',borderRadius:5,fontSize:13,lineHeight:1,transition:'all 110ms',display:'flex',alignItems:'center',gap:3}}
-            title="New folder"
-            onMouseEnter={e=>{e.currentTarget.style.color='var(--accent)';e.currentTarget.style.background='var(--accent-soft)';}}
-            onMouseLeave={e=>{e.currentTarget.style.color='var(--text-muted)';e.currentTarget.style.background='none';}}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" style={{width:10,height:10}}><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-            <span style={{fontSize:10}}>New</span>
-          </button>
-        </div>
-        {addingRootFolder&&(
-          <form onSubmit={e=>createFolder(e,null)} style={{display:'flex',gap:4,padding:'2px 8px 6px'}}>
-            <svg style={{width:11,height:11,flexShrink:0,color:'var(--text-secondary)',alignSelf:'center'}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
-            <input autoFocus value={newFolderName} onChange={e=>setNewFolderName(e.target.value)}
-              placeholder="Folder name…"
-              style={folderInputStyle}/>
-            <button type="submit" style={{background:'none',border:'none',color:'var(--accent)',fontSize:11,cursor:'pointer',flexShrink:0}}>add</button>
-            <button type="button" onClick={()=>setAddingRootFolder(false)} style={{background:'none',border:'none',color:'var(--text-secondary)',fontSize:11,cursor:'pointer',flexShrink:0}}>×</button>
-          </form>
-        )}
-        {folderTree.length===0&&!addingRootFolder&&(
-          <div style={{fontSize:11,color:'var(--text-muted)',padding:'2px 12px 6px'}}>No folders yet</div>
-        )}
-        <div>
-          {folderTree.map(node=>(
-            <FolderNode key={node.id} node={node} depth={0}/>
-          ))}
-        </div>
-      </div>
+      {/* motivational quote — rotates every 2 hours */}
+      {(()=>{
+        const QQ = [
+          {t:'An investment in knowledge pays the best interest.',a:'Benjamin Franklin'},
+          {t:'The secret of getting ahead is getting started.',a:'Mark Twain'},
+          {t:'Learning never exhausts the mind.',a:'Leonardo da Vinci'},
+          {t:'Your brain is for having ideas, not holding them.',a:'David Allen'},
+          {t:'Done is better than perfect.',a:'Sheryl Sandberg'},
+          {t:'Focus on being productive instead of busy.',a:'Tim Ferriss'},
+          {t:'It always seems impossible until it is done.',a:'Nelson Mandela'},
+          {t:'Every expert was once a beginner.',a:'Helen Hayes'},
+          {t:'Simplicity is the ultimate sophistication.',a:'Leonardo da Vinci'},
+          {t:'The best time to plant a tree was 20 years ago. The second best time is now.',a:'Chinese Proverb'},
+          {t:'One day or day one. You decide.',a:''},
+          {t:'Small steps consistently taken lead to extraordinary outcomes.',a:''},
+          {t:'Clarity about what matters provides clarity about what does not.',a:'Cal Newport'},
+          {t:'The only way to do great work is to love what you do.',a:'Steve Jobs'},
+          {t:'Excellence is not a destination but a continuous journey.',a:''},
+          {t:'A goal without a plan is just a wish.',a:'Antoine de Saint-Exupéry'},
+          {t:'You are what you repeatedly do.',a:'Aristotle'},
+          {t:'The quality of your life depends on the quality of your thoughts.',a:'Marcus Aurelius'},
+          {t:'Ideas are worthless without execution.',a:''},
+          {t:'Build momentum — action creates clarity, not the other way around.',a:''},
+          {t:'The secret of change is to focus not on fighting the old, but on building the new.',a:'Socrates'},
+          {t:'What gets measured gets managed.',a:'Peter Drucker'},
+          {t:'Absorb what is useful, discard what is not.',a:'Bruce Lee'},
+          {t:'Write it down. Written goals have a way of transforming wishes into wants.',a:''},
+          {t:'The mind is not a vessel to be filled, but a fire to be kindled.',a:'Plutarch'},
+          {t:'You do not rise to the level of your goals. You fall to the level of your systems.',a:'James Clear'},
+          {t:'Motivation gets you started. Habit keeps you going.',a:'Jim Ryun'},
+          {t:'In the middle of every difficulty lies opportunity.',a:'Albert Einstein'},
+          {t:'Strive not to be a success, but rather to be of value.',a:'Albert Einstein'},
+          {t:'The beautiful thing about learning is that no one can take it away from you.',a:'B.B. King'},
+          {t:'Live as if you were to die tomorrow. Learn as if you were to live forever.',a:'Mahatma Gandhi'},
+          {t:'Knowing is not enough; we must apply. Wishing is not enough; we must do.',a:'Goethe'},
+          {t:'Deep work produces rare and valuable results.',a:'Cal Newport'},
+          {t:'Wherever you are, be all there.',a:'Jim Elliot'},
+          {t:'The future depends on what you do today.',a:'Mahatma Gandhi'},
+          {t:'A year from now you will wish you had started today.',a:'Karen Lamb'},
+          {t:'It is not enough to be busy. What are we busy about?',a:'Henry David Thoreau'},
+          {t:'Focus is the art of knowing what to ignore.',a:''},
+          {t:'Perseverance is not a long race; it is many short races one after another.',a:'Walter Elliot'},
+          {t:'Knowledge without action is wasted.',a:'Abu Bakr'},
+          {t:'The key is not to prioritise what is on your schedule, but to schedule your priorities.',a:'Stephen Covey'},
+          {t:'Either write something worth reading or do something worth writing.',a:'Benjamin Franklin'},
+          {t:'The true measure of intelligence is the ability to change.',a:'Albert Einstein'},
+          {t:'Reading is to the mind what exercise is to the body.',a:'Joseph Addison'},
+          {t:'Act as if what you do makes a difference. It does.',a:'William James'},
+          {t:'Success is the sum of small efforts repeated day in and day out.',a:'Robert Collier'},
+          {t:'Great things are not done by impulse, but by a series of small things brought together.',a:'Van Gogh'},
+          {t:'Energy and persistence conquer all things.',a:'Benjamin Franklin'},
+          {t:'The beginning is the most important part of the work.',a:'Plato'},
+          {t:'Do what you can, with what you have, where you are.',a:'Theodore Roosevelt'},
+          {t:'First, solve the problem. Then, write the code.',a:'John Johnson'},
+          {t:'Any fool can write code a computer understands. Good programmers write code humans understand.',a:'Martin Fowler'},
+          {t:'The most dangerous phrase in the language is: we have always done it this way.',a:'Grace Hopper'},
+          {t:'Move fast and learn things.',a:''},
+          {t:'The best error message is the one that never shows up.',a:'Thomas Fuchs'},
+          {t:'Code is like humour. When you have to explain it, it is bad.',a:'Cory House'},
+          {t:'Programs must be written for people to read, and only incidentally for machines to execute.',a:'Harold Abelson'},
+          {t:'Make it work, make it right, make it fast.',a:'Kent Beck'},
+          {t:'Premature optimisation is the root of all evil.',a:'Donald Knuth'},
+          {t:'The best way to predict the future is to create it.',a:'Peter Drucker'},
+          {t:'Innovation distinguishes between a leader and a follower.',a:'Steve Jobs'},
+          {t:'Your work is going to fill a large part of your life. Be proud of it.',a:'Steve Jobs'},
+          {t:'The only limit to our realisation of tomorrow is our doubts of today.',a:'Franklin D. Roosevelt'},
+          {t:'We generate fears while we sit. We overcome them by action.',a:'Dr. Henry Link'},
+          {t:'Whether you think you can or think you cannot, you are right.',a:'Henry Ford'},
+          {t:'Start where you are. Use what you have. Do what you can.',a:'Arthur Ashe'},
+          {t:'Be yourself; everyone else is already taken.',a:'Oscar Wilde'},
+          {t:'Logic will get you from A to B. Imagination will take you everywhere.',a:'Albert Einstein'},
+          {t:'You miss 100% of the shots you do not take.',a:'Wayne Gretzky'},
+          {t:'When something is important enough, you do it even if the odds are not in your favour.',a:'Elon Musk'},
+          {t:'Do one thing every day that scares you.',a:'Eleanor Roosevelt'},
+          {t:'Well done is better than well said.',a:'Benjamin Franklin'},
+        ];
+        const q = QQ[Math.floor(Date.now()/(2*60*60*1000))%QQ.length];
+        return (
+          <div style={{padding:'6px 10px 4px',flexShrink:0}}>
+            <div style={{padding:'10px 12px',background:'var(--fill)',borderRadius:10,
+              borderLeft:'2px solid var(--accent-ring)',position:'relative'}}>
+              <div style={{fontSize:22,color:'var(--accent)',opacity:0.35,lineHeight:1,
+                fontFamily:'Fraunces,serif',fontWeight:600,marginBottom:3}}>&ldquo;</div>
+              <p style={{fontSize:11,color:'var(--text-tertiary)',lineHeight:1.6,fontStyle:'italic',margin:0,
+                marginBottom:q.a?5:0}}>
+                {q.t}
+              </p>
+              {q.a&&(
+                <div style={{fontSize:9.5,color:'var(--text-muted)',fontWeight:700,letterSpacing:'.03em'}}>
+                  &mdash; {q.a}
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })()}
 
       <div className="divider" style={{margin:'4px 8px'}}/>
 
