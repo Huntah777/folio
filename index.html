@@ -5063,9 +5063,27 @@ function FoldersView({ state, update, isMobile }) {
     const isConfirmDel = confirmDeleteId === node.id;
     const isNotesOpen  = notesOpenIds.has(node.id);
     const count        = countWithDesc(node.id);
-    const directNotes  = isNotesOpen
-      ? [...state.notes].filter(n => n.folderId === node.id).sort((a,b) => b.updated - a.updated)
+    /* All notes in this folder AND every descendant subfolder, grouped by their
+       immediate parent folder so the user can see which subfolder each note is in. */
+    const allDescFolderIds = isNotesOpen ? getFolderDescIds(node.id, folders) : [];
+    const allDescNotes = isNotesOpen
+      ? [...state.notes].filter(n => allDescFolderIds.includes(n.folderId)).sort((a,b) => b.updated - a.updated)
       : [];
+    /* Build groups: first group = notes directly here, then one group per subfolder that has notes */
+    const noteGroups = isNotesOpen ? (() => {
+      const groups = [];
+      const direct = allDescNotes.filter(n => n.folderId === node.id);
+      if (direct.length) groups.push({folder:null, notes:direct});
+      const subFolderIds = allDescFolderIds.filter(id => id !== node.id);
+      subFolderIds.forEach(fid => {
+        const fNotes = allDescNotes.filter(n => n.folderId === fid);
+        if (fNotes.length) {
+          const f = folders.find(ff => ff.id === fid);
+          groups.push({folder:f||null, notes:fNotes});
+        }
+      });
+      return groups;
+    })() : [];
     const fColor       = node.color || 'slate';
     const indent       = depth * 20;
 
@@ -5179,38 +5197,64 @@ function FoldersView({ state, update, isMobile }) {
         {isNotesOpen && (
           <div style={{marginLeft:12+indent,marginBottom:6,background:'var(--bg-surface-2)',
             border:'1px solid var(--border)',borderRadius:10,overflow:'hidden'}}>
-            <div style={{padding:'8px 14px 6px',fontSize:9.5,fontWeight:700,letterSpacing:'.07em',
-              textTransform:'uppercase',color:'var(--text-muted)',
-              borderBottom:'1px solid var(--border)'}}>
-              Notes in this folder
-            </div>
-            {directNotes.length === 0 ? (
+            {allDescNotes.length === 0 ? (
               <div style={{padding:'14px 16px',fontSize:12,color:'var(--text-muted)',textAlign:'center'}}>
-                No notes directly in this folder
+                No notes in this folder or its subfolders
               </div>
             ) : (
-              directNotes.map((n, i) => (
-                <div key={n.id}
-                  onClick={()=>update('ui',{...state.ui,view:'notes',folderId:node.id,noteId:n.id})}
-                  style={{display:'flex',alignItems:'center',gap:10,padding:'9px 14px',cursor:'pointer',
-                    borderBottom:i<directNotes.length-1?'1px solid var(--border)':'none',
-                    transition:'background 100ms'}}
-                  onMouseEnter={e=>e.currentTarget.style.background='var(--fill-hover)'}
-                  onMouseLeave={e=>e.currentTarget.style.background='transparent'}>
-                  <span style={{fontSize:16,flexShrink:0}}>{n.emoji||'📝'}</span>
-                  <span style={{flex:1,fontSize:13,fontWeight:500,overflow:'hidden',textOverflow:'ellipsis',
-                    whiteSpace:'nowrap',color:'var(--text-primary)'}}>
-                    {n.title||'Untitled'}
-                  </span>
-                  {n.tags&&n.tags.length>0&&(
-                    <span style={{fontSize:10,color:tagColor(n.tags[0]),flexShrink:0,maxWidth:60,
-                      overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
-                      {n.tags[0]}
-                    </span>
+              noteGroups.map((group, gi) => (
+                <div key={gi}>
+                  {/* subfolder section header — only shown when there is more than one group */}
+                  {noteGroups.length > 1 && (
+                    <div style={{display:'flex',alignItems:'center',gap:6,padding:'6px 14px',
+                      background:'var(--bg-surface-3)',borderTop:gi>0?'1px solid var(--border)':'none'}}>
+                      {group.folder
+                        ? <><FolderIconSvg color={group.folder.color||'slate'} iconId={group.folder.icon} size={13}/>
+                            <span style={{fontSize:10,fontWeight:700,letterSpacing:'.06em',textTransform:'uppercase',
+                              color:'var(--text-muted)'}}>{group.folder.name}</span></>
+                        : <span style={{fontSize:10,fontWeight:700,letterSpacing:'.06em',textTransform:'uppercase',
+                            color:'var(--text-muted)'}}>This folder</span>
+                      }
+                    </div>
                   )}
-                  <span style={{fontSize:11,color:'var(--text-muted)',flexShrink:0,whiteSpace:'nowrap'}}>
-                    {new Date(n.updated).toLocaleDateString('en-GB',{day:'numeric',month:'short'})}
-                  </span>
+                  {group.notes.map((n, i) => {
+                    const preview = notePreview(n.body, 90);
+                    return (
+                      <div key={n.id}
+                        style={{display:'flex',alignItems:'center',gap:10,padding:'10px 14px',
+                          borderBottom:i<group.notes.length-1?'1px solid var(--border)':'none'}}>
+                        <span style={{fontSize:16,flexShrink:0}}>{n.emoji||'📝'}</span>
+                        <div style={{flex:1,minWidth:0}}>
+                          <div style={{fontSize:13,fontWeight:600,overflow:'hidden',textOverflow:'ellipsis',
+                            whiteSpace:'nowrap',color:'var(--text-primary)',marginBottom:2}}>
+                            {n.title||'Untitled'}
+                          </div>
+                          {preview&&<div style={{fontSize:11,color:'var(--text-muted)',overflow:'hidden',
+                            textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{preview}</div>}
+                        </div>
+                        {n.tags&&n.tags.length>0&&(
+                          <span style={{fontSize:10,color:tagColor(n.tags[0]),flexShrink:0,maxWidth:54,
+                            overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
+                            {n.tags[0]}
+                          </span>
+                        )}
+                        <span style={{fontSize:11,color:'var(--text-muted)',flexShrink:0,whiteSpace:'nowrap'}}>
+                          {new Date(n.updated).toLocaleDateString('en-GB',{day:'numeric',month:'short'})}
+                        </span>
+                        <button
+                          onClick={()=>update('ui',{...state.ui,view:'notes',folderId:n.folderId,noteId:n.id})}
+                          style={{background:'var(--accent-soft)',border:'1px solid var(--accent-ring)',
+                            color:'var(--accent)',fontSize:11,fontWeight:600,padding:'4px 10px',
+                            borderRadius:6,cursor:'pointer',flexShrink:0,display:'flex',
+                            alignItems:'center',gap:4,fontFamily:'Manrope,sans-serif'}}>
+                          Open
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" style={{width:9,height:9}}>
+                            <line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/>
+                          </svg>
+                        </button>
+                      </div>
+                    );
+                  })}
                 </div>
               ))
             )}
