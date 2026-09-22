@@ -4893,7 +4893,7 @@ const plural = (n, noun) => n === 1 ? noun : noun === 'entry' ? 'entries' : noun
 /* ── FoldersView — full-page folder management ── */
 function FoldersView({ state, update, isMobile }) {
   const folders = state.folders || [];
-  const [expandedFolders, setExpandedFolders] = useState(() => new Set(folders.map(f => f.id)));
+  const [expandedFolders, setExpandedFolders] = useState(() => new Set());
   const [addingRootFolder, setAddingRootFolder] = useState(false);
   const [addingSubId, setAddingSubId] = useState(null);
   const [newFolderName, setNewFolderName] = useState('');
@@ -4901,6 +4901,7 @@ function FoldersView({ state, update, isMobile }) {
   const [renameVal, setRenameVal] = useState('');
   const [pickerOpenId, setPickerOpenId] = useState(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
+  const [notesOpenIds, setNotesOpenIds] = useState(() => new Set());
 
   const folderTree = useMemo(() => buildFolderTree(folders), [folders]);
 
@@ -4915,6 +4916,11 @@ function FoldersView({ state, update, isMobile }) {
 
   const toggleExpand = fid =>
     setExpandedFolders(prev => {
+      const n = new Set(prev); n.has(fid) ? n.delete(fid) : n.add(fid); return n;
+    });
+
+  const toggleNotesOpen = fid =>
+    setNotesOpenIds(prev => {
       const n = new Set(prev); n.has(fid) ? n.delete(fid) : n.add(fid); return n;
     });
 
@@ -4967,7 +4973,11 @@ function FoldersView({ state, update, isMobile }) {
     const isAddingSub  = addingSubId === node.id;
     const isPickerOpen = pickerOpenId === node.id;
     const isConfirmDel = confirmDeleteId === node.id;
+    const isNotesOpen  = notesOpenIds.has(node.id);
     const count        = countWithDesc(node.id);
+    const directNotes  = isNotesOpen
+      ? [...state.notes].filter(n => n.folderId === node.id).sort((a,b) => b.updated - a.updated)
+      : [];
     const fColor       = node.color || 'slate';
     const indent       = depth * 20;
 
@@ -5002,11 +5012,16 @@ function FoldersView({ state, update, isMobile }) {
               {node.name}
             </span>
           )}
-          {/* note count */}
+          {/* note count — click to toggle inline notes */}
           {count > 0 && (
-            <span style={{fontSize:11,color:'var(--text-muted)',background:'var(--fill)',borderRadius:99,padding:'2px 8px',flexShrink:0}}>
-              {count}
-            </span>
+            <button onClick={()=>toggleNotesOpen(node.id)}
+              style={{fontSize:11,background:isNotesOpen?'var(--accent-soft)':'var(--fill)',
+                color:isNotesOpen?'var(--accent)':'var(--text-muted)',
+                border:isNotesOpen?'1px solid var(--accent-ring)':'1px solid transparent',
+                borderRadius:99,padding:'2px 8px',flexShrink:0,cursor:'pointer',
+                fontFamily:'Manrope,sans-serif'}}>
+              {count} note{count!==1?'s':''}
+            </button>
           )}
           {/* actions */}
           {!isRenaming && !isConfirmDel && (
@@ -5069,6 +5084,54 @@ function FoldersView({ state, update, isMobile }) {
                   </button>
                 );
               })}
+            </div>
+          </div>
+        )}
+        {/* inline notes panel */}
+        {isNotesOpen && (
+          <div style={{marginLeft:12+indent,marginBottom:6,background:'var(--bg-surface-2)',
+            border:'1px solid var(--border)',borderRadius:10,overflow:'hidden'}}>
+            <div style={{padding:'8px 14px 6px',fontSize:9.5,fontWeight:700,letterSpacing:'.07em',
+              textTransform:'uppercase',color:'var(--text-muted)',
+              borderBottom:'1px solid var(--border)'}}>
+              Notes in this folder
+            </div>
+            {directNotes.length === 0 ? (
+              <div style={{padding:'14px 16px',fontSize:12,color:'var(--text-muted)',textAlign:'center'}}>
+                No notes directly in this folder
+              </div>
+            ) : (
+              directNotes.map((n, i) => (
+                <div key={n.id}
+                  onClick={()=>update('ui',{...state.ui,view:'notes',folderId:node.id,noteId:n.id})}
+                  style={{display:'flex',alignItems:'center',gap:10,padding:'9px 14px',cursor:'pointer',
+                    borderBottom:i<directNotes.length-1?'1px solid var(--border)':'none',
+                    transition:'background 100ms'}}
+                  onMouseEnter={e=>e.currentTarget.style.background='var(--fill-hover)'}
+                  onMouseLeave={e=>e.currentTarget.style.background='transparent'}>
+                  <span style={{fontSize:16,flexShrink:0}}>{n.emoji||'📝'}</span>
+                  <span style={{flex:1,fontSize:13,fontWeight:500,overflow:'hidden',textOverflow:'ellipsis',
+                    whiteSpace:'nowrap',color:'var(--text-primary)'}}>
+                    {n.title||'Untitled'}
+                  </span>
+                  {n.tags&&n.tags.length>0&&(
+                    <span style={{fontSize:10,color:tagColor(n.tags[0]),flexShrink:0,maxWidth:60,
+                      overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
+                      {n.tags[0]}
+                    </span>
+                  )}
+                  <span style={{fontSize:11,color:'var(--text-muted)',flexShrink:0,whiteSpace:'nowrap'}}>
+                    {new Date(n.updated).toLocaleDateString('en-GB',{day:'numeric',month:'short'})}
+                  </span>
+                </div>
+              ))
+            )}
+            <div style={{padding:'7px 14px',borderTop:'1px solid var(--border)',display:'flex',justifyContent:'flex-end'}}>
+              <button onClick={()=>update('ui',{...state.ui,view:'notes',folderId:node.id})}
+                style={{background:'none',border:'none',color:'var(--accent)',fontSize:11,
+                  cursor:'pointer',fontFamily:'Manrope,sans-serif',fontWeight:600}}>
+                Open in Notes &#8594;
+              </button>
             </div>
           </div>
         )}
