@@ -3861,10 +3861,9 @@ function TasksView({ state, update, isMobile, pom, setPom }) {
     const fresh = next.filter(tg => !state.tags.includes(tg));
     if (fresh.length) update('tags', [...state.tags, ...fresh]);
   };
-  const taskOnlyTags = useMemo(() => [...new Set([
-    ...(state.tags||[]),
-    ...state.tasks.flatMap(t => t.tags||[]),
-  ])].sort((a,b)=>a.localeCompare(b)), [state.tags, state.tasks]);
+  const taskOnlyTags = useMemo(() => [...new Set(
+    state.tasks.flatMap(t => t.tags||[]),
+  )].sort((a,b)=>a.localeCompare(b)), [state.tasks]);
 
   const addTask = e => {
     e.preventDefault();
