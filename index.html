@@ -5630,7 +5630,7 @@ function JournalView({ state, update, isMobile }) {
   const [composerText, setComposerText]   = useState('');
   const [composerMood, setComposerMood]   = useState(null);
   const [composerTags, setComposerTags]   = useState([]);
-  const [usePrompt, setUsePrompt]         = useState(true);
+  const [usePrompt, setUsePrompt]         = useState(false);
   const [editingId, setEditingId]         = useState(null);
   const [editText, setEditText]           = useState('');
   const [editMood, setEditMood]           = useState(null);
@@ -5652,6 +5652,7 @@ function JournalView({ state, update, isMobile }) {
 
   const streak   = useMemo(() => computeStreak(entries), [entries]);
   const prompt   = useMemo(() => dailyPrompt(), []);
+  const usedPromptToday = useMemo(() => entries.some(e => e.date === todayKey() && e.prompt != null), [entries]);
   const onThisDay = useMemo(() => entriesOnThisDay(entries), [entries]);
   /* Every tag ever used on a journal entry, most-used first, so a tag you
      reach for constantly (#gratitude…) sits at the top of the suggestion list
@@ -5709,7 +5710,7 @@ function JournalView({ state, update, isMobile }) {
     if (!composerText.trim()) return;
     const entry = { id:uid(), date:todayKey(), created:Date.now(), updated:Date.now(), body:composerText.trim(), prompt:usePrompt?prompt:null, mood:composerMood, tags:composerTags };
     update('journal', [entry, ...entries]);
-    setComposerText(''); setComposerMood(null); setUsePrompt(true);
+    setComposerText(''); setComposerMood(null); setUsePrompt(false);
     /* A new entry is always dated today — jump the view back to this week so
        it's actually visible, rather than landing silently in a week you're
        not looking at because you were browsing old entries when you wrote it. */
@@ -5759,9 +5760,11 @@ function JournalView({ state, update, isMobile }) {
       <div className="card" style={{padding:'16px 18px',maxWidth:900,marginBottom:26,display:'flex',flexDirection:'column',gap:12}}>
         <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:10}}>
           <span style={{fontSize:11.5,color:'var(--text-muted)'}}>{usePrompt ? "Replying to today's prompt" : 'Writing freely'}</span>
-          <span onClick={()=>setUsePrompt(v=>!v)} style={{fontSize:11.5,color:'var(--accent)',cursor:'pointer',userSelect:'none'}}>
-            {usePrompt ? 'Skip prompt' : "Use today's prompt"}
-          </span>
+          {!usedPromptToday && (
+            <span onClick={()=>setUsePrompt(v=>!v)} style={{fontSize:11.5,color:'var(--accent)',cursor:'pointer',userSelect:'none'}}>
+              {usePrompt ? 'Skip prompt' : "Use today's prompt"}
+            </span>
+          )}
         </div>
         <textarea value={composerText} onChange={e=>setComposerText(e.target.value)}
           placeholder={usePrompt ? prompt : "Write whatever's on your mind…"} rows={3}
