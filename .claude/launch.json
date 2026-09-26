@@ -4,7 +4,7 @@
     {
       "name": "folio",
       "runtimeExecutable": "npx",
-      "runtimeArgs": ["serve", "-p", "4200", "."],
+      "runtimeArgs": ["serve", "-l", "4200", "."],
       "port": 4200
     }
   ]

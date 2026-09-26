@@ -2896,11 +2896,8 @@ function NoteEditor({ note, state, update, isMobile }) {
   };
 
   /* ── toolbar button style helper ── */
-  const tbBtn = {background:'var(--fill)',border:'1px solid transparent',borderRadius:'var(--r-pill)',color:'var(--text-secondary)',padding:'5px 9px',fontSize:11,fontWeight:600,cursor:'pointer',fontFamily:'Manrope,sans-serif',transition:'all 110ms',minHeight:26};
-  /* Icon-only variant for the attach/insert buttons — same pill, sized for a
-     bare 12px glyph instead of an icon+label pair, so the row stays compact
-     without losing tap-target size. */
-  const tbIconBtn = {...tbBtn,width:30,height:30,padding:0,display:'flex',alignItems:'center',justifyContent:'center'};
+  const tbBtn = {background:'var(--fill)',border:'1px solid transparent',borderRadius:'var(--r-pill)',color:'var(--text-secondary)',padding:isMobile?'8px 12px':'5px 9px',fontSize:isMobile?13:11,fontWeight:600,cursor:'pointer',fontFamily:'Manrope,sans-serif',transition:'all 110ms',minHeight:isMobile?40:26};
+  const tbIconBtn = {...tbBtn,width:isMobile?40:30,height:isMobile?40:30,padding:0,display:'flex',alignItems:'center',justifyContent:'center'};
 
   return (
     <div style={{flex:1,display:'flex',flexDirection:'column',overflow:'hidden'}}>
@@ -6383,15 +6380,12 @@ function MobileNav({ state, update, syncStatus }) {
     flex:1,minWidth:0,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',
     gap:2,background:'none',border:'none',cursor:'pointer',overflow:'hidden',
     color:active?'var(--accent)':'var(--text-muted)',
-    fontSize:9,fontFamily:'Manrope,sans-serif',fontWeight:700,
+    fontSize:10,fontFamily:'Manrope,sans-serif',fontWeight:700,
     letterSpacing:'.02em',textTransform:'uppercase',whiteSpace:'nowrap',textOverflow:'ellipsis',
     transition:'color 110ms',position:'relative',padding:'6px 2px',
   });
-  /* icon-only utility button (Admin, doubling as the sync-status indicator) —
-     fixed width, no label, kept out of the flex:1 label row so primary tabs
-     always have room to breathe */
   const navUtilStyle = extra => ({
-    flex:'0 0 30px',width:30,display:'flex',alignItems:'center',justifyContent:'center',
+    flex:'0 0 44px',width:44,display:'flex',alignItems:'center',justifyContent:'center',
     background:'none',border:'none',cursor:'pointer',color:'var(--text-muted)',
     transition:'color 110ms',position:'relative',padding:'6px 0',
     ...extra,
