@@ -216,6 +216,25 @@ You can change the model for each study type in **Admin → Study & AI**.
 - **Recordings** are cut into ~4.5-minute segments. Each one is saved in
   IndexedDB until Whisper has transcribed it. The transcript goes to R2 as a
   `text/plain` attachment, because an hour is about 50 KB, too much for the blob.
+- **Floating player.** Notes can carry media: a kept recording or a YouTube video.
+  *Play* opens a draggable, resizable window (size and position are remembered per
+  device) that keeps playing while you move around Folio. Its transcript follows
+  along, and clicking a timestamp jumps to that moment.
+- **Kept recordings.** With "Keep the audio" ticked (the default) each ~4.5-minute
+  segment is also uploaded to R2 — about 15 MB per hour, well inside R2's free 10 GB.
+  Playback stitches the segments into one timeline using each segment's *measured*
+  audio length, so it stays accurate even if the phone paused capture mid-lecture.
+  Deleting the note (or the recording) deletes the audio.
+- **YouTube.** Videos play through YouTube's official embedded player, so
+  `_headers` allows `youtube-nocookie.com` frames and `www.youtube.com` scripts
+  (and `blob:` audio). Some videos — often music — can't be embedded; Folio
+  remembers that and offers *Open ↗* instead.
+- **YouTube transcripts are paste-based in practice.** As of 2026-10-02 YouTube
+  returns empty caption downloads to servers (even from a home connection), so
+  Folio shows the video's title and channel and asks you to paste the transcript
+  (YouTube → …more → Show transcript → copy all). Timestamps in the paste are
+  kept. `functions/_lib/youtube.js` still tries first and starts working again
+  automatically if YouTube loosens this.
 - **Spend:** *Admin → Study & AI → Show last 30 days* reports an estimate from
   logged token usage.
 
@@ -231,4 +250,4 @@ You can change the model for each study type in **Admin → Study & AI**.
 ## After deploying
 
 Bump `CACHE` in `sw.js` whenever static assets change, or clients keep serving
-the old cached copy. Currently `folio-v35`.
+the old cached copy. Currently `folio-v36`.

@@ -25,8 +25,10 @@ const MAX_FILE_BYTES = 25 * 1024 * 1024; /* 25 MB per file */
    browser, so an open upload endpoint on a shared token is an XSS vector
    (an uploaded .html would run on this origin). PDFs, plus plain-text lecture
    transcripts — text/plain is safe because [key].js serves every object as
-   an attachment with nosniff, so it can never render as markup. */
-const ALLOWED_TYPES = new Set(['application/pdf', 'text/plain']);
+   an attachment with nosniff, so it can never render as markup. Audio is the
+   same: lecture recordings, uploaded as ~4.5-minute segments (well under the
+   size cap) and played back from blob: URLs. */
+const ALLOWED_TYPES = new Set(['application/pdf', 'text/plain', 'audio/webm', 'audio/mp4', 'audio/ogg']);
 
 const json = (data, status = 200) =>
   new Response(JSON.stringify(data), {

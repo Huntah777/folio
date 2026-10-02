@@ -436,8 +436,15 @@ export async function transcribe(env, buffer, { prompt = '', language } = {}) {
     ...(prompt ? { initial_prompt: prompt.slice(-500) } : {}),
     ...(language ? { language } : {}),
   });
+  /* Per-phrase timings (seconds from the start of THIS audio chunk) let the
+     client build a timestamped transcript that can seek the recording. Mapped
+     defensively: if the model omits them the client falls back to the text. */
+  const segments = (Array.isArray(out?.segments) ? out.segments : [])
+    .map((sg) => ({ start: Number(sg?.start) || 0, end: Number(sg?.end) || 0, text: String(sg?.text || '').trim() }))
+    .filter((sg) => sg.text);
   return {
     text: String(out?.text || '').trim(),
     duration: out?.transcription_info?.duration || 0,
+    segments,
   };
 }

@@ -7,7 +7,8 @@
    POST check       type-the-answer marking (cardCheck)
    POST recall      blank-page recall feedback (blankRecall)
    POST mark        written exam marking (examMarking) + attempt record
-   POST transcribe  raw audio segment → Whisper text
+   POST transcribe  raw audio segment → Whisper text + per-phrase timings
+   GET  youtube     ?v=<id> → title/author/embeddable + captions if obtainable
    GET  ping        configuration check (?deep=1 makes tiny real calls)
    GET  usage       estimated spend over the last 30 days
 
@@ -20,6 +21,7 @@
 
 import Anthropic from '@anthropic-ai/sdk';
 import { json, tokenOk } from '../../_lib/auth.js';
+import { youtubeInfo } from '../../_lib/youtube.js';
 import {
   MODELS, KINDS, StudyError, WHISPER_MODEL,
   checkModel, checkSize, runLive, submitBatch, retrieveBatch, collectBatch, costOf, transcribe,
@@ -360,6 +362,7 @@ const ROUTES = {
   recall:     { method: 'POST', run: (env, req) => readJson(req).then((b) => recall(env, b)) },
   mark:       { method: 'POST', run: (env, req) => readJson(req).then((b) => mark(env, b)) },
   transcribe: { method: 'POST', run: (env, req) => doTranscribe(env, req) },
+  youtube:    { method: 'GET',  run: (env, req) => youtubeInfo(new URL(req.url).searchParams.get('v')) },
   ping:       { method: 'GET',  run: (env, req) => ping(env, new URL(req.url)) },
   usage:      { method: 'GET',  run: (env, req) => usageSummary(env, new URL(req.url)) },
 };

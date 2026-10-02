@@ -260,6 +260,11 @@ input:focus,textarea:focus{outline:none}
 .seg > button:hover{color:var(--text-primary)}
 .seg > button[aria-pressed="true"]{background:var(--bg-surface);color:var(--text-primary);box-shadow:var(--shadow-1),inset 0 1px 0 var(--hairline)}
 
+/* Floating media player (see MediaPanel). Below modals (z 50) so a dialog
+   always covers it; above page content. */
+.media-panel{position:fixed;z-index:45;display:flex;flex-direction:column;background:var(--modal-bg);border:1px solid var(--glass-border);
+  border-radius:var(--r-lg);box-shadow:var(--shadow-3);overflow:hidden}
+
 /* Glass slider: a capsule track with a white thumb, like the iOS 27 control.
    The fill shows how far toward Tinted it's set. */
 .glass-slider{-webkit-appearance:none;appearance:none;width:100%;height:30px;background:transparent;cursor:pointer;--pct:50%}
@@ -979,6 +984,8 @@ const purgeNoteFiles = (notes, ids) => {
   for (const n of notes || []) {
     if (!set.has(n.id)) continue;
     for (const f of n.files || []) Files.remove(f.key);
+    /* Recording audio lives in R2 too (a list of segment objects). */
+    for (const m of n.media || []) for (const p of m.parts || []) Files.remove(p.key);
   }
 };
 
@@ -1249,7 +1256,7 @@ async function noteToStudyText(note) {
         const t = await studyFileText(f);
         if (t) text += `\n\n[Attached PDF: ${f.name}]\n${t}`;
       } else if (f.type === 'text/plain') {
-        const t = await studyFileText(f);
+        const t = stripStamps(await studyFileText(f));
         if (t) text += `\n\n[Lecture transcript: ${f.name}]\n${t}`;
       }
     } catch {}
@@ -1399,6 +1406,7 @@ const StudyAPI = {
   mark(body)     { return this.call('mark', { body }); },
   ping(deep)     { return this.call(`ping${deep ? '?deep=1' : ''}`, { method:'GET' }); },
   usage()        { return this.call(`usage?tz=${new Date().getTimezoneOffset()}`, { method:'GET' }); },
+  youtube(id)    { return this.call(`youtube?v=${encodeURIComponent(id)}`, { method:'GET' }); },
   transcribe(blob, prompt) {
     return this.call('transcribe', {
       raw: true, body: blob,
@@ -1630,19 +1638,114 @@ function captionsToText(raw) {
     .replace(/\s+/g, ' ')
     .trim();
 }
-/* A source (recording, captions) becomes a note whose transcript lives in R2
-   as text/plain — an hour of speech is ~50 KB, too much to keep in the
-   synced blob. Falls back to the body when R2 isn't set up. */
-async function createTranscriptNote({ state, update, title, transcript, folderId = null, emoji = '🎙️' }) {
+/* ── media: transcripts with timestamps, YouTube links, saving a source ──
+   A transcript is stored as plain text, one phrase per line, each optionally
+   prefixed "[m:ss]" or "[h:mm:ss]". That one format is what clicking a line
+   to seek uses, what the study generator reads (with the stamps stripped),
+   and what a human sees in the note — no JSON sidecar to keep in step. */
+const YT_ID_RE = /^[A-Za-z0-9_-]{11}$/;
+function parseYouTubeId(input) {
+  const s = String(input || '').trim();
+  if (YT_ID_RE.test(s)) return s;
+  let u;
+  try { u = new URL(/^https?:\/\//i.test(s) ? s : 'https://' + s); } catch { return null; }
+  const host = u.hostname.replace(/^(www|m|music)\./, '');
+  let id = null;
+  if (host === 'youtu.be') id = u.pathname.slice(1).split('/')[0];
+  else if (host === 'youtube.com' || host === 'youtube-nocookie.com') {
+    if (u.pathname === '/watch') id = u.searchParams.get('v');
+    else { const m = u.pathname.match(/^\/(?:embed|shorts|live|v)\/([^/?]+)/); if (m) id = m[1]; }
+  }
+  return id && YT_ID_RE.test(id) ? id : null;
+}
+
+const fmtClock = sec => {
+  sec = Math.max(0, Math.floor(Number(sec) || 0));
+  const h = Math.floor(sec / 3600), m = Math.floor(sec % 3600 / 60), s = sec % 60;
+  return h ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}` : `${m}:${String(s).padStart(2, '0')}`;
+};
+const clockToSec = c => String(c).split(':').reduce((a, p) => a * 60 + (+p), 0);
+const STAMP_LINE = /^\[(\d{1,2}(?::\d{2}){1,2})\][ \t]*(.*)$/;
+
+const formatTranscript = lines =>
+  lines.map(l => l.t == null ? l.text : `[${fmtClock(l.t)}] ${l.text}`).join('\n');
+const parseTranscript = text => String(text || '').split(/\r?\n/).map(l => {
+  const m = l.match(STAMP_LINE);
+  return m ? { t: clockToSec(m[1]), text: m[2] } : { t: null, text: l };
+}).filter(l => l.text.trim());
+/* The model doesn't need (and shouldn't be charged for) the timestamps. */
+const stripStamps = text => String(text || '').replace(/^\[\d{1,2}(?::\d{2}){1,2}\][ \t]*/gm, '');
+
+/* Pasted text → [{t, text}]. Understands: WebVTT/SRT caption files; the
+   transcript panel copied from YouTube (a timestamp on its own line, or
+   "0:12 text" on one line); and plain text, which keeps its own lines. */
+function parsePastedTranscript(raw) {
+  const src = String(raw || '').replace(/\r/g, '');
+  if (/-->/.test(src)) {
+    const lines = [];
+    for (const block of src.split(/\n{2,}/)) {
+      const ls = block.split('\n');
+      const i = ls.findIndex(l => /-->/.test(l));
+      if (i < 0) continue;
+      const m = ls[i].match(/(?:(\d+):)?(\d{1,2}):(\d{2})(?:[.,]\d+)?\s*-->/);
+      if (!m) continue;
+      const text = ls.slice(i + 1).join(' ').replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
+      if (text) lines.push({ t: (+(m[1] || 0)) * 3600 + (+m[2]) * 60 + (+m[3]), text });
+    }
+    /* YouTube auto-captions repeat the previous cue. */
+    return lines.filter((l, i, a) => !i || l.text !== a[i - 1].text);
+  }
+  const STAMP = /^(\d{1,2}(?::\d{2}){1,2})$/, INLINE = /^(\d{1,2}(?::\d{2}){1,2})\s+(\S.*)$/;
+  const timed = [];
+  let t = null, buf = [];
+  const flush = () => { if (buf.length) { timed.push({ t, text: buf.join(' ').replace(/\s+/g, ' ').trim() }); buf = []; } };
+  for (const rawLine of src.split('\n')) {
+    const l = rawLine.trim();
+    if (!l) continue;
+    let m;
+    if ((m = l.match(STAMP))) { flush(); t = clockToSec(m[1]); }
+    else if ((m = l.match(INLINE))) { flush(); t = clockToSec(m[1]); buf.push(m[2]); }
+    else buf.push(l);
+  }
+  flush();
+  if (timed.some(l => l.t != null)) return timed.filter(l => l.text);
+  return src.split('\n').map(l => ({ t: null, text: l.trim() })).filter(l => l.text);
+}
+
+/* Which transcript file belongs to a media item. New items carry the key of the
+   transcript saved with them; notes made before that (or a lone transcript)
+   fall back to the note's first text file — unless some item is keyed, in which
+   case an unkeyed one has no transcript rather than borrowing another's. */
+function mediaTranscriptFile(note, item) {
+  const files = (note?.files || []).filter(f => f.type === 'text/plain');
+  if (item?.transcriptKey) return files.find(f => f.key === item.transcriptKey) || null;
+  return (note?.media || []).some(m => m.transcriptKey) ? null : (files[0] || null);
+}
+
+const fileSafe = s => (String(s || '').replace(/[^\w\- ]+/g, '').trim() || 'transcript').slice(0, 80);
+
+/* The transcript lives in R2 as text/plain — an hour of speech is ~50 KB,
+   too much to keep in the synced blob. */
+async function uploadTranscriptFile(title, lines) {
+  const transcript = formatTranscript(lines);
+  const meta = await Files.upload(new File([transcript], `${fileSafe(title)}.txt`, { type:'text/plain' }));
+  _studyFileText.set(meta.key, transcript);
+  return { id: uid(), key: meta.key, name: meta.name, size: meta.size, type:'text/plain', uploadedAt: Date.now() };
+}
+
+/* A source (recording, video, captions) becomes a note. `media` items
+   ({kind:'audio'|'youtube', …}) are what the floating player plays. Falls
+   back to the note body when R2 isn't set up. */
+async function createTranscriptNote({ update, title, lines = [], folderId = null, emoji = '🎙️', media = [] }) {
   const now = Date.now();
-  const note = { id: uid(), emoji, title: title || 'Lecture', body:'', tags:[], links:[], images:[], files:[], folderId, created: now, updated: now };
-  try {
-    const file = new File([transcript], `${(title || 'transcript').replace(/[^\w\- ]+/g, '').trim() || 'transcript'}.txt`, { type:'text/plain' });
-    const meta = await Files.upload(file);
-    note.files = [{ id: uid(), key: meta.key, name: meta.name, size: meta.size, type:'text/plain', uploadedAt: now }];
-    _studyFileText.set(meta.key, transcript);
-  } catch {
-    note.body = `## Transcript\n\n${transcript}`;
+  const note = { id: uid(), emoji, title: title || 'Lecture', body:'', tags:[], links:[], images:[], files:[], media, folderId, created: now, updated: now };
+  if (lines.length) {
+    try {
+      note.files = [await uploadTranscriptFile(title, lines)];
+      note.media = note.media.map(m => ({ ...m, transcriptKey: note.files[0].key }));
+    } catch {
+      note.body = `## Transcript\n\n${formatTranscript(lines)}`;
+    }
   }
   update('notes', prev => [note, ...prev]);
   return note;
@@ -3745,6 +3848,9 @@ function NoteEditor({ note, state, update, isMobile }) {
       {/* ── body ── */}
       <div style={{flex:1,overflow:'auto',padding:isMobile?'12px 14px 24px':'14px 32px 32px'}} className="scrollbar">
 
+        {/* recordings and videos — Play opens the floating player */}
+        <NoteMedia note={note} update={update} previewMode={previewMode}/>
+
         {/* web link panel */}
         {showWebLink && (
           <form onSubmit={addWebLink} style={{background:'var(--bg-surface)',border:'1px solid var(--glass-border)',borderRadius:10,padding:'10px 12px',marginBottom:14,display:'flex',flexDirection:'column',gap:8}}>
@@ -3923,7 +4029,7 @@ function NoteEditor({ note, state, update, isMobile }) {
             </div>
           </div>;
         })()}
-        {(note.files||[]).filter(f=>f.type==='text/plain').map(f=><TranscriptAttachment key={f.id} file={f}/>)}
+        {(note.files||[]).filter(f=>f.type==='text/plain').map(f=><TranscriptAttachment key={f.id} file={f} note={note}/>)}
       </div>
 
       {/* ── linked notes bar ── */}
@@ -9306,11 +9412,38 @@ function StudySourceModal({ state, update, initialMode = 'pdf', onClose, onCreat
 
   const finish = note => onCreated({ note, kinds: chosen });
 
-  const fromTranscript = async (text, emoji) => {
-    if (!text.trim()) { setStatus({ label:'Nothing was transcribed.', error:true }); return; }
+  /* Notes with nothing to generate from (a recording that failed to
+     transcribe, a video with no transcript) open straight in the editor with
+     the player ready, instead of starting an empty study set. */
+  const openNote = (note, item) => {
+    update('ui', { ...state.ui, view:'notes', noteId:note.id });
+    if (item) openMedia({ noteId:note.id, itemId:item.id });
+    onClose();
+  };
+
+  const fromTranscript = async (lines, emoji) => {
+    if (!lines.length) { setStatus({ label:'Nothing to save yet.', error:true }); return; }
     setStatus({ label:'Saving transcript…' });
-    const note = await createTranscriptNote({ state, update, title: title.trim() || defaultTitle, transcript: text, folderId: folderId || null, emoji });
+    const note = await createTranscriptNote({ update, title: title.trim() || defaultTitle, lines, folderId: folderId || null, emoji });
     finish(note);
+  };
+
+  const fromRecording = async res => {
+    const t = title.trim() || defaultTitle;
+    const media = res.parts.length
+      ? [{ id:uid(), kind:'audio', title:t, durationMs:res.durationMs, mime:res.mime, parts:res.parts, createdAt:Date.now() }]
+      : [];
+    if (!res.lines.length && !media.length) { setStatus({ label:'Nothing was transcribed.', error:true }); return; }
+    setStatus({ label:'Saving…' });
+    const note = await createTranscriptNote({ update, title:t, lines:res.lines, folderId:folderId || null, emoji:'🎙️', media });
+    if (res.lines.length) finish(note); else openNote(note, media[0]);
+  };
+
+  const fromYouTube = async r => {
+    const item = { id:uid(), kind:'youtube', videoId:r.videoId, title:r.title || 'YouTube video', author:r.author || '', embeddable:r.embeddable !== false, createdAt:Date.now() };
+    setStatus({ label:'Saving…' });
+    const note = await createTranscriptNote({ update, title: title.trim() || item.title, lines: r.lines || [], folderId: folderId || null, emoji:'📺', media:[item] });
+    if (r.lines?.length) finish(note); else openNote(note, item.embeddable ? item : null);
   };
 
   const fromPdf = async file => {
@@ -9345,7 +9478,7 @@ function StudySourceModal({ state, update, initialMode = 'pdf', onClose, onCreat
     <StudyModal title="Add study material" onClose={recording ? ()=>{} : onClose} width={580}>
       {!recording && (
         <div className="seg" style={{marginBottom:14}}>
-          {[['record','Record lecture'],['pdf','PDF'],['paste','Paste text / captions']].map(([id, label]) => (
+          {[['record','Record lecture'],['youtube','YouTube'],['pdf','PDF'],['paste','Paste text']].map(([id, label]) => (
             <button key={id} aria-pressed={mode===id} onClick={()=>{ setMode(id); setStatus(null); }}>{label}</button>
           ))}
         </div>
@@ -9367,8 +9500,10 @@ function StudySourceModal({ state, update, initialMode = 'pdf', onClose, onCreat
       </div>
 
       {mode === 'record' && (
-        <Recorder onRecordingChange={setRecording}
-          onFinish={text => fromTranscript(text, '🎙️')}/>
+        <Recorder onRecordingChange={setRecording} onFinish={fromRecording}/>
+      )}
+      {mode === 'youtube' && (
+        <YouTubeSource cta="Create note & continue" ctaNoTranscript="Add video without a transcript" onCreate={fromYouTube} autoFocus/>
       )}
       {mode === 'pdf' && (<>
         <input ref={pdfRef} type="file" accept="application/pdf,.pdf" style={{display:'none'}} onChange={e=>fromPdf(e.target.files?.[0])}/>
@@ -9379,7 +9514,7 @@ function StudySourceModal({ state, update, initialMode = 'pdf', onClose, onCreat
         <textarea className="input" rows={9} value={pasted} onChange={e=>setPasted(e.target.value)}
           placeholder="Paste notes, an article, or a video transcript. For YouTube: under the video, …more → Show transcript, then copy. Caption files (.vtt/.srt) are cleaned up automatically."/>
         <button className="btn-primary" style={{marginTop:10}} disabled={!pasted.trim()}
-          onClick={()=>{ const isCaptions = /-->/.test(pasted) || /^WEBVTT/m.test(pasted); fromTranscript(isCaptions ? captionsToText(pasted) : pasted.trim(), isCaptions ? '📺' : '📋'); }}>
+          onClick={()=>fromTranscript(parsePastedTranscript(pasted), /-->/.test(pasted) ? '📺' : '📋')}>
           Save & continue
         </button>
       </>)}
@@ -9388,20 +9523,683 @@ function StudySourceModal({ state, update, initialMode = 'pdf', onClose, onCreat
   );
 }
 
+/* ── floating media panel ───────────────────────────────────────────────────
+   One draggable, resizable window for both kinds of media a note can carry:
+     • YouTube — the official embedded player (IFrame Player API), nothing is
+       downloaded;
+     • audio   — a lecture recording Folio kept, stored as ~4.5-minute
+       segments in R2 and played back as one continuous timeline.
+   It lives at App level, like the Pomodoro widget, so it keeps playing while
+   you move between notes. Position and size are remembered per device. */
+const MEDIA_RECT_KEY = 'folio_media_rect';
+const MEDIA_RATE_KEY = 'folio_media_rate';
+const MEDIA_HEADER_H = 38;
+const MEDIA_AUDIO_H  = 172;
+const openMedia = detail => { try { window.dispatchEvent(new CustomEvent('folio-media', { detail })); } catch {} };
+
+const loadMediaRect = () => {
+  try {
+    const r = JSON.parse(localStorage.getItem(MEDIA_RECT_KEY));
+    if (r && [r.x, r.y, r.w, r.h].every(Number.isFinite)) return r;
+  } catch {}
+  return null;
+};
+
+/* ── YouTube ── */
+let _ytApi = null;
+function ytApi() {
+  if (_ytApi) return _ytApi;
+  _ytApi = new Promise((resolve, reject) => {
+    if (window.YT?.Player) return resolve(window.YT);
+    const prev = window.onYouTubeIframeAPIReady;
+    window.onYouTubeIframeAPIReady = () => { try { prev?.(); } catch {} resolve(window.YT); };
+    const s = document.createElement('script');
+    s.src = 'https://www.youtube.com/iframe_api';
+    s.onerror = () => { _ytApi = null; reject(new Error('Couldn’t load the YouTube player — are you offline?')); };
+    document.head.appendChild(s);
+  });
+  return _ytApi;
+}
+const YT_ERRORS = {
+  2:   'That video link isn’t valid.',
+  5:   'The player hit an error — try again.',
+  100: 'This video was removed or is private.',
+  101: 'The video’s owner doesn’t allow it to play outside YouTube.',
+  150: 'The video’s owner doesn’t allow it to play outside YouTube.',
+  153: 'YouTube couldn’t identify Folio as the page embedding the video.',
+};
+
+function YouTubePlayer({ videoId, seekReq, onTime, interacting, onBlocked }) {
+  const host = useRef(null), player = useRef(null), ready = useRef(false), pending = useRef(null);
+  const blockedRef = useRef(onBlocked);
+  blockedRef.current = onBlocked;
+  const [error, setError]     = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let dead = false, timer = null;
+    ready.current = false; setError(null); setLoading(true);
+    ytApi().then(YT => {
+      if (dead || !host.current) return;
+      const mount = document.createElement('div');
+      host.current.textContent = '';
+      host.current.appendChild(mount);
+      player.current = new YT.Player(mount, {
+        host: 'https://www.youtube-nocookie.com',
+        videoId, width:'100%', height:'100%',
+        /* origin is what YouTube uses to identify the embedding page; without it
+           (or a Referer) it refuses to play (error 153). */
+        playerVars: { playsinline:1, rel:0, modestbranding:1, enablejsapi:1, origin: location.origin },
+        events: {
+          onReady: () => {
+            if (dead) return;
+            ready.current = true; setLoading(false);
+            if (pending.current != null) {
+              const t = pending.current; pending.current = null;
+              try { player.current.seekTo(t, true); player.current.playVideo(); } catch {}
+            }
+            timer = setInterval(() => { try { onTime(player.current.getCurrentTime()); } catch {} }, 500);
+          },
+          onError: e => {
+            if (dead) return;
+            setError(YT_ERRORS[e.data] || `YouTube error ${e.data}`);
+            /* The owner/label blocks embedding. oEmbed says "embeddable" for many such
+               videos (music especially), so the player's own verdict is the one to trust. */
+            if (e.data === 101 || e.data === 150) blockedRef.current?.();
+          },
+        },
+      });
+    }).catch(e => { if (!dead) setError(e.message); });
+    return () => {
+      dead = true; clearInterval(timer);
+      try { player.current?.destroy(); } catch {}
+      player.current = null; ready.current = false;
+    };
+  }, [videoId]);
+
+  useEffect(() => {
+    if (!seekReq) return;
+    if (ready.current && player.current) { try { player.current.seekTo(seekReq.t, true); player.current.playVideo(); } catch {} }
+    else pending.current = seekReq.t;
+  }, [seekReq?.nonce]);
+
+  const cover = { position:'absolute', inset:0, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:10, padding:16, textAlign:'center', fontSize:13 };
+  return (
+    <div style={{position:'relative',width:'100%',aspectRatio:'16 / 9',background:'#000',flexShrink:0,pointerEvents:interacting?'none':'auto'}}>
+      <div ref={host} style={{position:'absolute',inset:0}}/>
+      {loading && !error && <div style={{...cover,color:'rgba(255,255,255,.6)'}}>Loading player…</div>}
+      {error && (
+        <div style={{...cover,color:'#fff',background:'#0b0b0e'}}>
+          <div>{error}</div>
+          <a className="btn-primary" style={{textDecoration:'none'}} target="_blank" rel="noopener noreferrer"
+            href={`https://www.youtube.com/watch?v=${videoId}`}>Open on YouTube ↗</a>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── recording playback ──
+   The recording is several independent files (see the Recorder), so playback
+   is a single <audio> element swapped between parts on a virtual timeline: the
+   slider spans the whole recording, seeks pick the part and offset, and the
+   next part is fetched while the current one plays. Part lengths come from the
+   Recorder's own clock — a MediaRecorder file has no reliable duration. */
+function AudioRecordingPlayer({ item, seekReq, onTime }) {
+  const parts = item.parts || [];
+  const offsets = useMemo(() => { let a = 0; return parts.map(p => { const o = a; a += p.ms || 0; return o; }); }, [item.id]);
+  const total   = useMemo(() => parts.reduce((s, p) => s + (p.ms || 0), 0), [item.id]);
+  const audio   = useRef(null);
+  const cur     = useRef({ i:-1, token:0, switching:false });
+  const rateRef = useRef(1);
+  const api     = useRef({});
+  const [pos, setPos]         = useState(0);
+  const [playing, setPlaying] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr]         = useState(null);
+  const [rate, setRate]       = useState(() => {
+    try { const v = Number(localStorage.getItem(MEDIA_RATE_KEY)); return v >= .5 && v <= 3 ? v : 1; } catch { return 1; }
+  });
+  rateRef.current = rate;
+
+  const partAt = ms => { for (let k = parts.length - 1; k >= 0; k--) if (offsets[k] <= ms) return k; return 0; };
+
+  const loadPart = async (i, atMs, play) => {
+    const a = audio.current;
+    if (!a || !parts[i]) return;
+    const token = ++cur.current.token;
+    cur.current.i = i; cur.current.switching = !!play;
+    setLoading(true); setErr(null);
+    try {
+      const url = await Files.url(parts[i].key);
+      if (token !== cur.current.token) return;
+      a.src = url;
+      /* Loading a new source resets the rate to the default, so set both. */
+      a.defaultPlaybackRate = rateRef.current; a.playbackRate = rateRef.current;
+      await new Promise((res, rej) => {
+        const done = () => { a.removeEventListener('loadedmetadata', ok); a.removeEventListener('error', bad); };
+        const ok  = () => { done(); res(); };
+        const bad = () => { done(); rej(new Error('This part of the recording couldn’t be loaded')); };
+        a.addEventListener('loadedmetadata', ok); a.addEventListener('error', bad);
+      });
+      if (token !== cur.current.token) return;
+      if (atMs > 0) a.currentTime = atMs / 1000;
+      setLoading(false); setPos(offsets[i] + atMs);
+      if (play) await a.play();
+      if (parts[i + 1]) Files.url(parts[i + 1].key).catch(() => {});   /* warm the next part */
+    } catch (e) {
+      if (token !== cur.current.token) return;
+      setLoading(false); cur.current.switching = false; setPlaying(false);
+      setErr(e?.name === 'NotAllowedError' ? 'Press play to start' : (e?.message || 'Playback failed'));
+    }
+  };
+
+  const seekTo = (ms, play) => {
+    ms = Math.max(0, Math.min(total, ms));
+    const i = partAt(ms), at = Math.max(0, ms - offsets[i]), a = audio.current;
+    if (cur.current.i === i && a?.src) {
+      a.currentTime = at / 1000; setPos(ms);
+      if (play) { cur.current.switching = true; a.play().catch(() => {}); }
+    } else loadPart(i, at, play ?? playing);
+  };
+  const toggle = () => {
+    const a = audio.current;
+    if (!a) return;
+    if (!a.src || cur.current.i < 0) { loadPart(0, 0, true); return; }
+    if (pos >= total - 50) { seekTo(0, true); return; }
+    if (a.paused) { cur.current.switching = true; setPlaying(true); a.play().catch(() => { cur.current.switching = false; setPlaying(false); }); }
+    else { cur.current.switching = false; a.pause(); }
+  };
+  const skip = s => seekTo(pos + s * 1000, playing);
+  api.current = { toggle, skip, seekTo };
+
+  useEffect(() => {
+    loadPart(0, 0, false);
+    return () => { cur.current.token++; try { audio.current?.pause(); } catch {} };
+  }, [item.id]);
+  useEffect(() => { if (seekReq) seekTo(seekReq.t * 1000, true); }, [seekReq?.nonce]);
+  useEffect(() => {
+    const a = audio.current;
+    if (a) { a.defaultPlaybackRate = rate; a.playbackRate = rate; }
+    try { localStorage.setItem(MEDIA_RATE_KEY, String(rate)); } catch {}
+  }, [rate]);
+
+  /* Lock-screen / headset controls. */
+  useEffect(() => {
+    if (!('mediaSession' in navigator)) return;
+    try {
+      navigator.mediaSession.metadata = new MediaMetadata({ title: item.title || 'Recording', artist: 'Folio' });
+      navigator.mediaSession.setActionHandler('play',  () => api.current.toggle());
+      navigator.mediaSession.setActionHandler('pause', () => api.current.toggle());
+      navigator.mediaSession.setActionHandler('seekbackward', () => api.current.skip(-15));
+      navigator.mediaSession.setActionHandler('seekforward',  () => api.current.skip(15));
+    } catch {}
+    return () => { try { ['play','pause','seekbackward','seekforward'].forEach(k => navigator.mediaSession.setActionHandler(k, null)); } catch {} };
+  }, [item.id]);
+
+  const btn = { width:40, height:40, borderRadius:99, border:'1px solid var(--glass-edge)', background:'var(--fill)', color:'var(--text-primary)',
+                cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', fontSize:11, fontWeight:700, fontFamily:'Manrope,sans-serif', flexShrink:0 };
+  return (
+    <div style={{padding:'14px 16px',display:'flex',flexDirection:'column',gap:8,flexShrink:0}}>
+      <audio ref={audio} preload="auto" playsInline style={{display:'none'}}
+        onTimeUpdate={() => {
+          const a = audio.current, i = cur.current.i;
+          if (!a || i < 0) return;
+          const ms = offsets[i] + Math.min(a.currentTime * 1000, parts[i].ms || Infinity);
+          setPos(ms); onTime(ms / 1000);
+        }}
+        onPlaying={() => { cur.current.switching = false; setPlaying(true); }}
+        onPause={() => {
+          /* A part finishing fires pause then ended; don't flash "paused" between parts. */
+          if (audio.current?.ended && cur.current.i + 1 < parts.length) return;
+          if (!cur.current.switching) setPlaying(false);
+        }}
+        onEnded={() => {
+          const i = cur.current.i;
+          if (i + 1 < parts.length) loadPart(i + 1, 0, true);
+          else { cur.current.switching = false; setPlaying(false); setPos(total); }
+        }}/>
+      <input type="range" className="glass-slider" aria-label="Seek" min="0" max={Math.max(1, Math.round(total / 1000))} step="1"
+        value={Math.min(Math.round(pos / 1000), Math.max(1, Math.round(total / 1000)))}
+        style={{'--pct':`${total ? Math.min(100, pos / total * 100) : 0}%`}}
+        onChange={e => seekTo(+e.target.value * 1000)}/>
+      <div style={{display:'flex',justifyContent:'space-between',fontSize:11.5,color:'var(--text-secondary)',fontVariantNumeric:'tabular-nums',marginTop:-6}}>
+        <span>{fmtClock(pos / 1000)}</span><span>{fmtClock(total / 1000)}</span>
+      </div>
+      <div style={{display:'flex',alignItems:'center',gap:10}}>
+        <button style={btn} title="Back 15 seconds" aria-label="Back 15 seconds" onClick={()=>skip(-15)}>↺15</button>
+        <button style={{...btn,width:48,height:48,background:'var(--accent)',border:'none',color:'#fff',fontSize:16}}
+          aria-label={playing ? 'Pause' : 'Play'} onClick={toggle}>{loading && !playing ? '…' : playing ? '❚❚' : '▶'}</button>
+        <button style={btn} title="Forward 15 seconds" aria-label="Forward 15 seconds" onClick={()=>skip(15)}>15↻</button>
+        <span style={{flex:1}}/>
+        <select className="input" aria-label="Playback speed" style={{width:'auto',padding:'6px 8px',fontSize:12}} value={rate} onChange={e=>setRate(+e.target.value)}>
+          {[0.75, 1, 1.25, 1.5, 1.75, 2, 2.5].map(r => <option key={r} value={r}>{r}×</option>)}
+        </select>
+      </div>
+      {err && <div style={{fontSize:12,color:'var(--danger)'}}>{err}</div>}
+    </div>
+  );
+}
+
+/* ── transcript beside the player: highlights the current line, click to seek ── */
+const TranscriptRow = React.memo(function TranscriptRow({ l, i, active, onSeek }) {
+  if (l.t == null) return <div style={{padding:'3px 8px',fontSize:12.5,lineHeight:1.55,color:'var(--text-tertiary)'}}>{l.text}</div>;
+  return (
+    <button data-i={i} onClick={() => onSeek(l.t)}
+      style={{display:'flex',gap:8,width:'100%',textAlign:'left',padding:'4px 8px',borderRadius:'var(--r-xs)',border:'none',cursor:'pointer',
+        fontFamily:'Manrope,sans-serif',fontSize:12.5,lineHeight:1.55,
+        background:active ? 'var(--accent-soft)' : 'transparent', color:active ? 'var(--text-primary)' : 'var(--text-tertiary)'}}>
+      <span style={{color:'var(--accent)',fontVariantNumeric:'tabular-nums',flexShrink:0,minWidth:38,fontWeight:600}}>{fmtClock(l.t)}</span>
+      <span>{l.text}</span>
+    </button>
+  );
+});
+
+function TranscriptFollower({ lines, now, onSeek }) {
+  const ref = useRef(null);
+  const [follow, setFollow] = useState(true);
+  let active = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].t == null) continue;
+    if (lines[i].t <= now + 0.3) active = i; else break;
+  }
+  useEffect(() => {
+    if (!follow || active < 0) return;
+    ref.current?.querySelector(`[data-i="${active}"]`)?.scrollIntoView({ block:'nearest', behavior:'smooth' });
+  }, [active, follow]);
+  return (
+    <div style={{flex:1,minHeight:0,display:'flex',flexDirection:'column',borderTop:'1px solid var(--glass-border)'}}>
+      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'6px 10px 2px'}}>
+        <span style={{fontSize:11,fontWeight:700,letterSpacing:'.08em',textTransform:'uppercase',color:'var(--text-muted)'}}>Transcript</span>
+        <button className={`pill${follow?' on':''}`} style={{padding:'2px 10px',fontSize:11}} onClick={()=>setFollow(v=>!v)}>Follow</button>
+      </div>
+      <div ref={ref} className="scrollbar" style={{flex:1,minHeight:0,overflow:'auto',padding:'0 4px 8px'}}>
+        {lines.map((l, i) => <TranscriptRow key={i} l={l} i={i} active={i === active} onSeek={onSeek}/>)}
+      </div>
+    </div>
+  );
+}
+
+/* A note's transcript as parsed lines — from its text/plain attachment, or
+   from the "## Transcript" section when R2 wasn't available at save time. */
+function useNoteTranscript(note, item) {
+  const [lines, setLines] = useState([]);
+  const file = mediaTranscriptFile(note, item);
+  const fallback = file || (note?.media || []).some(m => m.transcriptKey) ? '' : (note?.body || '');
+  useEffect(() => {
+    let dead = false;
+    (async () => {
+      try {
+        let text = '';
+        if (file) text = await studyFileText(file);
+        else { const m = fallback.match(/## Transcript\n\n([\s\S]*)$/); text = m ? m[1] : ''; }
+        if (!dead) setLines(parseTranscript(text));
+      } catch { if (!dead) setLines([]); }
+    })();
+    return () => { dead = true; };
+  }, [note?.id, item?.id, file?.key, fallback]);
+  return lines;
+}
+
+function MediaPanel({ req, state, update, isMobile, onClose }) {
+  const note   = state.notes.find(n => n.id === req.noteId);
+  const item   = note?.media?.find(m => m.id === req.itemId);
+  const isVideo = item?.kind === 'youtube';
+  const lines  = useNoteTranscript(note, item);
+  const [now, setNow]               = useState(0);
+  const [minimized, setMinimized]   = useState(false);
+  const [interacting, setInteracting] = useState(false);
+  const [vp, setVp]                 = useState(() => ({ w: window.innerWidth || 1280, h: window.innerHeight || 800 }));
+  const [rect, setRect]             = useState(loadMediaRect);
+  const [localSeek, setLocalSeek]   = useState(null);
+  const drag = useRef(null);
+
+  useEffect(() => { if (!item) onClose(); }, [!!item]);
+  useEffect(() => { setNow(0); }, [item?.id]);
+  useEffect(() => {
+    const onResize = () => setVp({ w: window.innerWidth || 1280, h: window.innerHeight || 800 });
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+  if (!item) return null;
+
+  const minH = w => MEDIA_HEADER_H + (isVideo ? Math.round(w * 9 / 16) : MEDIA_AUDIO_H);
+  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+  const fit = r => {
+    const w = clamp(r.w, 300, Math.max(300, vp.w - 16));
+    const h = clamp(r.h, minH(w), Math.max(minH(w), vp.h - 16));
+    return { w, h, x: clamp(r.x, 80 - w, vp.w - 80), y: clamp(r.y, 0, vp.h - MEDIA_HEADER_H) };
+  };
+  const initial = () => {
+    const w = Math.min(460, vp.w - 32), h = minH(w) + (isVideo ? 230 : 210);
+    /* Sits above the Pomodoro widget's corner by default. */
+    return { w, h, x: vp.w - w - 20, y: Math.max(16, vp.h - h - 96) };
+  };
+  const eff = fit(rect || initial());
+
+  const seekReq = req.seek != null ? { t: req.seek, nonce: req.nonce } : null;
+  const seekFromTranscript = t => setLocalSeek({ t, nonce: Date.now() });
+  /* Remember that this video can't be embedded, so its card offers "Open ↗" next time. */
+  const markBlocked = () => {
+    if (item.embeddable === false || !note) return;
+    update('notes', prev => prev.map(n => n.id === note.id
+      ? { ...n, media: (n.media || []).map(m => m.id === item.id ? { ...m, embeddable:false } : m), updated: Date.now() } : n));
+  };
+  const activeSeek = localSeek && (!seekReq || localSeek.nonce > seekReq.nonce) ? localSeek : seekReq;
+
+  const down = kind => e => {
+    if (isMobile) return;
+    if (kind === 'move' && e.target.closest('button,a')) return;
+    if (kind === 'size') e.preventDefault();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    drag.current = { kind, sx: e.clientX, sy: e.clientY, r: { ...eff } };
+    setInteracting(true);
+  };
+  const move = e => {
+    const d = drag.current;
+    if (!d) return;
+    const dx = e.clientX - d.sx, dy = e.clientY - d.sy;
+    setRect(d.kind === 'move' ? { ...d.r, x: d.r.x + dx, y: d.r.y + dy } : { ...d.r, w: d.r.w + dx, h: d.r.h + dy });
+  };
+  const up = () => {
+    if (!drag.current) return;
+    drag.current = null; setInteracting(false);
+    setRect(r => { const c = fit(r); try { localStorage.setItem(MEDIA_RECT_KEY, JSON.stringify(c)); } catch {} return c; });
+  };
+  const handlers = { onPointerMove: move, onPointerUp: up, onPointerCancel: up };
+
+  const mobileVideoH = Math.round((vp.w - 16) * 9 / 16);
+  const style = isMobile
+    ? { left:8, right:8, bottom:'calc(56px + env(safe-area-inset-bottom, 0px) + 8px)',
+        height: minimized ? MEDIA_HEADER_H : MEDIA_HEADER_H + (isVideo ? mobileVideoH : MEDIA_AUDIO_H) + (lines.length ? 150 : 0) }
+    : { left:eff.x, top:eff.y, width:eff.w, height: minimized ? MEDIA_HEADER_H : eff.h };
+
+  return (
+    <div className="media-panel" role="dialog" aria-label={item.title || 'Media player'} style={style}>
+      <div {...handlers} onPointerDown={down('move')} onDoubleClick={()=>setMinimized(v=>!v)}
+        style={{height:MEDIA_HEADER_H,flexShrink:0,display:'flex',alignItems:'center',gap:8,padding:'0 6px 0 12px',
+          cursor:isMobile?'default':(interacting?'grabbing':'grab'),userSelect:'none',touchAction:'none',borderBottom:minimized?'none':'1px solid var(--glass-border)'}}>
+        <span style={{fontSize:14}}>{isVideo ? '▶️' : '🎙️'}</span>
+        <span style={{flex:1,minWidth:0,fontSize:12.5,fontWeight:600,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}} title={item.title}>{item.title || (isVideo ? 'YouTube video' : 'Recording')}</span>
+        <button className="icon-btn" title={minimized ? 'Expand' : 'Minimise'} aria-label={minimized ? 'Expand' : 'Minimise'} onClick={()=>setMinimized(v=>!v)}>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">{minimized ? <polyline points="6 15 12 9 18 15"/> : <line x1="5" y1="12" x2="19" y2="12"/>}</svg>
+        </button>
+        <button className="icon-btn" title="Close" aria-label="Close player" onClick={onClose}>{Ic.x}</button>
+      </div>
+      <div style={{flex:1,minHeight:0,display:'flex',flexDirection:'column'}}>
+        {isVideo
+          ? <YouTubePlayer videoId={item.videoId} seekReq={activeSeek} onTime={setNow} interacting={interacting} onBlocked={markBlocked}/>
+          : <AudioRecordingPlayer item={item} seekReq={activeSeek} onTime={setNow}/>}
+        {lines.length > 0 && <TranscriptFollower lines={lines} now={now} onSeek={seekFromTranscript}/>}
+      </div>
+      {!isMobile && !minimized && (
+        <div {...handlers} onPointerDown={down('size')} title="Drag to resize" aria-hidden="true"
+          style={{position:'absolute',right:0,bottom:0,width:22,height:22,cursor:'nwse-resize',touchAction:'none',display:'flex',alignItems:'flex-end',justifyContent:'flex-end',padding:4}}>
+          <svg viewBox="0 0 10 10" width="10" height="10" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" style={{color:'var(--text-muted)'}}><line x1="9" y1="2" x2="2" y2="9"/><line x1="9" y1="6" x2="6" y2="9"/></svg>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── YouTube lookup: link → title/channel (+ captions if YouTube allows) ── */
+const YT_REASONS = {
+  blocked:     'YouTube wouldn’t hand over the captions automatically — it blocks that for most apps. You can paste them instead: open the video on YouTube, click “…more” → “Show transcript”, copy everything, and paste it below.',
+  no_captions: 'This video has no captions, so there’s no transcript to pick up. You can still watch it here, or paste your own notes below.',
+  unavailable: 'This video is unavailable (private or removed).',
+  failed:      'Couldn’t read the captions. You can paste the transcript below instead (…more → Show transcript on YouTube).',
+  offline:     'Couldn’t reach Folio’s server, so no details were fetched. You can still add the video and paste a transcript.',
+};
+function YouTubeSource({ cta, ctaNoTranscript, onCreate, autoFocus }) {
+  const [url, setUrl]       = useState('');
+  const [busy, setBusy]     = useState(false);
+  const [err, setErr]       = useState(null);
+  const [meta, setMeta]     = useState(null);
+  const [pasted, setPasted] = useState('');
+  const apiLines    = meta?.transcript?.length ? meta.transcript : null;
+  const pastedLines = useMemo(() => pasted.trim() ? parsePastedTranscript(pasted) : [], [pasted]);
+  const lines = apiLines || (pastedLines.length ? pastedLines : null);
+  const stamped = pastedLines.some(l => l.t != null);
+
+  const lookup = async () => {
+    const id = parseYouTubeId(url);
+    if (!id) { setErr('Paste a YouTube link — youtube.com/watch?v=…, youtu.be/…'); return; }
+    setBusy(true); setErr(null); setMeta(null);
+    try { setMeta(await StudyAPI.youtube(id)); }
+    catch (e) {
+      setMeta({ videoId:id, title:'', author:'', embeddable:true, transcript:null, reason:'offline' });
+      setErr(studyErrorLabel(e));
+    }
+    setBusy(false);
+  };
+
+  return (
+    <div>
+      <div style={{display:'flex',gap:8}}>
+        <input className="input" autoFocus={autoFocus} placeholder="https://www.youtube.com/watch?v=…" value={url}
+          onChange={e=>{ setUrl(e.target.value); setMeta(null); setErr(null); }}
+          onKeyDown={e=>{ if (e.key === 'Enter') { e.preventDefault(); lookup(); } }}/>
+        <button className="btn-primary" disabled={busy || !url.trim()} onClick={lookup} style={{flexShrink:0}}>{busy ? 'Looking…' : 'Look up'}</button>
+      </div>
+      {err && <div style={{fontSize:12.5,color:'var(--danger)',marginTop:8}}>{err}</div>}
+
+      {meta && (
+        <div style={{marginTop:12}}>
+          <div className="row-soft" style={{marginBottom:10}}>
+            <img alt="" src={`https://i.ytimg.com/vi/${meta.videoId}/mqdefault.jpg`} style={{width:96,height:54,objectFit:'cover',borderRadius:'var(--r-xs)',background:'#000',flexShrink:0}}/>
+            <div style={{minWidth:0}}>
+              <div style={{fontSize:13,fontWeight:600,lineHeight:1.35}}>{meta.title || 'YouTube video'}</div>
+              <div style={{fontSize:11.5,color:'var(--text-muted)'}}>{meta.author || meta.videoId}</div>
+            </div>
+          </div>
+          {meta.embeddable === false && (
+            <div style={{fontSize:12.5,color:'var(--warning)',marginBottom:8}}>
+              The owner doesn’t allow this video to play inside other apps, so Folio can only link to it on YouTube. A transcript still works.
+            </div>
+          )}
+          {apiLines
+            ? <div style={{fontSize:12.5,color:'var(--success)',marginBottom:8}}>✓ Captions found{meta.language ? ` (${meta.language})` : ''} · {apiLines.length} lines</div>
+            : (<>
+                <div style={{...studyMuted,marginBottom:8}}>{YT_REASONS[meta.reason] || YT_REASONS.failed}</div>
+                {meta.reason !== 'unavailable' && (<>
+                  <textarea className="input" rows={6} value={pasted} onChange={e=>setPasted(e.target.value)}
+                    placeholder="Paste the transcript here (timestamps are kept so you can click a line to jump to it)…"/>
+                  <div style={{display:'flex',alignItems:'center',gap:10,marginTop:6,flexWrap:'wrap'}}>
+                    <a href={`https://www.youtube.com/watch?v=${meta.videoId}`} target="_blank" rel="noopener noreferrer" style={{fontSize:12,color:'var(--accent)'}}>Open on YouTube ↗</a>
+                    {pastedLines.length > 0 && <span style={{fontSize:12,color:'var(--text-muted)'}}>{pastedLines.length} lines{stamped ? ' · timestamps found' : ' · no timestamps'}</span>}
+                  </div>
+                </>)}
+              </>)}
+          {meta.reason !== 'unavailable' && (
+            <button className="btn-primary" style={{marginTop:12}}
+              onClick={()=>onCreate({ videoId:meta.videoId, title:meta.title, author:meta.author, embeddable:meta.embeddable !== false, lines })}>
+              {lines ? cta : ctaNoTranscript}
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── a note's media: recordings and videos, with Play ── */
+function NoteMedia({ note, update, previewMode }) {
+  const media = note.media || [];
+  const [adding, setAdding]       = useState(false);
+  const [transcriptFor, setTranscriptFor] = useState(null);
+  const [pasted, setPasted]       = useState('');
+  const [busy, setBusy]           = useState(null);
+  if (!media.length && previewMode) return null;
+
+  /* Functional update against the LATEST note — transcripts upload
+     asynchronously and the user may have kept typing meanwhile. */
+  const patchNote = fn => update('notes', prev => prev.map(n => n.id === note.id ? { ...n, ...fn(n), updated: Date.now() } : n));
+  const attachTranscript = async (title, lines) => {
+    try { return await uploadTranscriptFile(title, lines); }
+    catch {   /* no R2: keep it in the body instead */
+      patchNote(n => ({ body: `${n.body || ''}
+
+## Transcript
+
+${formatTranscript(lines)}`.trim() }));
+      return null;
+    }
+  };
+  const addVideo = async r => {
+    const item = { id: uid(), kind:'youtube', videoId:r.videoId, title:r.title || 'YouTube video', author:r.author || '', embeddable:r.embeddable !== false, createdAt: Date.now() };
+    setBusy('Adding…');
+    const f = r.lines?.length ? await attachTranscript(item.title, r.lines) : null;
+    patchNote(n => ({ media: [...(n.media || []), f ? { ...item, transcriptKey: f.key } : item], ...(f ? { files: [...(n.files || []), f] } : {}) }));
+    setBusy(null); setAdding(false);
+    openMedia({ noteId: note.id, itemId: item.id });
+  };
+  const saveTranscript = async item => {
+    const lines = parsePastedTranscript(pasted);
+    if (!lines.length) return;
+    setBusy('Saving transcript…');
+    const f = await attachTranscript(item.title, lines);
+    if (f) patchNote(n => ({ files: [...(n.files || []), f], media: (n.media || []).map(m => m.id === item.id ? { ...m, transcriptKey: f.key } : m) }));
+    setBusy(null); setTranscriptFor(null); setPasted('');
+  };
+  const remove = item => {
+    if (!confirm(item.kind === 'audio' ? 'Delete this recording? The audio is removed for good (the transcript stays).' : 'Remove this video from the note?')) return;
+    if (item.kind === 'audio') (item.parts || []).forEach(p => Files.remove(p.key));
+    patchNote(n => ({ media: (n.media || []).filter(m => m.id !== item.id) }));
+  };
+
+  return (
+    <div style={{marginBottom:14}}>
+      {media.map(item => (
+        <div key={item.id} style={{marginBottom:8}}>
+          <div className="row-soft">
+            <span style={{fontSize:18}}>{item.kind === 'audio' ? '🎙️' : '▶️'}</span>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{fontSize:13,fontWeight:600,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{item.title}</div>
+              <div style={{fontSize:11.5,color:'var(--text-muted)'}}>
+                {item.kind === 'audio'
+                  ? `Recording · ${fmtClock((item.durationMs || 0) / 1000)}`
+                  : `YouTube${item.author ? ` · ${item.author}` : ''}${item.embeddable === false ? ' · opens on YouTube' : ''}`}
+              </div>
+            </div>
+            {item.kind === 'youtube' && item.embeddable === false
+              ? <a className="btn-primary" style={{textDecoration:'none',padding:'6px 14px'}} href={`https://www.youtube.com/watch?v=${item.videoId}`} target="_blank" rel="noopener noreferrer">Open ↗</a>
+              : <button className="btn-primary" style={{padding:'6px 14px'}} onClick={()=>openMedia({ noteId:note.id, itemId:item.id })}>Play</button>}
+            {item.kind === 'youtube' && !mediaTranscriptFile(note, item) && (
+              <button className="btn-ghost" style={{padding:'5px 12px',fontSize:12}} onClick={()=>setTranscriptFor(transcriptFor === item.id ? null : item.id)}>Add transcript</button>
+            )}
+            <button className="icon-btn danger" title="Remove" aria-label="Remove" onClick={()=>remove(item)}>{Ic.trash}</button>
+          </div>
+          {transcriptFor === item.id && (
+            <div style={{marginTop:6}}>
+              <textarea className="input" rows={5} value={pasted} onChange={e=>setPasted(e.target.value)}
+                placeholder="On YouTube: …more → Show transcript → copy all, then paste here."/>
+              <div style={{display:'flex',gap:8,marginTop:6}}>
+                <button className="btn-primary" disabled={!pasted.trim() || !!busy} onClick={()=>saveTranscript(item)}>{busy || 'Save transcript'}</button>
+                <button className="btn-ghost" onClick={()=>{ setTranscriptFor(null); setPasted(''); }}>Cancel</button>
+              </div>
+            </div>
+          )}
+        </div>
+      ))}
+      {!previewMode && (
+        adding
+          ? <div className="card" style={{padding:'12px 14px'}}>
+              <YouTubeSource cta="Add video & transcript" ctaNoTranscript="Add video without transcript" onCreate={addVideo} autoFocus/>
+              <button className="btn-ghost" style={{marginTop:10,padding:'4px 12px',fontSize:12}} onClick={()=>setAdding(false)}>Cancel</button>
+            </div>
+          : <button className="btn-ghost" style={{padding:'5px 12px',fontSize:12}} onClick={()=>setAdding(true)}>▶ Add YouTube video</button>
+      )}
+    </div>
+  );
+}
+
+/* ── transcript attachment (text/plain in R2) — click a timestamp to seek ── */
+function TranscriptAttachment({ file, note }) {
+  const [text, setText] = useState(null);
+  const [open, setOpen] = useState(false);
+  const [err, setErr]   = useState(null);
+  const lines = useMemo(() => text ? parseTranscript(text) : [], [text]);
+  const all = note?.media || [];
+  const owner = all.find(m => m.transcriptKey === file.key) || (all.some(m => m.transcriptKey) ? null : all[0]);
+  const media = owner && (owner.kind === 'audio' || owner.embeddable !== false) ? owner : null;
+  const toggle = async () => {
+    if (!open && text === null) {
+      try { setText(await studyFileText(file)); } catch (e) { setErr(pdfErrorLabel(e)); }
+    }
+    setOpen(v => !v);
+  };
+  return (
+    <div className="row-soft" style={{flexDirection:'column',alignItems:'stretch',margin:'12px 0'}}>
+      <div style={{display:'flex',alignItems:'center',gap:10}}>
+        <span>📝</span>
+        <span style={{flex:1,fontSize:13,fontWeight:600,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>Transcript · {file.name}</span>
+        <span style={{fontSize:11,color:'var(--text-muted)'}}>{fmtBytes(file.size || 0)}</span>
+        <button className="btn-ghost" style={{padding:'4px 12px',fontSize:12}} onClick={toggle}>{open ? 'Hide' : 'Show'}</button>
+      </div>
+      {err && <div style={{fontSize:12,color:'var(--danger)',marginTop:6}}>{err}</div>}
+      {open && text !== null && (
+        <div className="scrollbar" style={{marginTop:10,maxHeight:420,overflow:'auto'}}>
+          {media && lines.some(l => l.t != null) && <div style={{fontSize:11.5,color:'var(--text-muted)',marginBottom:6}}>Click a timestamp to jump the player to it.</div>}
+          {lines.map((l, i) => (
+            <div key={i} style={{display:'flex',gap:8,fontSize:13.5,lineHeight:1.7,color:'var(--text-tertiary)'}}>
+              {l.t != null && (media
+                ? <button onClick={()=>openMedia({ noteId:note.id, itemId:media.id, seek:l.t })} title="Play from here"
+                    style={{background:'none',border:'none',padding:0,cursor:'pointer',color:'var(--accent)',fontVariantNumeric:'tabular-nums',fontWeight:600,fontFamily:'inherit',fontSize:'inherit',minWidth:42,textAlign:'left',flexShrink:0}}>{fmtClock(l.t)}</button>
+                : <span style={{color:'var(--text-muted)',fontVariantNumeric:'tabular-nums',minWidth:42,flexShrink:0}}>{fmtClock(l.t)}</span>)}
+              <span style={{whiteSpace:'pre-wrap'}}>{l.text}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ── lecture recorder ──
    MediaRecorder in ~4.5-minute segments: each segment is a complete,
    independently decodable file (a byte-slice of one long webm/mp4 isn't),
-   small enough for one Whisper call. Segments sit in IndexedDB until their
-   transcript is back, and transcription runs while recording continues. */
+   small enough for one Whisper call. A segment is kept in IndexedDB until it
+   has been both transcribed AND (if "keep audio" is on) uploaded to R2, so a
+   crash or a killed tab loses at most the segment in progress.
+   The finished recording is a list of parts with their lengths; playback
+   stitches them into one timeline (see AudioRecordingPlayer). */
 const SEGMENT_MS = 270000;
+const KEEP_AUDIO_KEY = 'folio_keep_audio';
+/* A segment's real length, read from the audio itself. The wall clock lies
+   whenever capture pauses while timers keep counting (iPhone locking the
+   screen, a laptop sleeping), and a part length that disagrees with its audio
+   would skew every later timestamp and seek. Chrome's MediaRecorder files can
+   report an infinite duration until the end is forced, hence the seek trick.
+   Falls back to `fallbackMs` if the file can't be measured. */
+function audioDurationMs(blob, fallbackMs) {
+  return new Promise(resolve => {
+    const url = URL.createObjectURL(blob);
+    const a = new Audio();
+    let settled = false;
+    const done = ms => { if (settled) return; settled = true; clearTimeout(timer); a.removeAttribute('src'); URL.revokeObjectURL(url); resolve(ms); };
+    const timer = setTimeout(() => done(fallbackMs), 5000);
+    const read = () => Number.isFinite(a.duration) && a.duration > 0 ? Math.round(a.duration * 1000) : null;
+    a.preload = 'metadata';
+    a.onerror = () => done(fallbackMs);
+    a.onloadedmetadata = () => {
+      const d = read();
+      if (d != null) return done(d);
+      a.ondurationchange = () => { const v = read(); if (v != null) done(v); };
+      try { a.currentTime = 1e101; } catch { done(fallbackMs); }
+    };
+    a.src = url;
+  });
+}
+const audioExt = type => /mp4/.test(type) ? 'mp4' : /ogg/.test(type) ? 'ogg' : 'webm';
 function Recorder({ onFinish, onRecordingChange }) {
-  const [phase, setPhase]   = useState('idle');   /* idle | recording | finishing | error */
+  const [phase, setPhase]   = useState('idle');   /* idle | recording | finishing */
   const [error, setError]   = useState(null);
   const [elapsed, setElapsed] = useState(0);
   const [segs, setSegs]     = useState({ total:0, done:0, failed:0 });
   const [preview, setPreview] = useState('');
   const [leftovers, setLeftovers] = useState([]);
-  const r = useRef({ stream:null, rec:null, recId:null, idx:0, texts:[], chain:Promise.resolve(), rotate:null, tick:null, started:0, wake:null, mime:'' });
+  const [keepAudio, setKeepAudio] = useState(() => { try { return localStorage.getItem(KEEP_AUDIO_KEY) !== '0'; } catch { return true; } });
+  const r = useRef({ stream:null, rec:null, recId:null, idx:0, results:[], parts:[], ms:[], empty:new Set(), chain:Promise.resolve(), rotate:null, tick:null, started:0, wake:null, mime:'', keep:true });
 
   useEffect(() => { RecStore.all().then(list => setLeftovers(list)); }, []);
   useEffect(() => { onRecordingChange?.(phase === 'recording' || phase === 'finishing'); }, [phase]);
@@ -9412,25 +10210,70 @@ function Recorder({ onFinish, onRecordingChange }) {
     s.stream?.getTracks().forEach(t => t.stop());
     s.wake?.release?.().catch(() => {});
   }, []);
+  const toggleKeep = v => { setKeepAudio(v); try { localStorage.setItem(KEEP_AUDIO_KEY, v ? '1' : '0'); } catch {} };
 
-  const transcribeSeg = async (idx, blob, key) => {
+  const transcribeSeg = async rec => {
+    const s = r.current;
     let lastErr;
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
-        const prompt = r.current.texts.slice(0, idx).join(' ').slice(-300);
-        const { text } = await StudyAPI.transcribe(blob, prompt);
-        r.current.texts[idx] = text;
-        setPreview(r.current.texts.join(' ').slice(-400));
-        setSegs(s => ({ ...s, done: s.done + 1 }));
-        if (key) RecStore.del(key);
-        return;
+        const prompt = s.results.slice(0, rec.idx).map(x => x?.text || '').join(' ').slice(-300);
+        const { text, segments } = await StudyAPI.transcribe(rec.blob, prompt);
+        s.results[rec.idx] = { text, segments: segments || [] };
+        setPreview(s.results.map(x => x?.text || '').join(' ').slice(-400));
+        setSegs(v => ({ ...v, done: v.done + 1 }));
+        return true;
       } catch (e) {
         lastErr = e;
         await new Promise(res => setTimeout(res, 2000 * (attempt + 1)));
       }
     }
-    setSegs(s => ({ ...s, failed: s.failed + 1 }));
+    setSegs(v => ({ ...v, failed: v.failed + 1 }));
     setError(`A segment failed to transcribe (${studyErrorLabel(lastErr)}). It’s kept on this device — you can recover it later.`);
+    return false;
+  };
+  const uploadSeg = async rec => {
+    const s = r.current;
+    const type = rec.blob.type || 'audio/webm';
+    let lastErr;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const meta = await Files.upload(new File([rec.blob], `lecture-${String(rec.idx).padStart(4, '0')}.${audioExt(type)}`, { type }));
+        s.parts[rec.idx] = { key: meta.key, size: meta.size, ms: rec.ms, type: type.split(';')[0] };
+        return true;
+      } catch (e) {
+        lastErr = e;
+        await new Promise(res => setTimeout(res, 2000 * (attempt + 1)));
+      }
+    }
+    setError(`Part of the audio couldn’t be saved for playback (${pdfErrorLabel(lastErr)}). The transcript is unaffected.`);
+    return false;
+  };
+  const processRec = async rec => {
+    const keep = r.current.keep;
+    const [okT, okU] = await Promise.all([transcribeSeg(rec), keep ? uploadSeg(rec) : Promise.resolve(true)]);
+    if (okT && okU) RecStore.del(rec.key);
+  };
+
+  /* Timeline: each segment's transcript timings are relative to that segment,
+     so they're shifted by the summed length of the segments before it. */
+  const finalize = () => {
+    const s = r.current;
+    const n = Math.max(s.results.length, s.ms.length, s.parts.length);
+    let offset = 0;
+    const lines = [], parts = [];
+    let missing = false;
+    for (let i = 0; i < n; i++) {
+      if (s.empty.has(i)) continue;
+      const res = s.results[i], ms = s.ms[i] || 0;
+      if (res?.segments?.length) for (const sg of res.segments) lines.push({ t: Math.round((offset / 1000 + sg.start) * 10) / 10, text: sg.text });
+      else if (res?.text) lines.push({ t: Math.round(offset / 100) / 10, text: res.text });
+      if (s.keep) { if (s.parts[i]) parts.push({ key: s.parts[i].key, size: s.parts[i].size, ms }); else missing = true; }
+      offset += ms;
+    }
+    const usable = s.keep && !missing && parts.length > 0;
+    if (s.keep && missing) s.parts.filter(Boolean).forEach(p => Files.remove(p.key));   /* a partial recording can't play */
+    return { lines, parts: usable ? parts : [], durationMs: offset, mime: s.parts.find(Boolean)?.type || '', audioDropped: s.keep && !usable };
   };
 
   const startSegment = () => {
@@ -9438,20 +10281,28 @@ function Recorder({ onFinish, onRecordingChange }) {
     const idx = s.idx++;
     const chunks = [];
     const rec = new MediaRecorder(s.stream, { ...(s.mime ? { mimeType:s.mime } : {}), audioBitsPerSecond:32000 });
+    rec._t0 = Date.now();
     rec.ondataavailable = e => { if (e.data?.size) chunks.push(e.data); };
     rec.onstop = () => {
+      const ms = Math.max(0, (rec._t1 || Date.now()) - rec._t0);   /* wall clock: only a fallback, see audioDurationMs */
       const blob = new Blob(chunks, { type: (rec.mimeType || s.mime || 'audio/webm') });
-      if (!blob.size) return;
+      s.ms[idx] = ms;
+      /* Stopping right after a rotation leaves a near-empty segment — it has
+         no audio to play and nothing to transcribe, so it's left out. */
+      if (!blob.size) { s.empty.add(idx); return; }
       const key = `${s.recId}:${String(idx).padStart(4,'0')}`;
       setSegs(v => ({ ...v, total: v.total + 1 }));
       s.chain = s.chain.then(async () => {
-        await RecStore.put({ key, recId:s.recId, idx, blob, created:Date.now() });
-        await transcribeSeg(idx, blob, key);
+        const realMs = await audioDurationMs(blob, ms);
+        s.ms[idx] = realMs;
+        const record = { key, recId:s.recId, idx, blob, ms:realMs, created:Date.now() };
+        await RecStore.put(record);
+        await processRec(record);
       });
     };
     rec.start();
     s.rec = rec;
-    s.rotate = setTimeout(() => { try { rec.stop(); } catch {} startSegment(); }, SEGMENT_MS);
+    s.rotate = setTimeout(() => { rec._t1 = Date.now(); try { rec.stop(); } catch {} startSegment(); }, SEGMENT_MS);
   };
 
   const keepAwake = async () => {
@@ -9465,7 +10316,7 @@ function Recorder({ onFinish, onRecordingChange }) {
     if (mime === null) { setError('This browser can’t record audio.'); return; }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation:true, noiseSuppression:true, channelCount:1 } });
-      Object.assign(r.current, { stream, mime, recId: crypto.randomUUID(), idx:0, texts:[], chain:Promise.resolve(), started:Date.now() });
+      Object.assign(r.current, { stream, mime, recId: crypto.randomUUID(), idx:0, results:[], parts:[], ms:[], empty:new Set(), chain:Promise.resolve(), started:Date.now(), keep:keepAudio });
       setSegs({ total:0, done:0, failed:0 }); setPreview(''); setElapsed(0);
       startSegment();
       r.current.tick = setInterval(() => setElapsed(Date.now() - r.current.started), 1000);
@@ -9487,24 +10338,29 @@ function Recorder({ onFinish, onRecordingChange }) {
       if (!s.rec || s.rec.state === 'inactive') return res();
       const prev = s.rec.onstop;
       s.rec.onstop = e => { prev?.(e); res(); };
+      s.rec._t1 = Date.now();
       try { s.rec.stop(); } catch { res(); }
     });
     s.stream?.getTracks().forEach(t => t.stop());
     s.wake?.release?.().catch(() => {});
     await s.chain;
     setPhase('idle');
-    onFinish(s.texts.filter(Boolean).join(' ').trim());
+    onFinish(finalize());
   };
 
   const recover = async () => {
+    const s = r.current;
     setPhase('finishing'); setError(null);
     const list = [...leftovers].sort((a, b) => a.recId === b.recId ? a.idx - b.idx : a.created - b.created);
-    r.current.texts = [];
+    Object.assign(s, { results:[], parts:[], ms:[], empty:new Set(), keep:keepAudio });
     setSegs({ total:list.length, done:0, failed:0 });
-    for (let i = 0; i < list.length; i++) await transcribeSeg(i, list[i].blob, list[i].key);
+    for (let i = 0; i < list.length; i++) {
+      s.ms[i] = list[i].ms || 0;
+      await processRec({ ...list[i], idx: i });
+    }
     setLeftovers([]);
     setPhase('idle');
-    onFinish(r.current.texts.filter(Boolean).join(' ').trim());
+    onFinish(finalize());
   };
 
   const mm = Math.floor(elapsed / 60000), ss = Math.floor(elapsed / 1000) % 60;
@@ -9512,12 +10368,16 @@ function Recorder({ onFinish, onRecordingChange }) {
     <div>
       {phase === 'idle' && (<>
         <button className="btn-primary" onClick={start} style={{background:'var(--danger)'}}>● Start recording</button>
+        <label style={{display:'flex',alignItems:'center',gap:8,marginTop:12,fontSize:12.5,color:'var(--text-secondary)',cursor:'pointer'}}>
+          <input type="checkbox" checked={keepAudio} onChange={e=>toggleKeep(e.target.checked)}/>
+          Keep the audio so I can play it back (about 15 MB per hour)
+        </label>
         <div style={{...studyMuted,marginTop:8}}>
           Transcribed as you go with Whisper (free within Cloudflare’s daily allowance). Keep Folio open and the screen on — iPhone pauses recording when the screen locks.
         </div>
         {leftovers.length > 0 && (
           <div className="row-soft" style={{marginTop:12}}>
-            <span style={{flex:1,fontSize:12.5}}>{leftovers.length} untranscribed segment{leftovers.length===1?'':'s'} from an earlier recording.</span>
+            <span style={{flex:1,fontSize:12.5}}>{leftovers.length} unfinished segment{leftovers.length===1?'':'s'} from an earlier recording.</span>
             <button className="btn-ghost" style={{padding:'5px 12px',fontSize:12}} onClick={recover}>Recover</button>
             <button className="btn-ghost" style={{padding:'5px 12px',fontSize:12}} onClick={()=>{ leftovers.forEach(l => RecStore.del(l.key)); setLeftovers([]); }}>Discard</button>
           </div>
@@ -9536,37 +10396,12 @@ function Recorder({ onFinish, onRecordingChange }) {
             </span>
             {phase === 'recording'
               ? <button className="btn-primary" onClick={stop}>Stop & transcribe</button>
-              : <span style={{fontSize:12.5,color:'var(--text-secondary)'}}>Finishing transcript…</span>}
+              : <span style={{fontSize:12.5,color:'var(--text-secondary)'}}>Finishing…</span>}
           </div>
           {preview && <div style={{...studyMuted,marginTop:12,fontStyle:'italic'}}>…{preview}</div>}
         </div>
       )}
       {error && <div style={{fontSize:12.5,color:'var(--danger)',marginTop:10}}>{error}</div>}
-    </div>
-  );
-}
-
-/* ── note editor: transcript attachments (text/plain in R2) ── */
-function TranscriptAttachment({ file }) {
-  const [text, setText] = useState(null);
-  const [open, setOpen] = useState(false);
-  const [err, setErr]   = useState(null);
-  const toggle = async () => {
-    if (!open && text === null) {
-      try { setText(await studyFileText(file)); } catch (e) { setErr(pdfErrorLabel(e)); }
-    }
-    setOpen(v => !v);
-  };
-  return (
-    <div className="row-soft" style={{flexDirection:'column',alignItems:'stretch',margin:'12px 0'}}>
-      <div style={{display:'flex',alignItems:'center',gap:10}}>
-        <span>🎙️</span>
-        <span style={{flex:1,fontSize:13,fontWeight:600,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>Transcript · {file.name}</span>
-        <span style={{fontSize:11,color:'var(--text-muted)'}}>{fmtBytes(file.size || 0)}</span>
-        <button className="btn-ghost" style={{padding:'4px 12px',fontSize:12}} onClick={toggle}>{open ? 'Hide' : 'Show'}</button>
-      </div>
-      {err && <div style={{fontSize:12,color:'var(--danger)',marginTop:6}}>{err}</div>}
-      {open && text !== null && <div style={{marginTop:10,fontSize:13.5,lineHeight:1.7,color:'var(--text-tertiary)',whiteSpace:'pre-wrap',maxHeight:420,overflow:'auto'}} className="scrollbar">{text}</div>}
     </div>
   );
 }
@@ -10240,6 +11075,14 @@ function App() {
   stateRef.current = state;
   const [installBanner, setInstallBanner] = useState(!!window._installPrompt);
   const [pom, setPom] = useState(null);
+  /* Floating media player: any view can ask for it with openMedia(). Device-
+     local and never synced; lives here so it survives view changes. */
+  const [mediaReq, setMediaReq] = useState(null);
+  useEffect(() => {
+    const h = e => { if (e.detail?.noteId && e.detail?.itemId) setMediaReq({ ...e.detail, nonce: Date.now() }); };
+    window.addEventListener('folio-media', h);
+    return () => window.removeEventListener('folio-media', h);
+  }, []);
 
   useEffect(() => {
     const handler = () => setIsMobile(window.innerWidth <= 768);
@@ -10640,6 +11483,7 @@ function App() {
       )}
       {background?.source==='unsplash' && background?.attribution && <UnsplashCredit attribution={background.attribution}/>}
       {installBanner && <InstallBanner/>}
+      {mediaReq && <MediaPanel req={mediaReq} state={state} update={update} isMobile={isMobile} onClose={()=>setMediaReq(null)}/>}
       <PomodoroWidget pom={pom} setPom={setPom} tasks={state.tasks} update={update} isMobile={isMobile}/>
     </div>
   );
