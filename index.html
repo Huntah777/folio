@@ -1779,7 +1779,7 @@ function mergeById(localItems, remoteItems, localTombstones, remoteTombstones) {
 }
 
 /* Collections that carry soft-delete tombstones — see mergeById above. */
-const TOMBSTONE_COLLECTIONS = ['notes','tasks','meetings','journal','cards','studySets'];
+const TOMBSTONE_COLLECTIONS = ['notes','tasks','meetings','journal','cards','studySets','studyFolders'];
 
 /* Restoring a full-state backup (Admin → Data → Import) is a deliberate
    "make the app look like this snapshot" action, unlike a routine sync merge
@@ -1933,6 +1933,8 @@ const SEED = () => ({
   cardsDeleted: [],
   studySets: [],
   studySetsDeleted: [],
+  studyFolders: [],
+  studyFoldersDeleted: [],
   studySettings: {},
   tags: ['#getting-started','#work','#personal','#ideas','#meeting'],
   salah: { enabled:false, lat:null, lng:null, method:'mwl', asr:'standard',
@@ -8292,9 +8294,12 @@ function StudyView({ state, update, isMobile, flushSave }) {
   const [jobs, setJobs]     = useState([]);
   const [busy, setBusy]     = useState(null);   /* {label, error?} */
   const [notice, setNotice] = useState(null);   /* {label, error?} */
+  const [addingFolder, setAddingFolder] = useState(false);
   const stateRef = useRef(state);
   stateRef.current = state;
   const sets = state.studySets || [];
+  const pendingJobs = jobs.filter(j => ['submitted','ended','collecting'].includes(j.status));
+  const failedJobs  = jobs.filter(j => j.status === 'error');
 
   /* "Study this note/folder" from elsewhere arrives as ui.studyIntent and is
      consumed here (same hand-off pattern as ui.filterTag). */
@@ -8459,7 +8464,7 @@ function StudyView({ state, update, isMobile, flushSave }) {
       <StudyPage isMobile={isMobile}>
         {banners}
         <StudySetPage F={F} state={state} update={update} set={set} jobs={jobs} busy={busy} isMobile={isMobile}
-          onBack={()=>setScreen({ type:'home' })}
+          onBack={()=>setScreen(screen.back || { type:'home' })}
           onReview={(ids, mode) => startReview(ids, mode)}
           onRecall={noteId => setScreen({ type:'recall', noteId, back: screen })}
           onQuiz={() => setScreen({ type:'quiz', setId:set.id, back: screen })}
@@ -8470,10 +8475,54 @@ function StudyView({ state, update, isMobile, flushSave }) {
     );
   }
 
+  if (screen.type === 'folder') {
+    const folder = (state.studyFolders || []).find(f => f.id === screen.folderId);
+    if (!folder) { setTimeout(() => setScreen({ type:'home' })); return null; }
+    const folderSets = sets.filter(s => s.folderId === folder.id).sort((a,b) => b.updated - a.updated);
+    const fNoteIds = new Set(folderSets.flatMap(s => scopeNoteIds(state, s.scope)));
+    const fDue = buildStudyQueue(state, fNoteIds).due.length;
+    return (
+      <StudyPage isMobile={isMobile}>
+        {banners}
+        <div style={{display:'flex',alignItems:'center',gap:12,marginBottom:20,flexWrap:'wrap'}}>
+          <button className="btn-ghost" style={{padding:'5px 12px',fontSize:12}} onClick={()=>setScreen({ type:'home' })}>← Study</button>
+          <div style={{fontFamily:'Fraunces,serif',fontSize:isMobile?20:24,fontWeight:600}}>{folder.name}</div>
+          {fDue > 0 && <span style={{fontSize:12,color:'var(--accent)',marginLeft:'auto'}}>{fDue} due</span>}
+        </div>
+        {folderSets.length === 0 && <div style={studyMuted}>No study sets in this folder yet — open a set and assign it here.</div>}
+        <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr':'repeat(2,minmax(0,1fr))',gap:12}}>
+          {folderSets.map(s => {
+            const ids = new Set(scopeNoteIds(state, s.scope));
+            const q = buildStudyQueue(state, ids);
+            const pending = pendingJobs.some(j => j.setId === s.id);
+            const changed = studySetChangedNotes(state, s).length;
+            return (
+              <div key={s.id} className="card note-card" onClick={()=>setScreen({ type:'set', setId:s.id, back:screen })}>
+                <div style={{fontSize:14,fontWeight:600,marginBottom:3,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{s.title}</div>
+                <div style={{fontSize:11.5,color:'var(--text-muted)',marginBottom:10}}>{scopeLabel(state, s.scope)} · {ids.size} note{ids.size===1?'':'s'}</div>
+                <div style={{display:'flex',gap:12,flexWrap:'wrap',fontSize:12,color:'var(--text-secondary)'}}>
+                  <span><b style={{color:'var(--accent)'}}>{q.due.length}</b> due</span>
+                  <span>{q.total} cards</span>
+                  <span>{(s.quiz || []).length} quiz</span>
+                  <span>{(s.exams || []).length} exam{(s.exams || []).length===1?'':'s'}</span>
+                </div>
+                {(pending || changed > 0) && (
+                  <div style={{display:'flex',gap:6,marginTop:10,flexWrap:'wrap'}}>
+                    {pending && <span className="pill" style={{padding:'3px 9px',fontSize:11}}>Generating…</span>}
+                    {changed > 0 && <span className="pill" style={{padding:'3px 9px',fontSize:11,color:'var(--warning)'}}>{changed} note{changed===1?'':'s'} changed</span>}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+        {modals}
+      </StudyPage>
+    );
+  }
+
   /* ── home ── */
   const { due, fresh, total } = buildStudyQueue(state);
-  const pendingJobs = jobs.filter(j => ['submitted','ended','collecting'].includes(j.status));
-  const failedJobs  = jobs.filter(j => j.status === 'error');
   return (
     <StudyPage isMobile={isMobile}>
       <div style={{display:'flex',alignItems:'flex-end',justifyContent:'space-between',gap:12,flexWrap:'wrap',marginBottom:18}}>
@@ -8484,6 +8533,7 @@ function StudyView({ state, update, isMobile, flushSave }) {
         <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
           <button className="btn-ghost" onClick={()=>setModal({ type:'source', mode:'record' })}>● Record lecture</button>
           <button className="btn-ghost" onClick={()=>setModal({ type:'source', mode:'pdf' })}>Add material</button>
+          <button className="btn-ghost" onClick={()=>setAddingFolder(true)}>New folder</button>
           <button className="btn-primary" onClick={()=>setModal({ type:'new' })}>New study set</button>
         </div>
       </div>
@@ -8529,33 +8579,77 @@ function StudyView({ state, update, isMobile, flushSave }) {
         </div>
       )}
 
+      {/* ── Folders ── */}
+      {((state.studyFolders || []).length > 0 || addingFolder) && (<>
+        <div style={{...studyEyebrow('var(--text-secondary)'),margin:'22px 0 10px'}}>Folders</div>
+        <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr':'repeat(2,minmax(0,1fr))',gap:12,marginBottom:4}}>
+          {[...(state.studyFolders || [])].sort((a,b) => a.name.localeCompare(b.name)).map(f => {
+            const fSets = sets.filter(s => s.folderId === f.id);
+            const fNoteIds = new Set(fSets.flatMap(s => scopeNoteIds(state, s.scope)));
+            const fDue = buildStudyQueue(state, fNoteIds).due.length;
+            return (
+              <div key={f.id} className="card note-card" onClick={()=>setScreen({ type:'folder', folderId:f.id })}>
+                <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:6}}>
+                  <span style={{fontSize:16}}>📁</span>
+                  <div style={{fontWeight:600,fontSize:14,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',flex:1}}>{f.name}</div>
+                </div>
+                <div style={{fontSize:12,color:'var(--text-muted)'}}>
+                  {fSets.length} set{fSets.length===1?'':'s'} · <b style={{color:'var(--accent)'}}>{fDue}</b> due
+                </div>
+              </div>
+            );
+          })}
+          {addingFolder && (
+            <div className="card" style={{padding:'14px 16px'}}>
+              <form onSubmit={e => {
+                e.preventDefault();
+                const name = e.target.elements.n.value.trim();
+                if (name) { const t = Date.now(); update('studyFolders', prev => [...(prev || []), { id:uid(), name, created:t, updated:t }]); }
+                setAddingFolder(false);
+              }}>
+                <input name="n" className="input" autoFocus placeholder="Folder name" style={{marginBottom:8,display:'block',width:'100%'}}
+                  onKeyDown={e => { if (e.key === 'Escape') setAddingFolder(false); }}/>
+                <div style={{display:'flex',gap:6}}>
+                  <button type="submit" className="btn-primary" style={{fontSize:12,padding:'5px 12px'}}>Create</button>
+                  <button type="button" className="btn-ghost" style={{fontSize:12,padding:'5px 12px'}} onClick={()=>setAddingFolder(false)}>Cancel</button>
+                </div>
+              </form>
+            </div>
+          )}
+        </div>
+      </>)}
+
+      {/* ── Study sets ── */}
       <div style={{...studyEyebrow('var(--text-secondary)'),margin:'22px 0 10px'}}>Study sets</div>
       {sets.length === 0 && <div style={studyMuted}>No study sets yet.</div>}
       <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr':'repeat(2,minmax(0,1fr))',gap:12}}>
-        {[...sets].sort((a,b) => b.updated - a.updated).map(s => {
-          const ids = new Set(scopeNoteIds(state, s.scope));
-          const q = buildStudyQueue(state, ids);
-          const pending = pendingJobs.some(j => j.setId === s.id);
-          const changed = studySetChangedNotes(state, s).length;
-          return (
-            <div key={s.id} className="card note-card" onClick={()=>setScreen({ type:'set', setId:s.id })}>
-              <div style={{fontSize:14,fontWeight:600,marginBottom:3,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{s.title}</div>
-              <div style={{fontSize:11.5,color:'var(--text-muted)',marginBottom:10}}>{scopeLabel(state, s.scope)} · {ids.size} note{ids.size===1?'':'s'}</div>
-              <div style={{display:'flex',gap:12,flexWrap:'wrap',fontSize:12,color:'var(--text-secondary)'}}>
-                <span><b style={{color:'var(--accent)'}}>{q.due.length}</b> due</span>
-                <span>{q.total} cards</span>
-                <span>{(s.quiz || []).length} quiz</span>
-                <span>{(s.exams || []).length} exam{(s.exams || []).length===1?'':'s'}</span>
-              </div>
-              {(pending || changed > 0) && (
-                <div style={{display:'flex',gap:6,marginTop:10,flexWrap:'wrap'}}>
-                  {pending && <span className="pill" style={{padding:'3px 9px',fontSize:11}}>Generating…</span>}
-                  {changed > 0 && <span className="pill" style={{padding:'3px 9px',fontSize:11,color:'var(--warning)'}}>{changed} note{changed===1?'':'s'} changed</span>}
+        {(()=>{
+          const folderIds = new Set((state.studyFolders || []).map(f => f.id));
+          return [...sets].filter(s => !folderIds.has(s.folderId)).sort((a,b) => b.updated - a.updated).map(s => {
+            const ids = new Set(scopeNoteIds(state, s.scope));
+            const q = buildStudyQueue(state, ids);
+            const pending = pendingJobs.some(j => j.setId === s.id);
+            const changed = studySetChangedNotes(state, s).length;
+            return (
+              <div key={s.id} className="card note-card" onClick={()=>setScreen({ type:'set', setId:s.id })}>
+                <div style={{fontSize:14,fontWeight:600,marginBottom:3,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{s.title}</div>
+                <div style={{fontSize:11.5,color:'var(--text-muted)',marginBottom:10}}>{scopeLabel(state, s.scope)} · {ids.size} note{ids.size===1?'':'s'}</div>
+                <div style={{display:'flex',gap:12,flexWrap:'wrap',fontSize:12,color:'var(--text-secondary)'}}>
+                  <span><b style={{color:'var(--accent)'}}>{q.due.length}</b> due</span>
+                  <span>{q.total} cards</span>
+                  <span>{(s.quiz || []).length} quiz</span>
+                  <span>{(s.exams || []).length} exam{(s.exams || []).length===1?'':'s'}</span>
                 </div>
-              )}
-            </div>
-          );
-        })}
+                {(pending || changed > 0) && (
+                  <div style={{display:'flex',gap:6,marginTop:10,flexWrap:'wrap'}}>
+                    {pending && <span className="pill" style={{padding:'3px 9px',fontSize:11}}>Generating…</span>}
+                    {changed > 0 && <span className="pill" style={{padding:'3px 9px',fontSize:11,color:'var(--warning)'}}>{changed} note{changed===1?'':'s'} changed</span>}
+                  </div>
+                )}
+              </div>
+            );
+          });
+        })()}
       </div>
       {modals}
     </StudyPage>
@@ -8722,6 +8816,18 @@ function StudySetPage({ F, state, update, set, jobs, busy, isMobile, onBack, onR
             ? <form onSubmit={rename}><input name="t" className="input" autoFocus defaultValue={set.title} onBlur={e=>e.target.form.requestSubmit()}/></form>
             : <div onClick={()=>setRenaming(true)} title="Rename" style={{fontFamily:'Fraunces,serif',fontSize:isMobile?21:25,fontWeight:600,cursor:'text',wordBreak:'break-word'}}>{set.title}</div>}
           <div style={studyMuted}>{scopeLabel(state, set.scope)} · {noteIds.length} note{noteIds.length===1?'':'s'} · {cards.filter(c=>c.kind==='qa').length} cards</div>
+          {(state.studyFolders || []).length > 0 && (
+            <div style={{display:'flex',alignItems:'center',gap:6,marginTop:8,fontSize:12}}>
+              <span style={{color:'var(--text-muted)'}}>Folder:</span>
+              <select className="input" style={{fontSize:12,padding:'3px 8px',height:'auto'}} value={set.folderId || ''}
+                onChange={e => update('studySets', prev => prev.map(s => s.id === set.id ? { ...s, folderId:e.target.value||null, updated:Date.now() } : s))}>
+                <option value="">No folder</option>
+                {[...(state.studyFolders || [])].sort((a,b) => a.name.localeCompare(b.name)).map(f => (
+                  <option key={f.id} value={f.id}>{f.name}</option>
+                ))}
+              </select>
+            </div>
+          )}
         </div>
         {!confirmDel
           ? <button className="btn-ghost" style={{fontSize:12,padding:'6px 12px'}} onClick={()=>setConfirmDel(true)}>Delete set</button>
