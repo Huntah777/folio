@@ -9398,6 +9398,7 @@ function StudySourceModal({ state, update, initialMode = 'pdf', onClose, onCreat
   const [status, setStatus] = useState(null);  /* {label, error?} */
   const [recording, setRecording] = useState(false);
   const pdfRef = useRef(null);
+  const txtRef = useRef(null);
 
   const folders = useMemo(() => {
     const out = [];
@@ -9511,8 +9512,25 @@ function StudySourceModal({ state, update, initialMode = 'pdf', onClose, onCreat
         <div style={{...studyMuted,marginTop:8}}>Slides, handouts or papers. The PDF is attached to a new note and its text is used for the study set.</div>
       </>)}
       {mode === 'paste' && (<>
+        {/* File upload for .txt/.vtt/.srt — hidden input triggered by button */}
+        <input ref={txtRef} type="file" accept=".txt,.vtt,.srt,text/plain" style={{display:'none'}}
+          onChange={async e => {
+            const f = e.target.files?.[0]; if (!f) return;
+            setPasted(await f.text()); e.target.value = '';
+          }}/>
+        <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:8}}>
+          <button className="btn-secondary" style={{fontSize:12.5}} onClick={()=>txtRef.current?.click()}>
+            Choose file…
+          </button>
+          <span style={{fontSize:12,color:'var(--text-secondary)'}}>.txt / .vtt / .srt</span>
+        </div>
         <textarea className="input" rows={9} value={pasted} onChange={e=>setPasted(e.target.value)}
           placeholder="Paste notes, an article, or a video transcript. For YouTube: under the video, …more → Show transcript, then copy. Caption files (.vtt/.srt) are cleaned up automatically."/>
+        {estTokens(pasted) > 10_000 && (
+          <div style={{fontSize:12,color:'var(--text-secondary)',marginTop:6}}>
+            Large transcript (~{Math.round(estTokens(pasted)/1000)}K tokens) — use a Claude model for best results with Llama&apos;s 12K limit.
+          </div>
+        )}
         <button className="btn-primary" style={{marginTop:10}} disabled={!pasted.trim()}
           onClick={()=>fromTranscript(parsePastedTranscript(pasted), /-->/.test(pasted) ? '📺' : '📋')}>
           Save & continue
