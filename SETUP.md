@@ -176,10 +176,13 @@ You can change the model for each study type in **Admin → Study & AI**.
    npx wrangler pages secret put ANTHROPIC_API_KEY --project-name folio
    ```
 
-4. **Dependencies:** `@anthropic-ai/sdk` is a real dependency now. Pages runs
-   `npm clean-install` when it finds `package-lock.json`; check that the build log
-   shows *Installing project dependencies*. If it doesn't, set the Pages build
-   command to `npm ci`, with `.` still as the output directory.
+4. **Build command (required):** `@anthropic-ai/sdk` is a real dependency now, and
+   Pages only installs dependencies as part of a build step. With no build
+   command it logs *No build command specified. Skipping build step.*, installs
+   nothing, and the deploy fails with `Could not resolve "@anthropic-ai/sdk"`.
+   In *Dashboard → Workers & Pages → folio → Settings → Build configuration*, set
+   **Build command** to `npm ci`, and leave the output directory as `.`. The next
+   build log should show *Installing project dependencies*.
 
 5. **Push notifications for finished batches (optional):**
 
