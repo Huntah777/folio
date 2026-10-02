@@ -758,6 +758,9 @@ async function showNotificationViaSW(title, body, tag) {
 const STORE     = 'folio_v1';
 const TOKEN_KEY = 'folio_token';
 const ENDPOINT  = '/api/state';
+/* Upper bound on how long a {lazy:true} update (see App's update) may sit
+   unsynced. localStorage has it immediately either way. */
+const LAZY_SAVE_MS = 20000;
 
 /* The server merges every PUT into the stored blob (functions/api/state.js), so
    a save can no longer clobber another device's concurrent edit. This client
@@ -979,6 +982,634 @@ async function extractPdfText(data, onProgress) {
   };
 }
 
+/* ── study core ──────────────────────────────────────────────────────────────
+   AI study sets + FSRS spaced repetition. Shape of the synced data:
+     cards       per-note flashcards (kind 'qa') and one blank-page recall card
+                 per note (kind 'recall', id 'r_<noteId>'). Tombstoned like
+                 notes, so reviews on two devices merge per card.
+     studySets   a saved scope (note / folder / tag / all) + its quiz and exam
+                 bank. Cards belong to NOTES, not sets — a note in three sets
+                 must not get three copies — so a set's queue is simply every
+                 card whose note is in scope.
+     studySettings  model per study type + scheduling knobs (shallow-merged
+                 per key on the server).
+   AI results arrive through /api/study (D1-backed, never written into the
+   blob by the server) and are imported here with deterministic ids, so two
+   devices importing the same job can't duplicate anything. */
+
+const LLAMA_MODEL = '@cf/meta/llama-3.3-70b-instruct-fp8-fast';
+/* Mirrors MODELS in functions/_lib/ai.js — keep the ids and chunk sizes in step. */
+const STUDY_MODEL_OPTIONS = [
+  { id:'claude-haiku-4-5',  label:'Claude Haiku 4.5',  short:'Haiku',  batch:true,  maxChunkTokens:100000, price:{in:1,     out:5},     thinks:false },
+  { id:'claude-sonnet-5-5', label:'Claude Sonnet 5.5', short:'Sonnet', batch:true,  maxChunkTokens:300000, price:{in:2,     out:10},    thinks:true  },
+  { id:'claude-opus-5-5',   label:'Claude Opus 5.5',   short:'Opus',   batch:true,  maxChunkTokens:300000, price:{in:4,     out:20},    thinks:true  },
+  { id:LLAMA_MODEL,         label:'Llama 3.3 70B · free tier', short:'Llama', batch:false, maxChunkTokens:12000, price:{in:0.293, out:2.253}, thinks:false, free:true },
+];
+const studyModel = id => STUDY_MODEL_OPTIONS.find(m => m.id === id) || STUDY_MODEL_OPTIONS[0];
+
+/* unit/tokens drive the cost hints in Admin → Study & AI. They're rough
+   per-use sizes, not measurements — the Spend panel shows the real figures. */
+const STUDY_KINDS = [
+  { id:'flashcards',  label:'Flashcards',        desc:'Cards made from your notes',               batchable:true,  unit:'lecture hour', inTok:13000, outTok:7000 },
+  { id:'quiz',        label:'Quizzes',           desc:'Multiple-choice questions',                batchable:true,  unit:'lecture hour', inTok:13000, outTok:4000 },
+  { id:'smartNotes',  label:'Smart notes',       desc:'Recording or PDF → structured notes',      batchable:true,  unit:'lecture hour', inTok:13000, outTok:4000 },
+  { id:'exam',        label:'Mock exams',        desc:'Timed paper with a mark scheme',           batchable:true,  unit:'exam',         inTok:13000, outTok:5000 },
+  { id:'cardCheck',   label:'Answer checking',   desc:'Marks typed flashcard answers',            batchable:false, unit:'answer',       inTok:400,   outTok:120  },
+  { id:'blankRecall', label:'Blank-page recall', desc:'Compares what you remember with the note', batchable:false, unit:'recall',       inTok:4000,  outTok:1500 },
+  { id:'examMarking', label:'Exam marking',      desc:'Marks written exam answers',               batchable:false, unit:'exam',         inTok:3000,  outTok:2500 },
+];
+const studyKind = id => STUDY_KINDS.find(k => k.id === id);
+
+/* Option C defaults: cheap model + batch (half price) for everyday material,
+   a stronger model live for exams and marking, and the free model for the
+   chattiest call (checking typed answers). */
+const DEFAULT_STUDY_SETTINGS = {
+  flashcards:  { model:'claude-haiku-4-5',  batch:true  },
+  quiz:        { model:'claude-haiku-4-5',  batch:true  },
+  smartNotes:  { model:'claude-haiku-4-5',  batch:true  },
+  exam:        { model:'claude-sonnet-5-5', batch:false },
+  cardCheck:   { model:LLAMA_MODEL,         batch:false },
+  blankRecall: { model:'claude-sonnet-5-5', batch:false },
+  examMarking: { model:'claude-sonnet-5-5', batch:false },
+  retention: 0.9,
+  newPerDay: 20,
+  maxReviews: 200,
+};
+const studyCfg = (state, kind) => {
+  const cfg = { ...DEFAULT_STUDY_SETTINGS[kind], ...(state?.studySettings?.[kind] || {}) };
+  if (!STUDY_MODEL_OPTIONS.some(m => m.id === cfg.model)) cfg.model = DEFAULT_STUDY_SETTINGS[kind].model;
+  if (!studyModel(cfg.model).batch || !studyKind(kind)?.batchable) cfg.batch = false;
+  return cfg;
+};
+const studyNum = (state, key) => {
+  const v = state?.studySettings?.[key];
+  return typeof v === 'number' && Number.isFinite(v) ? v : DEFAULT_STUDY_SETTINGS[key];
+};
+/* Above this the cards alone start eating a real share of the 5 MB blob. */
+const MAX_ACTIVE_CARDS = 2500;
+
+/* Rough $ for one use of a study type on a model, for the settings hints.
+   Thinking models spend extra output tokens reasoning; batch is half price. */
+function studyUnitCost(kindId, cfg) {
+  const k = studyKind(kindId), m = studyModel(cfg.model);
+  if (m.free) return 0;
+  const out = k.outTok * (m.thinks ? 1.4 : 1);
+  const usd = (k.inTok * m.price.in + out * m.price.out) / 1e6;
+  return cfg.batch ? usd / 2 : usd;
+}
+function studyCostHint(kindId, cfg) {
+  if (studyModel(cfg.model).free) return 'free within the daily allowance';
+  const usd = studyUnitCost(kindId, cfg);
+  return `≈ ${usd < 0.01 ? `$${usd.toFixed(4)}` : `$${usd.toFixed(2)}`} per ${studyKind(kindId).unit}`;
+}
+const fmtUsd = usd => usd < 0.01 ? `$${(usd || 0).toFixed(4)}` : `$${usd.toFixed(2)}`;
+
+/* ── FSRS (vendor/ts-fsrs.umd.js, global FSRS) ──
+   Lazy-loaded like pdf.js, but precached by the service worker so reviews
+   work offline. Stored cards keep ts-fsrs's own field names with dates as ms
+   numbers; stability/difficulty are rounded to keep the blob small. */
+let _fsrsLib = null;
+function fsrsLib() {
+  if (_fsrsLib) return _fsrsLib;
+  _fsrsLib = new Promise((resolve, reject) => {
+    if (window.FSRS) return resolve(window.FSRS);
+    const s = document.createElement('script');
+    s.src = '/vendor/ts-fsrs.umd.js';
+    s.onload = () => window.FSRS ? resolve(window.FSRS) : reject(new Error('FSRS failed to load'));
+    s.onerror = () => { _fsrsLib = null; reject(new Error('FSRS failed to load')); };
+    document.head.appendChild(s);
+  });
+  return _fsrsLib;
+}
+function useFsrs() {
+  const [lib, setLib] = useState(() => window.FSRS || null);
+  const [err, setErr] = useState(null);
+  useEffect(() => { if (!lib) fsrsLib().then(setLib, e => setErr(e.message)); }, []);
+  return { F: lib, fsrsError: err };
+}
+const _fsrsSchedulers = new Map();
+function fsrsScheduler(F, retention) {
+  const key = String(retention);
+  if (!_fsrsSchedulers.has(key)) {
+    _fsrsSchedulers.set(key, F.fsrs(F.generatorParameters({ request_retention: retention, enable_fuzz: true })));
+  }
+  return _fsrsSchedulers.get(key);
+}
+const round4 = x => Math.round((x || 0) * 1e4) / 1e4;
+const newCardFsrs = (now = Date.now()) => ({
+  due: now, stability: 0, difficulty: 0, elapsed_days: 0, scheduled_days: 0,
+  learning_steps: 0, reps: 0, lapses: 0, state: 0, last_review: null,
+});
+const toStoredFsrs = c => ({
+  due: +c.due, stability: round4(c.stability), difficulty: round4(c.difficulty),
+  elapsed_days: c.elapsed_days || 0, scheduled_days: c.scheduled_days || 0,
+  learning_steps: c.learning_steps || 0, reps: c.reps || 0, lapses: c.lapses || 0,
+  state: c.state, last_review: c.last_review ? +c.last_review : null,
+});
+const fromStoredFsrs = (F, s) => F.TypeConvert.card({ ...newCardFsrs(), ...s, last_review: s?.last_review ?? undefined });
+function rateCard(F, card, rating, retention, now = new Date()) {
+  const { card: next } = fsrsScheduler(F, retention).next(fromStoredFsrs(F, card.fsrs), now, rating);
+  return { ...card, fsrs: toStoredFsrs(next), firstReview: card.firstReview || +now, updated: +now };
+}
+function previewIntervals(F, card, retention, now = new Date()) {
+  const p = fsrsScheduler(F, retention).repeat(fromStoredFsrs(F, card.fsrs), now);
+  return { 1: +p[1].card.due - +now, 2: +p[2].card.due - +now, 3: +p[3].card.due - +now, 4: +p[4].card.due - +now };
+}
+const fmtInterval = ms => {
+  const m = ms / 60000;
+  if (m < 1) return '<1m';
+  if (m < 60) return `${Math.round(m)}m`;
+  const h = m / 60;
+  if (h < 24) return `${Math.round(h)}h`;
+  const d = h / 24;
+  if (d < 30) return `${Math.round(d)}d`;
+  if (d < 365) return `${Math.round(d / 30 * 10) / 10}mo`;
+  return `${Math.round(d / 365 * 10) / 10}y`;
+};
+const RATINGS = [
+  { r:1, label:'Again', key:'1', color:'var(--danger)'  },
+  { r:2, label:'Hard',  key:'2', color:'var(--warning)' },
+  { r:3, label:'Good',  key:'3', color:'var(--success)' },
+  { r:4, label:'Easy',  key:'4', color:'var(--accent)'  },
+];
+/* Blank-page recall coverage → FSRS rating for the note's recall card. */
+const coverageRating = pct => pct < 40 ? 1 : pct < 70 ? 2 : pct < 90 ? 3 : 4;
+
+const startOfToday = () => { const d = new Date(); d.setHours(0, 0, 0, 0); return +d; };
+
+/* Today's queue: due reviews (oldest due first, capped) then new cards up to
+   the daily allowance, minus new cards already introduced today anywhere. */
+function buildStudyQueue(state, noteIdSet = null, now = Date.now()) {
+  const notesById = new Set((state.notes || []).map(n => n.id));
+  const all = (state.cards || []).filter(c => !c.suspended && notesById.has(c.noteId));
+  const scoped = noteIdSet ? all.filter(c => noteIdSet.has(c.noteId)) : all;
+  const due = scoped.filter(c => c.fsrs?.state !== 0 && c.fsrs?.due <= now)
+    .sort((a, b) => (a.kind === 'recall') - (b.kind === 'recall') || a.fsrs.due - b.fsrs.due)
+    .slice(0, studyNum(state, 'maxReviews'));
+  const today = startOfToday();
+  const introduced = all.filter(c => c.firstReview && c.firstReview >= today).length;
+  const newLeft = Math.max(0, studyNum(state, 'newPerDay') - introduced);
+  const fresh = scoped.filter(c => c.fsrs?.state === 0 && c.kind === 'qa')
+    .sort((a, b) => a.created - b.created || (a.id < b.id ? -1 : 1))
+    .slice(0, newLeft);
+  return { due, fresh, newLeft, queue: [...due, ...fresh], total: scoped.length };
+}
+
+/* ── note text ── */
+/* The note-body parser, shared by NoteEditor (rendering) and study (plain
+   text for the model). Same marker grammar as rebuildBody. */
+function parseBody(body) {
+  const parts = []; const rest = body || '';
+  const re = /```(\w+)?\n([\s\S]*?)```|\[url:(.*?)\|(.*?)\]|\[img:([^\]]+)\]|\[pdf:([^\]]+)\]/g; let m; let last = 0;
+  while ((m = re.exec(rest)) !== null) {
+    if (m.index > last) parts.push({ type:'text', content:rest.slice(last, m.index) });
+    if (m[0].startsWith('```'))
+      parts.push({ type:'code', lang:m[1] || 'plaintext', content:m[2].replace(/\n$/, '') });
+    else if (m[5] !== undefined)
+      parts.push({ type:'image', id:m[5] });
+    else if (m[6] !== undefined)
+      parts.push({ type:'pdf', id:m[6] });
+    else
+      parts.push({ type:'link', title:decodeUrlPart(m[3] || ''), url:decodeUrlPart(m[4] || '') });
+    last = m.index + m[0].length;
+  }
+  if (last < rest.length) parts.push({ type:'text', content:rest.slice(last) });
+  if (!parts.length) return [{ type:'text', content:'' }];
+  if (parts[0].type !== 'text') parts.unshift({ type:'text', content:'' });
+  if (parts[parts.length - 1].type !== 'text') parts.push({ type:'text', content:'' });
+  return parts;
+}
+
+const _studyFileText = new Map();   /* R2 key → extracted text, per session */
+async function studyFileText(f) {
+  if (_studyFileText.has(f.key)) return _studyFileText.get(f.key);
+  const url = await Files.url(f.key);
+  const blob = await (await fetch(url)).blob();
+  const text = f.type === 'application/pdf'
+    ? (await extractPdfText(await blob.arrayBuffer())).text
+    : await blob.text();
+  _studyFileText.set(f.key, text);
+  return text;
+}
+
+/* Plain text for the model: markers stripped, images dropped, attached PDF
+   text and lecture transcripts (R2, text/plain) appended. A PDF imported as
+   a note already has its text in the body ("## Page N"), so it isn't fetched
+   twice. Attachment failures (offline, no R2) degrade to body-only. */
+async function noteToStudyText(note) {
+  const out = [];
+  for (const p of parseBody(note.body)) {
+    if (p.type === 'text') out.push(p.content);
+    else if (p.type === 'code') out.push('```' + p.lang + '\n' + p.content + '\n```');
+    else if (p.type === 'link') out.push(`${p.title} (${p.url})`);
+  }
+  let text = out.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  const bodyHasPdfText = /## Page \d+/.test(text);
+  for (const f of note.files || []) {
+    try {
+      if (f.type === 'application/pdf' && !bodyHasPdfText) {
+        const t = await studyFileText(f);
+        if (t) text += `\n\n[Attached PDF: ${f.name}]\n${t}`;
+      } else if (f.type === 'text/plain') {
+        const t = await studyFileText(f);
+        if (t) text += `\n\n[Lecture transcript: ${f.name}]\n${t}`;
+      }
+    } catch {}
+  }
+  return text;
+}
+
+/* Cheap content fingerprint for "notes changed since cards were made". Body
+   only (sync, no network) — attachments rarely change after the fact. */
+function fnv32(str) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 0x01000193); }
+  return (h >>> 0).toString(36);
+}
+const noteHash = n => fnv32(`${n.title || ''}\n${n.body || ''}`);
+
+const estTokens = s => Math.ceil(String(s || '').length / 3.5);
+const noteBlock = (note, text) =>
+  `=== NOTE id=${note.id} title=${(note.title || 'Untitled').replace(/\s+/g, ' ')} ===\n${text}\n`;
+
+/* Pack note blocks into requests no bigger than the model takes. A note that
+   alone exceeds the limit is split on paragraph boundaries (hard-split as a
+   last resort), keeping its NOTE header so cards still map back to it. */
+function chunkMaterial(blocks, maxTokens) {
+  const chunks = [];
+  let cur = { material:'', noteIds:[] };
+  const flush = () => { if (cur.material) chunks.push(cur); cur = { material:'', noteIds:[] }; };
+  const maxChars = Math.floor(maxTokens * 3.5 * 0.9);
+  for (const b of blocks) {
+    if (estTokens(b.text) <= maxTokens) {
+      if (estTokens(cur.material + b.text) > maxTokens) flush();
+      cur.material += b.text + '\n';
+      if (!cur.noteIds.includes(b.noteId)) cur.noteIds.push(b.noteId);
+      continue;
+    }
+    flush();
+    const nl = b.text.indexOf('\n');
+    const header = b.text.slice(0, nl);
+    const paras = b.text.slice(nl + 1).split(/\n{2,}/).flatMap(p =>
+      p.length > maxChars ? p.match(new RegExp(`[\\s\\S]{1,${maxChars}}`, 'g')) : [p]);
+    let part = '';
+    for (const p of paras) {
+      if (part && estTokens(header + part + p) > maxTokens) {
+        chunks.push({ material:`${header}\n${part}`, noteIds:[b.noteId] });
+        part = '';
+      }
+      part += p + '\n\n';
+    }
+    if (part.trim()) chunks.push({ material:`${header}\n${part}`, noteIds:[b.noteId] });
+  }
+  flush();
+  return chunks;
+}
+
+/* One request's worth of material for a whole scope (exams): when it won't
+   fit, every note keeps an equal share rather than the first notes crowding
+   out the rest. */
+function fitMaterial(blocks, maxTokens) {
+  const all = blocks.map(b => b.text).join('\n');
+  if (estTokens(all) <= maxTokens) return all;
+  const per = Math.floor(maxTokens * 3.5 * 0.9 / blocks.length);
+  return blocks.map(b => b.text.length > per ? b.text.slice(0, per) + '\n[…]\n' : b.text).join('\n');
+}
+
+/* ── scopes ── */
+function scopeNoteIds(state, scope) {
+  const notes = state.notes || [];
+  if (!scope) return [];
+  if (scope.type === 'note') return notes.some(n => n.id === scope.id) ? [scope.id] : [];
+  if (scope.type === 'folder') {
+    const ids = new Set(getFolderDescIds(scope.id, state.folders || []));
+    return notes.filter(n => ids.has(n.folderId)).map(n => n.id);
+  }
+  if (scope.type === 'tag') return notes.filter(n => (n.tags || []).includes(scope.id)).map(n => n.id);
+  if (scope.type === 'all') return notes.map(n => n.id);
+  return [];
+}
+function scopeLabel(state, scope) {
+  if (!scope) return '';
+  if (scope.type === 'note') { const n = state.notes.find(x => x.id === scope.id); return n ? `${n.emoji || '📝'} ${n.title || 'Untitled'}` : 'Deleted note'; }
+  if (scope.type === 'folder') { const f = (state.folders || []).find(x => x.id === scope.id); return f ? `📁 ${f.name}` : 'Deleted folder'; }
+  if (scope.type === 'tag') return scope.id;
+  return 'All notes';
+}
+/* Plain name for a new set's title (no emoji / icon prefix). */
+function scopeTitle(state, scope) {
+  if (!scope) return '';
+  if (scope.type === 'note') return state.notes.find(x => x.id === scope.id)?.title || 'Untitled';
+  if (scope.type === 'folder') return (state.folders || []).find(x => x.id === scope.id)?.name || 'Folder';
+  if (scope.type === 'tag') return scope.id;
+  return 'All notes';
+}
+const sameScope = (a, b) => a && b && a.type === b.type && (a.id || null) === (b.id || null);
+
+/* ── answers ── */
+const normalizeAnswer = s => String(s || '').toLowerCase()
+  .replace(/[‘’]/g, "'").replace(/[^\p{L}\p{N}\s.]/gu, ' ')
+  .replace(/\b(the|a|an)\b/g, ' ').replace(/\s+/g, ' ').trim();
+function levenshtein(a, b) {
+  if (a === b) return 0;
+  const prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    let diag = prev[0]; prev[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const tmp = prev[j];
+      prev[j] = Math.min(prev[j] + 1, prev[j - 1] + 1, diag + (a[i - 1] === b[j - 1] ? 0 : 1));
+      diag = tmp;
+    }
+  }
+  return prev[b.length];
+}
+/* Free local check before any AI call: an exact or near-exact match on a
+   short answer is unambiguous. Long answers always go to the model, because
+   string similarity can't judge an explanation. */
+function fuzzyMatch(typed, expected) {
+  const a = normalizeAnswer(typed), b = normalizeAnswer(expected);
+  if (!a || !b) return false;
+  if (a === b) return true;
+  if (b.length > 40) return false;
+  return 1 - levenshtein(a, b) / Math.max(a.length, b.length) >= 0.85;
+}
+
+/* ── API ── */
+const StudyAPI = {
+  async call(action, { method = 'POST', body, headers = {}, raw = false } = {}) {
+    const token = Sync.getToken();
+    if (!token) throw new Error('NO_TOKEN');
+    const r = await fetch(`/api/study/${action}`, {
+      method,
+      headers: { Authorization:`Bearer ${token}`, ...(raw ? {} : { 'Content-Type':'application/json' }), ...headers },
+      body: raw ? body : (body === undefined ? undefined : JSON.stringify(body)),
+    });
+    const data = await r.json().catch(() => ({}));
+    if (r.status === 401) throw new Error('UNAUTHORIZED');
+    if (!r.ok) {
+      const e = new Error(data.message || data.error || `HTTP_${r.status}`);
+      e.code = data.error; e.status = r.status;
+      throw e;
+    }
+    return data;
+  },
+  generate(body) { return this.call('generate', { body }); },
+  jobs()         { return this.call('jobs', { method:'GET' }); },
+  ack(ids)       { return this.call('ack', { body:{ ids } }); },
+  check(body)    { return this.call('check', { body }); },
+  recall(body)   { return this.call('recall', { body }); },
+  mark(body)     { return this.call('mark', { body }); },
+  ping(deep)     { return this.call(`ping${deep ? '?deep=1' : ''}`, { method:'GET' }); },
+  usage()        { return this.call(`usage?tz=${new Date().getTimezoneOffset()}`, { method:'GET' }); },
+  transcribe(blob, prompt) {
+    return this.call('transcribe', {
+      raw: true, body: blob,
+      headers: { 'Content-Type': (blob.type || 'audio/webm').split(';')[0], 'X-Prompt': encodeURIComponent(String(prompt || '').slice(-400)) },
+    });
+  },
+};
+const studyErrorLabel = err => {
+  const m = err?.message;
+  if (m === 'NO_TOKEN') return 'Set up sync first — study features run through your Cloudflare account (Admin → Sync)';
+  if (m === 'UNAUTHORIZED') return 'Not authorised — check your sync token';
+  if (err?.code === 'not_configured') return `${m} — see SETUP.md → Study & AI`;
+  if (m === 'Failed to fetch' || m === 'Load failed') return 'Offline — this needs a connection';
+  return m || 'Something went wrong';
+};
+
+/* ── importing AI results into synced state ──
+   Ids are derived from the job, so importing the same result twice (two
+   devices, or a retry) is a no-op. Cards deleted since are respected via
+   the tombstone list. */
+function importStudyResult(state, update, { jobId, setId, kind, chunk = 0, data, noteIds = [] }) {
+  const now = Date.now();
+  const validIds = new Set(noteIds.length ? noteIds : (state.notes || []).map(n => n.id));
+  const fallbackNote = noteIds[0] || null;
+  const deleted = new Set((state.cardsDeleted || []).map(t => t.id));
+  let added = 0;
+
+  if (kind === 'flashcards') {
+    const fresh = (data.cards || []).map((c, i) => ({
+      id: `c_${jobId}_${chunk}_${i}`, kind:'qa',
+      noteId: validIds.has(c.noteId) ? c.noteId : fallbackNote,
+      front: String(c.front).trim(), back: String(c.back).trim(),
+      fsrs: newCardFsrs(now), firstReview: null, suspended: false, jobId, created: now, updated: now,
+    })).filter(c => c.noteId && !deleted.has(c.id));
+    added = fresh.length;
+    update('cards', prev => {
+      const have = new Set((prev || []).map(c => c.id));
+      return [...(prev || []), ...fresh.filter(c => !have.has(c.id))];
+    });
+  } else if (kind === 'quiz' || kind === 'exam') {
+    if (!setId) return 0;
+    /* A set created moments ago may not be in this snapshot yet — the
+       updater below still finds it, so only the count falls back. */
+    const set = (state.studySets || []).find(s => s.id === setId) || { quiz:[], exams:[] };
+    /* Counted against the snapshot: the updater below runs later. */
+    added = kind === 'quiz'
+      ? (data.questions || []).filter((_, i) => !(set.quiz || []).some(q => q.id === `q_${jobId}_${chunk}_${i}`)).length
+      : ((set.exams || []).some(e => e.id === `e_${jobId}`) ? 0 : 1);
+    update('studySets', prev => (prev || []).map(s => {
+      if (s.id !== setId) return s;
+      if (kind === 'quiz') {
+        const have = new Set((s.quiz || []).map(q => q.id));
+        const qs = (data.questions || []).map((q, i) => ({ ...q, id:`q_${jobId}_${chunk}_${i}` })).filter(q => !have.has(q.id));
+        return { ...s, quiz: [...(s.quiz || []), ...qs], updated: now };
+      }
+      const id = `e_${jobId}`;
+      if ((s.exams || []).some(e => e.id === id)) return s;
+      return { ...s, exams: [...(s.exams || []), {
+        id, title: data.title || 'Mock exam', durationMin: data.durationMin || 30,
+        questions: data.questions || [], attempts: [], created: now,
+      }], updated: now };
+    }));
+  } else if (kind === 'smartNotes') {
+    const noteId = fallbackNote;
+    if (!noteId) return 0;
+    added = 1;
+    update('notes', prev => prev.map(n => {
+      if (n.id !== noteId || n.smartNotesJob === jobId) return n;
+      const body = [data.markdown?.trim(), n.body?.trim()].filter(Boolean).join('\n\n---\n\n');
+      return { ...n, title: n.title?.trim() ? n.title : (data.title || n.title), body, smartNotesJob: jobId, updated: now };
+    }));
+  }
+  return added;
+}
+
+/* Plan and run a generation for a set. Batch-mode kinds go out as ONE
+   Anthropic batch (results arrive later via the jobs poll); live kinds run
+   one chunk per request so a phone dropping the connection only loses one
+   chunk, and the server's per-chunk record makes a retry free. */
+async function runStudyGeneration({ state, update, setId, kinds, noteIds, overrides = {}, title = '', newOnly = true, examOptions, onProgress }) {
+  const notesById = new Map(state.notes.map(n => [n.id, n]));
+  const set = (state.studySets || []).find(s => s.id === setId);
+  onProgress?.('Reading notes…');
+  const texts = [];
+  for (const id of noteIds) {
+    const n = notesById.get(id);
+    if (!n) continue;
+    const t = await noteToStudyText(n);
+    if (t.trim()) texts.push({ note: n, text: t, hash: noteHash(n) });
+  }
+  if (!texts.length) throw new Error('Nothing to study — the selected notes are empty');
+
+  const activeCards = (state.cards || []).length;
+  const jobId = crypto.randomUUID();
+  const plan = [];
+  for (const kind of kinds) {
+    const cfg = { ...studyCfg(state, kind), ...(overrides[kind] || {}) };
+    const m = studyModel(cfg.model);
+    const batch = !!cfg.batch && m.batch && studyKind(kind).batchable;
+    let sel = texts;
+    if (kind === 'flashcards' && newOnly) {
+      sel = texts.filter(t => set?.sourceHashes?.[t.note.id] !== t.hash
+        || !(state.cards || []).some(c => c.noteId === t.note.id && c.kind === 'qa'));
+      if (activeCards >= MAX_ACTIVE_CARDS) throw new Error(`You have ${activeCards} cards — delete some before generating more (limit ${MAX_ACTIVE_CARDS})`);
+    }
+    if (!sel.length) continue;
+    const blocks = sel.map(t => ({ noteId: t.note.id, text: noteBlock(t.note, t.text) }));
+    /* Exams are one paper over the whole scope; smart notes are one write-up
+       per note; cards and quizzes pack notes into as few requests as fit. */
+    const chunks = kind === 'exam'
+      ? [{ material: fitMaterial(blocks, m.maxChunkTokens), noteIds: blocks.map(b => b.noteId) }]
+      : kind === 'smartNotes'
+        ? blocks.map(b => ({ material: fitMaterial([b], m.maxChunkTokens), noteIds:[b.noteId] }))
+        : chunkMaterial(blocks, m.maxChunkTokens);
+    plan.push({ kind, model: cfg.model, batch, chunks: chunks.map(c => ({
+      ...c,
+      existingFronts: kind === 'flashcards'
+        ? (state.cards || []).filter(x => x.kind === 'qa' && c.noteIds.includes(x.noteId)).map(x => x.front).slice(0, 300)
+        : [],
+      options: kind === 'exam' ? (examOptions || {}) : {},
+    })) });
+  }
+  if (!plan.length) return { jobId, submitted: false, added: {}, cost: 0, upToDate: true };
+
+  /* Same model + same material in 2+ requests → worth a cache write. */
+  const sameModel = new Map();
+  plan.filter(p => !p.batch).forEach(p => sameModel.set(p.model, (sameModel.get(p.model) || 0) + 1));
+
+  const batchItems = plan.filter(p => p.batch).flatMap(p => p.chunks.map((c, i) => ({
+    kind: p.kind, model: p.model, chunk: i, noteIds: c.noteIds,
+    payload: { material: c.material, existingFronts: c.existingFronts, options: c.options },
+  })));
+  let submitted = false;
+  if (batchItems.length) {
+    onProgress?.('Sending to the batch queue…');
+    await StudyAPI.generate({ jobId, setId, title, mode:'batch', items: batchItems });
+    submitted = true;
+  }
+
+  const added = {}; let cost = 0; const errors = [];
+  for (const p of plan.filter(p => !p.batch)) {
+    for (let i = 0; i < p.chunks.length; i++) {
+      const c = p.chunks[i];
+      onProgress?.(`${studyKind(p.kind).label}${p.chunks.length > 1 ? ` (${i + 1}/${p.chunks.length})` : ''} · ${studyModel(p.model).short}…`);
+      try {
+        const res = await StudyAPI.generate({
+          jobId, setId, title, mode:'live', cache: (sameModel.get(p.model) || 0) > 1,
+          items: [{ kind: p.kind, model: p.model, chunk: i, noteIds: c.noteIds,
+                    payload: { material: c.material, existingFronts: c.existingFronts, options: c.options } }],
+        });
+        added[p.kind] = (added[p.kind] || 0) + importStudyResult(state, update, { jobId, setId, kind: p.kind, chunk: i, data: res.result, noteIds: c.noteIds });
+        cost += res.cost || 0;
+      } catch (e) {
+        errors.push(`${studyKind(p.kind).label}: ${studyErrorLabel(e)}`);
+      }
+    }
+  }
+
+  /* Remember what the cards were made from, so the set can flag edits. */
+  const hashed = plan.some(p => p.kind === 'flashcards');
+  if (hashed && setId) {
+    const hashes = Object.fromEntries(texts.map(t => [t.note.id, t.hash]));
+    update('studySets', prev => (prev || []).map(s => s.id === setId
+      ? { ...s, sourceHashes: { ...(s.sourceHashes || {}), ...hashes }, updated: Date.now() } : s));
+  }
+  if (errors.length && !submitted && !Object.keys(added).length) throw new Error(errors.join(' · '));
+  return { jobId, submitted, added, cost, errors };
+}
+
+/* A finished batch job from /api/study/jobs → state. */
+function importStudyJob(state, update, job) {
+  const added = {};
+  for (const it of job.result?.items || []) {
+    if (!it.ok) continue;
+    added[it.kind] = (added[it.kind] || 0) + importStudyResult(state, update, {
+      jobId: job.id, setId: job.setId, kind: it.kind, chunk: it.chunk, data: it.data, noteIds: it.noteIds || [],
+    });
+  }
+  return added;
+}
+const describeAdded = added => Object.entries(added || {}).filter(([, n]) => n > 0).map(([k, n]) =>
+  k === 'flashcards' ? `${n} card${n === 1 ? '' : 's'}` :
+  k === 'quiz' ? `${n} quiz question${n === 1 ? '' : 's'}` :
+  k === 'exam' ? 'a mock exam' : k === 'smartNotes' ? 'smart notes' : `${n} ${k}`).join(', ');
+
+/* ── recordings: segments are kept in IndexedDB until transcribed, so a
+   crash or a killed tab loses at most the segment in progress. ── */
+const RecStore = {
+  _db: null,
+  open() {
+    if (this._db) return this._db;
+    this._db = new Promise((resolve, reject) => {
+      const req = indexedDB.open('folio-recordings', 1);
+      req.onupgradeneeded = () => req.result.createObjectStore('segments', { keyPath:'key' });
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => { this._db = null; reject(req.error); };
+    });
+    return this._db;
+  },
+  async tx(mode, fn) {
+    const db = await this.open();
+    return new Promise((resolve, reject) => {
+      const t = db.transaction('segments', mode);
+      const out = fn(t.objectStore('segments'));
+      t.oncomplete = () => resolve(out?.result ?? out);
+      t.onerror = () => reject(t.error);
+    });
+  },
+  put(rec)  { return this.tx('readwrite', s => s.put(rec)).catch(() => {}); },
+  del(key)  { return this.tx('readwrite', s => s.delete(key)).catch(() => {}); },
+  async all() { try { return (await this.tx('readonly', s => s.getAll())) || []; } catch { return []; } },
+};
+const pickAudioMime = () => {
+  if (typeof MediaRecorder === 'undefined') return null;
+  return ['audio/webm;codecs=opus', 'audio/mp4', 'audio/ogg;codecs=opus', 'audio/webm']
+    .find(t => { try { return MediaRecorder.isTypeSupported(t); } catch { return false; } }) || '';
+};
+/* Strip a WebVTT / SRT caption file (e.g. YouTube "Show transcript" or a
+   downloaded .vtt) down to its spoken text. */
+function captionsToText(raw) {
+  return String(raw || '')
+    .replace(/^WEBVTT.*$/m, '')
+    .split(/\r?\n/)
+    .filter(l => !/^\s*\d+\s*$/.test(l) && !/-->/.test(l) && !/^(NOTE|STYLE|Kind:|Language:)/.test(l.trim()))
+    .map(l => l.replace(/<[^>]+>/g, '').replace(/^\s*\d{1,2}:\d{2}(:\d{2})?\s*/, '').trim())
+    .filter(Boolean)
+    .filter((l, i, a) => l !== a[i - 1])
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+/* A source (recording, captions) becomes a note whose transcript lives in R2
+   as text/plain — an hour of speech is ~50 KB, too much to keep in the
+   synced blob. Falls back to the body when R2 isn't set up. */
+async function createTranscriptNote({ state, update, title, transcript, folderId = null, emoji = '🎙️' }) {
+  const now = Date.now();
+  const note = { id: uid(), emoji, title: title || 'Lecture', body:'', tags:[], links:[], images:[], files:[], folderId, created: now, updated: now };
+  try {
+    const file = new File([transcript], `${(title || 'transcript').replace(/[^\w\- ]+/g, '').trim() || 'transcript'}.txt`, { type:'text/plain' });
+    const meta = await Files.upload(file);
+    note.files = [{ id: uid(), key: meta.key, name: meta.name, size: meta.size, type:'text/plain', uploadedAt: now }];
+    _studyFileText.set(meta.key, transcript);
+  } catch {
+    note.body = `## Transcript\n\n${transcript}`;
+  }
+  update('notes', prev => [note, ...prev]);
+  return note;
+}
+
 /* ── per-item last-write-wins merge with soft-delete tombstones ──
    Used for notes/tasks/meetings/journal during sync merges. For every id seen in any
    of the four inputs, whichever has the LATEST timestamp wins: a newer edit beats an
@@ -1007,7 +1638,7 @@ function mergeById(localItems, remoteItems, localTombstones, remoteTombstones) {
 }
 
 /* Collections that carry soft-delete tombstones — see mergeById above. */
-const TOMBSTONE_COLLECTIONS = ['notes','tasks','meetings','journal'];
+const TOMBSTONE_COLLECTIONS = ['notes','tasks','meetings','journal','cards','studySets'];
 
 /* Restoring a full-state backup (Admin → Data → Import) is a deliberate
    "make the app look like this snapshot" action, unlike a routine sync merge
@@ -1103,7 +1734,7 @@ const BANNERS_KEY = 'folio_banners';
 const LegacyBannerPrefs = {
   get() { try { return JSON.parse(localStorage.getItem(BANNERS_KEY)) || {}; } catch { return {}; } },
 };
-const SECTION_LABELS = { today:'Today', notes:'Notes', journal:'Journal', tasks:'Tasks', calendar:'Calendar', tags:'Tags', folders:'Folders', admin:'Admin' };
+const SECTION_LABELS = { today:'Today', notes:'Notes', journal:'Journal', tasks:'Tasks', calendar:'Calendar', tags:'Tags', folders:'Folders', study:'Study', admin:'Admin' };
 const BANNER_GRADIENTS = [
   'linear-gradient(135deg,#667eea,#764ba2)',
   'linear-gradient(135deg,#f093fb,#f5576c)',
@@ -1133,6 +1764,14 @@ const SEED = () => ({
   tasksDeleted: [],
   meetingsDeleted: [],
   journalDeleted: [],
+  /* study — see "study core". cards/studySets are tombstoned like notes;
+     studySettings is shallow-merged per key and defaults come from
+     DEFAULT_STUDY_SETTINGS, so an empty object is a complete config. */
+  cards: [],
+  cardsDeleted: [],
+  studySets: [],
+  studySetsDeleted: [],
+  studySettings: {},
   tags: ['#getting-started','#work','#personal','#ideas','#meeting'],
   salah: { enabled:false, lat:null, lng:null, method:'mwl', asr:'standard',
            prayers:{fajr:true,sunrise:false,dhuhr:true,asr:true,maghrib:true,isha:true},
@@ -1355,6 +1994,7 @@ const Ic = {
   shrink:  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/></svg>,
   admin:   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2"/></svg>,
   folders: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/><line x1="2" y1="10" x2="22" y2="10"/></svg>,
+  study:   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="6" width="15" height="12" rx="2"/><path d="M7 3h13a2 2 0 0 1 2 2v10"/><line x1="6" y1="11" x2="13" y2="11"/><line x1="6" y1="14.5" x2="10.5" y2="14.5"/></svg>,
 };
 
 /* `mermaid` is a real fenced language here — a ```mermaid block renders as a
@@ -2519,28 +3159,7 @@ function NoteEditor({ note, state, update, isMobile }) {
   useEffect(() => { setPreviewMode(true); }, [note?.id]);
 
   /* ── bodyParts — MUST be before any early return (Rules of Hooks) ── */
-  const bodyParts = useMemo(() => {
-    if (!note) return [{type:'text',content:''}];
-    const parts=[]; let rest=note.body||'';
-    const re=/```(\w+)?\n([\s\S]*?)```|\[url:(.*?)\|(.*?)\]|\[img:([^\]]+)\]|\[pdf:([^\]]+)\]/g; let m; let last=0;
-    while((m=re.exec(rest))!==null){
-      if(m.index>last) parts.push({type:'text',content:rest.slice(last,m.index)});
-      if(m[0].startsWith('```'))
-        parts.push({type:'code',lang:m[1]||'plaintext',content:m[2].replace(/\n$/,'')});
-      else if(m[5]!==undefined)
-        parts.push({type:'image',id:m[5]});
-      else if(m[6]!==undefined)
-        parts.push({type:'pdf',id:m[6]});
-      else
-        parts.push({type:'link',title:decodeUrlPart(m[3]||''),url:decodeUrlPart(m[4]||'')});
-      last=m.index+m[0].length;
-    }
-    if(last<rest.length) parts.push({type:'text',content:rest.slice(last)});
-    if(!parts.length) return [{type:'text',content:''}];
-    if(parts[0].type !== 'text') parts.unshift({type:'text',content:''});
-    if(parts[parts.length-1].type !== 'text') parts.push({type:'text',content:''});
-    return parts;
-  }, [note?.body]);
+  const bodyParts = useMemo(() => note ? parseBody(note.body) : [{type:'text',content:''}], [note?.body]);
 
   if (!note) return (
     <div style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center',flexDirection:'column',gap:12}}>
@@ -3045,7 +3664,13 @@ function NoteEditor({ note, state, update, isMobile }) {
           <svg style={{width:14,height:14}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
         </button>
         </>)}
-        <div style={{marginLeft:'auto'}}>
+        <div style={{marginLeft:'auto',display:'flex',gap:6}}>
+          <button onClick={()=>update('ui',{...state.ui,view:'study',studyIntent:{scope:{type:'note',id:note.id}}})}
+            title="Flashcards, recall practice, quizzes and exams from this note"
+            style={{...tbBtn,padding:'6px 12px',display:'flex',alignItems:'center',gap:5}}>
+            {React.cloneElement(Ic.study,{style:{width:13,height:13}})}
+            Study
+          </button>
           <button onClick={()=>setPreviewMode(v=>!v)} title={previewMode?'Edit this note':'Preview rendered markdown'}
             style={{...tbBtn,padding:'6px 14px',color:previewMode?'#fff':'var(--text-secondary)',background:previewMode?'var(--accent)':'var(--fill)',display:'flex',alignItems:'center',gap:5}}>
             <svg style={{width:12,height:12}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -3239,6 +3864,7 @@ function NoteEditor({ note, state, update, isMobile }) {
             </div>
           </div>;
         })()}
+        {(note.files||[]).filter(f=>f.type==='text/plain').map(f=><TranscriptAttachment key={f.id} file={f}/>)}
       </div>
 
       {/* ── linked notes bar ── */}
@@ -3749,6 +4375,8 @@ function NotesView({ state, update, isMobile, fullView, setFullView }) {
           <ContextMenu x={ctxMenu.x} y={ctxMenu.y} onClose={()=>setCtxMenu(null)} items={[
             {label:'Select', icon:<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{width:13,height:13}}><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>,
               fn:()=>setSelectedIds(prev=>{const s=new Set(prev);s.add(ctxMenu.id);return s;})},
+            {label:'Study this note', icon:React.cloneElement(Ic.study,{style:{width:13,height:13}}),
+              fn:()=>update('ui',{...state.ui,view:'study',studyIntent:{scope:{type:'note',id:ctxMenu.id}}})},
             'sep',
             {label:'Delete note', danger:true, icon:<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{width:13,height:13}}><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>,
               fn:()=>deleteNote(ctxMenu.id)},
@@ -4880,6 +5508,9 @@ function TodayView({ state, update, isMobile }) {
             style={{marginTop:12,background:'none',border:'none',color:'var(--success)',fontSize:12,cursor:'pointer',padding:0}}>Open calendar →</button>
         </div>
 
+        {/* study — hidden until there are cards */}
+        <StudyDueCard state={state} update={update}/>
+
         {/* prayer times */}
         {state.salah?.enabled && state.salah?.lat !== null && (()=>{
           const pt = todaySalahTimes;
@@ -5130,6 +5761,7 @@ function FoldersView({ state, update, isMobile }) {
           {!isRenaming && !isConfirmDel && (
             <div style={{display:'flex',gap:4,flexShrink:0}}>
               <button onClick={()=>update('ui',{...state.ui,view:'notes',folderId:node.id})} style={btnSm()}>View</button>
+              {count > 0 && <button onClick={()=>update('ui',{...state.ui,view:'study',studyIntent:{scope:{type:'folder',id:node.id}}})} style={btnSm()} title="Study this folder (including subfolders)">Study</button>}
               <button onClick={()=>{setAddingSubId(node.id);setNewFolderName('');setAddingRootFolder(false);setPickerOpenId(null);setExpandedFolders(prev=>new Set([...prev,node.id]));}}
                 style={btnSm({padding:'4px 7px'})} title="Add subfolder">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" style={{width:10,height:10,display:'block'}}>
@@ -6034,6 +6666,7 @@ function Sidebar({ state, update, syncStatus, onSync, collapsed, onToggle }) {
     {id:'calendar', label:'Calendar', icon:Ic.cal},
     {id:'tags',     label:'Tags',     icon:Ic.tags},
     {id:'folders',  label:'Folders',  icon:Ic.folders},
+    {id:'study',    label:'Study',    icon:Ic.study},
     {id:'admin',    label:'Admin',    icon:Ic.admin},
   ];
 
@@ -6400,6 +7033,7 @@ function MobileNav({ state, update, syncStatus }) {
         {id:'calendar',label:'Cal',    icon:Ic.cal},
         {id:'tags',    label:'Tags',   icon:Ic.tags},
         {id:'folders', label:'Folder', icon:Ic.folders},
+        {id:'study',   label:'Study',  icon:Ic.study},
       ].map(({id,label,icon})=>(
         <button key={id} onClick={()=>nav(id)} style={navBtnStyle(view===id)}>
           <span style={{width:20,height:20,display:'flex',alignItems:'center',justifyContent:'center'}}>{icon}</span>
@@ -7366,6 +8000,1782 @@ function DataSettings({ state, hydrate, replaceState }) {
   );
 }
 
+/* ── Study ──────────────────────────────────────────────────────────────────
+   Home (today's queue, study sets, batch jobs) → set page → review / blank
+   recall / quiz / exam. Data model and AI plumbing: see "study core". */
+
+const studyEyebrow = color => ({ fontSize:11, fontWeight:700, letterSpacing:'.08em', color, textTransform:'uppercase' });
+const studyMuted = { fontSize:12.5, color:'var(--text-secondary)', lineHeight:1.55 };
+
+function StudyModal({ title, onClose, children, width = 520 }) {
+  return (
+    <div className="modal-bg" onClick={onClose}>
+      <div className="modal fadeUp" style={{width}} onClick={e=>e.stopPropagation()}>
+        <div style={{position:'sticky',top:0,zIndex:1,background:'var(--modal-bg)',padding:'16px 20px 12px',borderBottom:'1px solid var(--border)',display:'flex',alignItems:'center',justifyContent:'space-between',gap:12}}>
+          <div style={{fontFamily:'Fraunces,serif',fontSize:18,fontWeight:600}}>{title}</div>
+          <button className="icon-btn" onClick={onClose} aria-label="Close">{Ic.x}</button>
+        </div>
+        <div style={{padding:'16px 20px 20px'}}>{children}</div>
+      </div>
+    </div>
+  );
+}
+
+function StudyBanner({ busy, error, children, onClose }) {
+  return (
+    <div className="card fadeUp" style={{padding:'10px 14px',marginBottom:14,display:'flex',alignItems:'center',gap:10,
+      borderColor: error ? 'rgba(244,63,94,.35)' : 'var(--accent-ring)'}}>
+      {busy && <span style={{width:12,height:12,borderRadius:99,border:'2px solid var(--accent)',borderTopColor:'transparent',animation:'spin .8s linear infinite',flexShrink:0}}/>}
+      <div style={{flex:1,fontSize:13,color:error?'var(--danger)':'var(--text-tertiary)',minWidth:0,wordBreak:'break-word'}}>{children}</div>
+      {onClose && <button className="icon-btn" onClick={onClose} aria-label="Dismiss">{Ic.x}</button>}
+    </div>
+  );
+}
+
+/* Model + batch choice for one study type. Batch only where the model and
+   the type both allow it (interactive marking can't wait for a batch). */
+function StudyModelPicker({ kindId, cfg, onChange }) {
+  const k = studyKind(kindId), m = studyModel(cfg.model);
+  return (
+    <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+      <select className="input" style={{width:'auto',maxWidth:'100%',padding:'6px 10px'}} value={cfg.model}
+        onChange={e=>{ const nm = studyModel(e.target.value); onChange({ ...cfg, model:nm.id, batch: nm.batch && k.batchable ? cfg.batch : false }); }}>
+        {STUDY_MODEL_OPTIONS.map(o=><option key={o.id} value={o.id}>{o.label}</option>)}
+      </select>
+      {k.batchable && m.batch && (
+        <button type="button" className={`pill${cfg.batch?' on':''}`} onClick={()=>onChange({ ...cfg, batch:!cfg.batch })}
+          title="Batch: half price; results arrive in minutes instead of seconds">
+          Batch · ½ price
+        </button>
+      )}
+    </div>
+  );
+}
+
+function StudyStat({ n, label, color }) {
+  return (
+    <div style={{display:'flex',alignItems:'baseline',gap:6}}>
+      <span style={{fontFamily:'Fraunces,serif',fontSize:30,fontWeight:600,color:color||'var(--text-primary)',lineHeight:1}}>{n}</span>
+      <span style={{fontSize:12.5,color:'var(--text-secondary)'}}>{label}</span>
+    </div>
+  );
+}
+
+/* Shared: delete cards with tombstones so the delete syncs. */
+function deleteStudyCards(update, ids) {
+  const set = new Set(ids), t = Date.now();
+  update('cards', prev => (prev || []).filter(c => !set.has(c.id)));
+  update('cardsDeleted', prev => [...(prev || []), ...ids.map(id => ({ id, deletedAt:t }))]);
+}
+
+/* Apply a blank-recall result to the note's recall card (created on first
+   use). The card is the note's own spaced-repetition schedule for "write it
+   all from memory", separate from its Q&A cards. */
+function upsertRecallCard(F, state, update, note, { rating, coverage }) {
+  const id = `r_${note.id}`, now = Date.now();
+  const existing = (state.cards || []).find(c => c.id === id) || {
+    id, kind:'recall', noteId:note.id, front:note.title || 'Untitled', back:'', fsrs:newCardFsrs(now),
+    firstReview:null, suspended:false, created:now, updated:now,
+  };
+  const next = { ...rateCard(F, existing, rating, studyNum(state, 'retention')), front: note.title || existing.front, coverage, coverageAt: now };
+  update('cards', prev => (prev || []).some(c => c.id === id) ? prev.map(c => c.id === id ? next : c) : [...(prev || []), next], { lazy:true });
+}
+
+function StudyView({ state, update, isMobile, flushSave }) {
+  const { F, fsrsError } = useFsrs();
+  const [screen, setScreen] = useState({ type:'home' });
+  const [modal, setModal]   = useState(null);   /* {type:'new', scope?} | {type:'source', mode?} */
+  const [jobs, setJobs]     = useState([]);
+  const [busy, setBusy]     = useState(null);   /* {label, error?} */
+  const [notice, setNotice] = useState(null);   /* {label, error?} */
+  const stateRef = useRef(state);
+  stateRef.current = state;
+  const sets = state.studySets || [];
+
+  /* "Study this note/folder" from elsewhere arrives as ui.studyIntent and is
+     consumed here (same hand-off pattern as ui.filterTag). */
+  useEffect(() => {
+    const intent = state.ui.studyIntent;
+    if (!intent) return;
+    update('ui', { ...state.ui, studyIntent:null });
+    const existing = sets.find(s => sameScope(s.scope, intent.scope));
+    if (existing) setScreen({ type:'set', setId:existing.id });
+    else setModal({ type:'new', scope:intent.scope });
+  }, [state.ui.studyIntent]);
+
+  /* Cards whose note was deleted can never be reviewed again — tombstone
+     them here, in one place, rather than in every note-delete path. */
+  useEffect(() => {
+    const noteIds = new Set(state.notes.map(n => n.id));
+    const orphans = (state.cards || []).filter(c => !noteIds.has(c.noteId)).map(c => c.id);
+    if (orphans.length) deleteStudyCards(update, orphans);
+  }, []);
+
+  const pollJobs = useCallback(async () => {
+    if (!Sync.configured()) return [];
+    try {
+      const { jobs: list } = await StudyAPI.jobs();
+      const done = list.filter(j => j.status === 'done' && j.result);
+      if (done.length) {
+        const msgs = [];
+        for (const j of done) {
+          const d = describeAdded(importStudyJob(stateRef.current, update, j));
+          if (d) msgs.push(`${j.title || 'Study set'}: ${d}`);
+        }
+        await StudyAPI.ack(done.map(j => j.id)).catch(() => {});
+        if (msgs.length) setNotice({ label:`Ready — ${msgs.join(' · ')}` });
+      }
+      const rest = list.filter(j => !(j.status === 'done' && j.result));
+      setJobs(rest);
+      return rest;
+    } catch {
+      return null;
+    }
+  }, [update]);
+
+  useEffect(() => {
+    let timer, stopped = false;
+    const loop = async () => {
+      const rest = await pollJobs();
+      if (stopped) return;
+      const pending = (rest || []).some(j => ['submitted','ended','collecting'].includes(j.status));
+      timer = setTimeout(loop, pending ? 20000 : 120000);
+    };
+    loop();
+    return () => { stopped = true; clearTimeout(timer); };
+  }, [pollJobs]);
+
+  const ensureSet = (scope, title) => {
+    const cur = stateRef.current;
+    const existing = (cur.studySets || []).find(s => sameScope(s.scope, scope));
+    if (existing) return { id: existing.id, state: cur };
+    const now = Date.now();
+    const set = { id:uid(), title: title || scopeTitle(cur, scope), scope, sourceHashes:{}, quiz:[], exams:[], quizAttempts:[], created:now, updated:now };
+    update('studySets', prev => [...(prev || []), set]);
+    return { id: set.id, state: { ...cur, studySets: [...(cur.studySets || []), set] } };
+  };
+
+  const generate = async ({ setId, snapshot, kinds, noteIds, overrides, newOnly = true, examOptions, title }) => {
+    if (busy && !busy.error) return null;
+    setNotice(null);
+    setBusy({ label:'Starting…' });
+    try {
+      const res = await runStudyGeneration({
+        state: snapshot || stateRef.current, update, setId, kinds, noteIds, overrides, newOnly, examOptions, title,
+        onProgress: label => setBusy({ label }),
+      });
+      setBusy(null);
+      const parts = [];
+      const d = describeAdded(res.added);
+      if (d) parts.push(`Added ${d}`);
+      if (res.submitted) parts.push('Batch queued — you’ll get a notification when it’s ready (usually a few minutes)');
+      if (res.upToDate) parts.push('Already up to date — no notes have changed since the last cards were made');
+      if (res.cost) parts.push(`cost ${fmtUsd(res.cost)}`);
+      if (res.errors?.length) parts.push(res.errors.join(' · '));
+      setNotice({ label: parts.join(' · '), error: !!res.errors?.length && !d && !res.submitted });
+      if (res.submitted) pollJobs();
+      return res;
+    } catch (e) {
+      setBusy({ label: studyErrorLabel(e), error:true });
+      return null;
+    }
+  };
+
+  const startReview = (noteIdSet, mode) => {
+    const { queue } = buildStudyQueue(stateRef.current, noteIdSet);
+    if (!queue.length) { setNotice({ label:'Nothing due right now — come back later, or add cards.' }); return; }
+    setScreen({ type:'review', cardIds: queue.map(c => c.id), mode, back: screen });
+  };
+
+  const back = s => () => { setScreen(s || { type:'home' }); };
+
+  /* ── sub-screens ── */
+  if (screen.type === 'review') {
+    return F
+      ? <ReviewSession F={F} state={state} update={update} cardIds={screen.cardIds} mode={screen.mode}
+          isMobile={isMobile} flushSave={flushSave} onExit={back(screen.back)}/>
+      : <div style={{padding:32,color:'var(--text-muted)'}}>{fsrsError || 'Loading…'}</div>;
+  }
+  if (screen.type === 'recall') {
+    const note = state.notes.find(n => n.id === screen.noteId);
+    if (!note) return <div style={{padding:32}}><button className="btn-ghost" onClick={back(screen.back)}>Back</button></div>;
+    return (
+      <StudyPage isMobile={isMobile}>
+        <BlankRecall state={state} update={update} note={note} isMobile={isMobile}
+          onCancel={back(screen.back)}
+          onDone={res => { if (F) upsertRecallCard(F, stateRef.current, update, note, res); flushSave?.(); setScreen(screen.back || { type:'home' }); }}/>
+      </StudyPage>
+    );
+  }
+  if (screen.type === 'quiz') {
+    const set = sets.find(s => s.id === screen.setId);
+    if (!set) return null;
+    return <StudyPage isMobile={isMobile}><QuizRunner set={set} update={update} onExit={back(screen.back)}/></StudyPage>;
+  }
+  if (screen.type === 'exam') {
+    const set = sets.find(s => s.id === screen.setId);
+    const exam = set?.exams?.find(e => e.id === screen.examId);
+    if (!set || !exam) return null;
+    return <StudyPage isMobile={isMobile}><ExamRunner state={state} update={update} set={set} exam={exam} isMobile={isMobile} onExit={back(screen.back)}/></StudyPage>;
+  }
+
+  const banners = (<>
+    {fsrsError && <StudyBanner error>Couldn’t load the scheduler ({fsrsError}). Reload the app to try again.</StudyBanner>}
+    {busy && <StudyBanner busy={!busy.error} error={busy.error} onClose={busy.error ? ()=>setBusy(null) : null}>{busy.label}</StudyBanner>}
+    {notice && !busy && <StudyBanner error={notice.error} onClose={()=>setNotice(null)}>{notice.label}</StudyBanner>}
+  </>);
+
+  const modals = (<>
+    {modal?.type === 'new' && (
+      <NewStudySetModal state={state} initialScope={modal.scope} onClose={()=>setModal(null)}
+        onCreate={({ scope, title, kinds, overrides, examOptions }) => {
+          setModal(null);
+          const { id, state: snap } = ensureSet(scope, title);
+          setScreen({ type:'set', setId:id });
+          if (kinds.length) generate({ setId:id, snapshot:snap, kinds, noteIds: scopeNoteIds(snap, scope), overrides, examOptions, title });
+        }}/>
+    )}
+    {modal?.type === 'source' && (
+      <StudySourceModal state={state} update={update} initialMode={modal.mode} onClose={()=>setModal(null)}
+        onCreated={({ note, kinds }) => {
+          setModal(null);
+          const cur = { ...stateRef.current, notes: stateRef.current.notes.some(n => n.id === note.id) ? stateRef.current.notes : [note, ...stateRef.current.notes] };
+          stateRef.current = cur;
+          const { id, state: snap } = ensureSet({ type:'note', id:note.id }, note.title);
+          setScreen({ type:'set', setId:id });
+          if (kinds.length) generate({ setId:id, snapshot:snap, kinds, noteIds:[note.id], title: note.title });
+        }}/>
+    )}
+  </>);
+
+  if (screen.type === 'set') {
+    const set = sets.find(s => s.id === screen.setId);
+    if (!set) { setTimeout(() => setScreen({ type:'home' })); return null; }
+    return (
+      <StudyPage isMobile={isMobile}>
+        {banners}
+        <StudySetPage F={F} state={state} update={update} set={set} jobs={jobs} busy={busy} isMobile={isMobile}
+          onBack={()=>setScreen({ type:'home' })}
+          onReview={(ids, mode) => startReview(ids, mode)}
+          onRecall={noteId => setScreen({ type:'recall', noteId, back: screen })}
+          onQuiz={() => setScreen({ type:'quiz', setId:set.id, back: screen })}
+          onExam={examId => setScreen({ type:'exam', setId:set.id, examId, back: screen })}
+          onGenerate={opts => generate({ setId:set.id, title:set.title, noteIds: scopeNoteIds(stateRef.current, set.scope), ...opts })}/>
+        {modals}
+      </StudyPage>
+    );
+  }
+
+  /* ── home ── */
+  const { due, fresh, total } = buildStudyQueue(state);
+  const pendingJobs = jobs.filter(j => ['submitted','ended','collecting'].includes(j.status));
+  const failedJobs  = jobs.filter(j => j.status === 'error');
+  return (
+    <StudyPage isMobile={isMobile}>
+      <div style={{display:'flex',alignItems:'flex-end',justifyContent:'space-between',gap:12,flexWrap:'wrap',marginBottom:18}}>
+        <div>
+          <div style={{fontFamily:'Fraunces,serif',fontSize:isMobile?22:26,fontWeight:600}}>Study</div>
+          <div style={studyMuted}>Spaced-repetition flashcards, recall practice, quizzes and mock exams — made from your notes.</div>
+        </div>
+        <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+          <button className="btn-ghost" onClick={()=>setModal({ type:'source', mode:'record' })}>● Record lecture</button>
+          <button className="btn-ghost" onClick={()=>setModal({ type:'source', mode:'pdf' })}>Add material</button>
+          <button className="btn-primary" onClick={()=>setModal({ type:'new' })}>New study set</button>
+        </div>
+      </div>
+      {banners}
+
+      <div className="card" style={{padding:'18px 20px',marginBottom:16}}>
+        <div style={studyEyebrow('var(--accent)')}>Today</div>
+        <div style={{display:'flex',gap:26,alignItems:'baseline',flexWrap:'wrap',margin:'10px 0 16px'}}>
+          <StudyStat n={due.length} label="due" color="var(--accent)"/>
+          <StudyStat n={fresh.length} label="new"/>
+          <StudyStat n={total} label="cards in total" color="var(--text-secondary)"/>
+        </div>
+        <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+          <button className="btn-primary" disabled={!F || !(due.length + fresh.length)} onClick={()=>startReview(null, 'flip')}>Review · flip cards</button>
+          <button className="btn-ghost" disabled={!F || !(due.length + fresh.length)} onClick={()=>startReview(null, 'type')}>Review · type answers</button>
+        </div>
+        {total === 0 && (
+          <div style={{...studyMuted,marginTop:12}}>
+            No cards yet. Make a study set from a note, folder or tag — or record a lecture and Folio will write the notes and cards for you.
+          </div>
+        )}
+      </div>
+
+      {(pendingJobs.length > 0 || failedJobs.length > 0) && (
+        <div className="card" style={{padding:'14px 18px',marginBottom:16}}>
+          <div style={{...studyEyebrow('var(--warning)'),marginBottom:8}}>In the batch queue</div>
+          {pendingJobs.map(j => (
+            <div key={j.id} style={{display:'flex',alignItems:'center',gap:10,padding:'5px 0',fontSize:13}}>
+              <span style={{width:10,height:10,borderRadius:99,border:'2px solid var(--warning)',borderTopColor:'transparent',animation:'spin 1s linear infinite',flexShrink:0}}/>
+              <span style={{flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{j.title || 'Study set'} · {j.kinds.map(k => studyKind(k)?.label || k).join(', ')}</span>
+              <span style={{fontSize:11.5,color:'var(--text-muted)'}}>
+                {j.counts ? `${j.counts.succeeded || 0}/${(j.counts.processing || 0) + (j.counts.succeeded || 0) + (j.counts.errored || 0)} done` : 'queued'}
+              </span>
+            </div>
+          ))}
+          {failedJobs.map(j => (
+            <div key={j.id} style={{display:'flex',alignItems:'center',gap:10,padding:'5px 0',fontSize:13,color:'var(--danger)'}}>
+              <span style={{flex:1,minWidth:0}}>{j.title || 'Study set'} failed: {j.error || 'unknown error'}</span>
+              <button className="btn-ghost" style={{padding:'4px 10px',fontSize:12}}
+                onClick={()=>{ StudyAPI.ack([j.id]).catch(()=>{}); setJobs(js => js.filter(x => x.id !== j.id)); }}>Dismiss</button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div style={{...studyEyebrow('var(--text-secondary)'),margin:'22px 0 10px'}}>Study sets</div>
+      {sets.length === 0 && <div style={studyMuted}>No study sets yet.</div>}
+      <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr':'repeat(2,minmax(0,1fr))',gap:12}}>
+        {[...sets].sort((a,b) => b.updated - a.updated).map(s => {
+          const ids = new Set(scopeNoteIds(state, s.scope));
+          const q = buildStudyQueue(state, ids);
+          const pending = pendingJobs.some(j => j.setId === s.id);
+          const changed = studySetChangedNotes(state, s).length;
+          return (
+            <div key={s.id} className="card note-card" onClick={()=>setScreen({ type:'set', setId:s.id })}>
+              <div style={{fontSize:14,fontWeight:600,marginBottom:3,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{s.title}</div>
+              <div style={{fontSize:11.5,color:'var(--text-muted)',marginBottom:10}}>{scopeLabel(state, s.scope)} · {ids.size} note{ids.size===1?'':'s'}</div>
+              <div style={{display:'flex',gap:12,flexWrap:'wrap',fontSize:12,color:'var(--text-secondary)'}}>
+                <span><b style={{color:'var(--accent)'}}>{q.due.length}</b> due</span>
+                <span>{q.total} cards</span>
+                <span>{(s.quiz || []).length} quiz</span>
+                <span>{(s.exams || []).length} exam{(s.exams || []).length===1?'':'s'}</span>
+              </div>
+              {(pending || changed > 0) && (
+                <div style={{display:'flex',gap:6,marginTop:10,flexWrap:'wrap'}}>
+                  {pending && <span className="pill" style={{padding:'3px 9px',fontSize:11}}>Generating…</span>}
+                  {changed > 0 && <span className="pill" style={{padding:'3px 9px',fontSize:11,color:'var(--warning)'}}>{changed} note{changed===1?'':'s'} changed</span>}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      {modals}
+    </StudyPage>
+  );
+}
+
+function StudyPage({ isMobile, children }) {
+  return (
+    <div style={{flex:1,minHeight:0,overflow:'auto'}} className="scrollbar">
+      <div style={{maxWidth:880,margin:'0 auto',padding:isMobile?'18px 16px 48px':'28px 32px 64px'}}>{children}</div>
+    </div>
+  );
+}
+
+/* Notes in the set's scope whose content changed since their cards were
+   made (only meaningful once cards have been generated for the set). */
+function studySetChangedNotes(state, set) {
+  const hashes = set.sourceHashes || {};
+  if (!Object.keys(hashes).length) return [];
+  return scopeNoteIds(state, set.scope).filter(id => {
+    const n = state.notes.find(x => x.id === id);
+    return n && hashes[id] !== noteHash(n);
+  });
+}
+
+/* ── new study set ── */
+function NewStudySetModal({ state, initialScope, onClose, onCreate }) {
+  const [scopeType, setScopeType] = useState(initialScope?.type || 'folder');
+  const [scopeId, setScopeId] = useState(initialScope?.id || '');
+  const [title, setTitle] = useState('');
+  const [kinds, setKinds] = useState({ flashcards:true, quiz:true, exam:false });
+  const [overrides, setOverrides] = useState({});
+  const [examOptions, setExamOptions] = useState({ durationMin:30, mcq:6, written:3 });
+
+  const folders = state.folders || [];
+  const folderOptions = useMemo(() => {
+    const out = [];
+    const walk = (nodes, depth) => nodes.forEach(n => { out.push({ id:n.id, label:`${'  '.repeat(depth)}${n.name}` }); walk(n.children || [], depth + 1); });
+    walk(buildFolderTree(folders), 0);
+    return out;
+  }, [folders]);
+  const tags = useMemo(() => [...new Set(state.notes.flatMap(n => n.tags || []))].sort(), [state.notes]);
+  const notes = useMemo(() => [...state.notes].sort((a,b) => b.updated - a.updated), [state.notes]);
+
+  useEffect(() => {
+    if (initialScope && scopeType === initialScope.type) return;
+    setScopeId(scopeType === 'folder' ? (folderOptions[0]?.id || '') : scopeType === 'tag' ? (tags[0] || '') : scopeType === 'note' ? (notes[0]?.id || '') : '');
+  }, [scopeType]);
+
+  const scope = scopeType === 'all' ? { type:'all', id:null } : { type:scopeType, id:scopeId };
+  const noteIds = scopeNoteIds(state, scope);
+  const chars = noteIds.reduce((s, id) => s + (state.notes.find(n => n.id === id)?.body?.length || 0), 0);
+  const tokens = Math.ceil(chars / 3.5);
+  const chosen = Object.keys(kinds).filter(k => kinds[k]);
+  const cfgFor = k => ({ ...studyCfg(state, k), ...(overrides[k] || {}) });
+  const estimate = chosen.reduce((sum, k) => {
+    const cfg = cfgFor(k), m = studyModel(cfg.model);
+    if (m.free) return sum;
+    const out = k === 'flashcards' ? tokens * 0.5 : k === 'quiz' ? Math.min(tokens * 0.3, 6000) : 5000;
+    return sum + ((tokens + 800) * m.price.in + out * (m.thinks ? 1.4 : 1) * m.price.out) / 1e6 / (cfg.batch ? 2 : 1);
+  }, 0);
+  const existing = (state.studySets || []).find(s => sameScope(s.scope, scope));
+
+  return (
+    <StudyModal title="New study set" onClose={onClose} width={560}>
+      <div style={{...studyEyebrow('var(--text-secondary)'),marginBottom:8}}>What to study</div>
+      <div className="seg" style={{marginBottom:10,flexWrap:'wrap'}}>
+        {[['folder','Folder'],['tag','Tag'],['note','Note'],['all','All notes']].map(([id,label]) => (
+          <button key={id} aria-pressed={scopeType===id} onClick={()=>setScopeType(id)}>{label}</button>
+        ))}
+      </div>
+      {scopeType === 'folder' && (
+        <select className="input" value={scopeId} onChange={e=>setScopeId(e.target.value)}>
+          {folderOptions.length === 0 && <option value="">No folders yet</option>}
+          {folderOptions.map(f => <option key={f.id} value={f.id}>{f.label}</option>)}
+        </select>
+      )}
+      {scopeType === 'tag' && (
+        <select className="input" value={scopeId} onChange={e=>setScopeId(e.target.value)}>
+          {tags.length === 0 && <option value="">No tags in use</option>}
+          {tags.map(t => <option key={t} value={t}>{t}</option>)}
+        </select>
+      )}
+      {scopeType === 'note' && (
+        <select className="input" value={scopeId} onChange={e=>setScopeId(e.target.value)}>
+          {notes.map(n => <option key={n.id} value={n.id}>{(n.emoji || '📝') + ' ' + (n.title || 'Untitled')}</option>)}
+        </select>
+      )}
+      <div style={{...studyMuted,margin:'8px 0 16px'}}>
+        {noteIds.length} note{noteIds.length===1?'':'s'}{scopeType==='folder' ? ' (including subfolders)' : ''} · about {tokens.toLocaleString()} tokens of text
+        {existing && <> · <b style={{color:'var(--warning)'}}>a set for this already exists</b> — new material is added to it</>}
+      </div>
+
+      <div style={{...studyEyebrow('var(--text-secondary)'),marginBottom:4}}>Title</div>
+      <input className="input" placeholder={scopeTitle(state, scope) || 'Study set'} value={title} onChange={e=>setTitle(e.target.value)} style={{marginBottom:16}}/>
+
+      <div style={{...studyEyebrow('var(--text-secondary)'),marginBottom:8}}>Generate now</div>
+      {['flashcards','quiz','exam'].map(k => (
+        <div key={k} className="row-soft" style={{marginBottom:8,flexWrap:'wrap'}}>
+          <label style={{display:'flex',alignItems:'center',gap:8,flex:'1 1 160px',cursor:'pointer',fontSize:13,fontWeight:600}}>
+            <input type="checkbox" checked={!!kinds[k]} onChange={e=>setKinds(v=>({ ...v, [k]:e.target.checked }))}/>
+            {studyKind(k).label}
+          </label>
+          {kinds[k] && <StudyModelPicker kindId={k} cfg={cfgFor(k)} onChange={cfg=>setOverrides(o=>({ ...o, [k]:cfg }))}/>}
+          {k === 'exam' && kinds.exam && (
+            <div style={{display:'flex',gap:8,width:'100%',flexWrap:'wrap',fontSize:12,color:'var(--text-secondary)'}}>
+              <label>Minutes <input className="input" type="number" min="5" max="180" value={examOptions.durationMin} style={{width:70,padding:'4px 8px'}} onChange={e=>setExamOptions(o=>({ ...o, durationMin:Math.max(5, +e.target.value || 30) }))}/></label>
+              <label>Multiple choice <input className="input" type="number" min="0" max="30" value={examOptions.mcq} style={{width:60,padding:'4px 8px'}} onChange={e=>setExamOptions(o=>({ ...o, mcq:Math.max(0, +e.target.value || 0) }))}/></label>
+              <label>Written <input className="input" type="number" min="0" max="15" value={examOptions.written} style={{width:60,padding:'4px 8px'}} onChange={e=>setExamOptions(o=>({ ...o, written:Math.max(0, +e.target.value || 0) }))}/></label>
+            </div>
+          )}
+        </div>
+      ))}
+      <div style={{...studyMuted,margin:'6px 0 16px'}}>
+        Estimated cost {estimate ? `≈ ${fmtUsd(estimate)}` : 'free'} · defaults come from Admin → Study &amp; AI
+      </div>
+
+      <div style={{display:'flex',justifyContent:'flex-end',gap:8}}>
+        <button className="btn-ghost" onClick={onClose}>Cancel</button>
+        <button className="btn-primary" disabled={!noteIds.length}
+          onClick={()=>onCreate({ scope, title: title.trim(), kinds: chosen, overrides, examOptions })}>
+          {chosen.length ? 'Create & generate' : 'Create set'}
+        </button>
+      </div>
+    </StudyModal>
+  );
+}
+
+/* ── study set page ── */
+function StudySetPage({ F, state, update, set, jobs, busy, isMobile, onBack, onReview, onRecall, onQuiz, onExam, onGenerate }) {
+  const [confirmDel, setConfirmDel] = useState(false);
+  const [examOpts, setExamOpts] = useState({ durationMin:30, mcq:6, written:3 });
+  const [renaming, setRenaming] = useState(false);
+  const noteIds = scopeNoteIds(state, set.scope);
+  const idSet = new Set(noteIds);
+  const q = buildStudyQueue(state, idSet);
+  const cards = (state.cards || []).filter(c => idSet.has(c.noteId));
+  const changed = studySetChangedNotes(state, set);
+  const pending = jobs.filter(j => j.setId === set.id && ['submitted','ended','collecting'].includes(j.status));
+  const working = !!busy && !busy.error;
+
+  const deleteSet = (withCards) => {
+    const t = Date.now();
+    update('studySets', prev => prev.filter(s => s.id !== set.id));
+    update('studySetsDeleted', prev => [...(prev || []), { id:set.id, deletedAt:t }]);
+    if (withCards) deleteStudyCards(update, cards.map(c => c.id));
+    onBack();
+  };
+  const rename = e => {
+    e.preventDefault();
+    const v = e.target.elements.t.value.trim();
+    if (v) update('studySets', prev => prev.map(s => s.id === set.id ? { ...s, title:v, updated:Date.now() } : s));
+    setRenaming(false);
+  };
+  const deleteExam = id => update('studySets', prev => prev.map(s => s.id === set.id ? { ...s, exams:(s.exams || []).filter(e => e.id !== id), updated:Date.now() } : s));
+  const cfgLabel = k => { const c = studyCfg(state, k); return `${studyModel(c.model).short}${c.batch ? ' · batch' : ''}`; };
+
+  return (
+    <div>
+      <button className="btn-ghost" style={{padding:'5px 12px',fontSize:12,marginBottom:14}} onClick={onBack}>← Study</button>
+      <div style={{display:'flex',alignItems:'flex-start',justifyContent:'space-between',gap:12,flexWrap:'wrap',marginBottom:16}}>
+        <div style={{minWidth:0}}>
+          {renaming
+            ? <form onSubmit={rename}><input name="t" className="input" autoFocus defaultValue={set.title} onBlur={e=>e.target.form.requestSubmit()}/></form>
+            : <div onClick={()=>setRenaming(true)} title="Rename" style={{fontFamily:'Fraunces,serif',fontSize:isMobile?21:25,fontWeight:600,cursor:'text',wordBreak:'break-word'}}>{set.title}</div>}
+          <div style={studyMuted}>{scopeLabel(state, set.scope)} · {noteIds.length} note{noteIds.length===1?'':'s'} · {cards.filter(c=>c.kind==='qa').length} cards</div>
+        </div>
+        {!confirmDel
+          ? <button className="btn-ghost" style={{fontSize:12,padding:'6px 12px'}} onClick={()=>setConfirmDel(true)}>Delete set</button>
+          : <div style={{display:'flex',gap:6,flexWrap:'wrap',alignItems:'center'}}>
+              <button className="btn-ghost" style={{fontSize:12,padding:'6px 12px'}} onClick={()=>deleteSet(false)}>Delete set, keep cards</button>
+              <button className="btn-primary" style={{fontSize:12,padding:'6px 12px',background:'var(--danger)'}} onClick={()=>deleteSet(true)}>Delete set and {cards.length} cards</button>
+              <button className="btn-ghost" style={{fontSize:12,padding:'6px 12px'}} onClick={()=>setConfirmDel(false)}>Cancel</button>
+            </div>}
+      </div>
+
+      {pending.length > 0 && <StudyBanner busy>Generating in the batch queue — results appear here automatically.</StudyBanner>}
+      {changed.length > 0 && (
+        <StudyBanner>
+          {changed.length} note{changed.length===1?' has':'s have'} changed since the cards were made.{' '}
+          <button className="btn-ghost" style={{padding:'3px 10px',fontSize:12,marginLeft:6}} disabled={working}
+            onClick={()=>onGenerate({ kinds:['flashcards'], newOnly:true })}>Add cards for the changes</button>
+        </StudyBanner>
+      )}
+
+      <div className="card" style={{padding:'18px 20px',marginBottom:14}}>
+        <div style={studyEyebrow('var(--accent)')}>Spaced repetition</div>
+        <div style={{display:'flex',gap:24,alignItems:'baseline',flexWrap:'wrap',margin:'10px 0 14px'}}>
+          <StudyStat n={q.due.length} label="due" color="var(--accent)"/>
+          <StudyStat n={q.fresh.length} label="new today"/>
+        </div>
+        <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+          <button className="btn-primary" disabled={!F || !q.queue.length} onClick={()=>onReview(idSet, 'flip')}>Flip cards</button>
+          <button className="btn-ghost" disabled={!F || !q.queue.length} onClick={()=>onReview(idSet, 'type')}>Type answers</button>
+          <button className="btn-ghost" disabled={working || !noteIds.length} onClick={()=>onGenerate({ kinds:['flashcards'], newOnly:true })}
+            title={`Model: ${cfgLabel('flashcards')}`}>{cards.some(c=>c.kind==='qa') ? 'Cards for new notes' : 'Make cards'} · {cfgLabel('flashcards')}</button>
+        </div>
+      </div>
+
+      <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr':'1fr 1fr',gap:14,marginBottom:14}}>
+        <div className="card" style={{padding:'18px 20px'}}>
+          <div style={studyEyebrow('var(--success)')}>Quiz</div>
+          <div style={{...studyMuted,margin:'8px 0 12px'}}>
+            {(set.quiz || []).length} multiple-choice question{(set.quiz || []).length===1?'':'s'}
+            {(set.quizAttempts || []).length > 0 && <> · last score {set.quizAttempts.slice(-1)[0].score}/{set.quizAttempts.slice(-1)[0].max}</>}
+          </div>
+          <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+            <button className="btn-primary" disabled={!(set.quiz || []).length} onClick={onQuiz}>Take quiz</button>
+            <button className="btn-ghost" disabled={working || !noteIds.length} onClick={()=>onGenerate({ kinds:['quiz'], newOnly:false })}>
+              {(set.quiz || []).length ? 'More questions' : 'Make quiz'} · {cfgLabel('quiz')}
+            </button>
+          </div>
+        </div>
+
+        <div className="card" style={{padding:'18px 20px'}}>
+          <div style={studyEyebrow('var(--warning)')}>Mock exams</div>
+          <div style={{margin:'8px 0 10px'}}>
+            {(set.exams || []).length === 0 && <div style={studyMuted}>No exams yet.</div>}
+            {(set.exams || []).map(ex => {
+              const marks = ex.questions.reduce((s, q) => s + (q.marks || 1), 0);
+              const last = (ex.attempts || []).slice(-1)[0];
+              return (
+                <div key={ex.id} style={{display:'flex',alignItems:'center',gap:8,padding:'6px 0',borderBottom:'1px solid var(--border)'}}>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontSize:13,fontWeight:600,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{ex.title}</div>
+                    <div style={{fontSize:11.5,color:'var(--text-muted)'}}>{ex.durationMin} min · {ex.questions.length} questions · {marks} marks{last ? ` · last ${Math.round(last.score*10)/10}/${last.max}` : ''}</div>
+                  </div>
+                  <button className="btn-primary" style={{padding:'5px 12px',fontSize:12}} onClick={()=>onExam(ex.id)}>Start</button>
+                  <button className="icon-btn danger" title="Delete exam" onClick={()=>deleteExam(ex.id)}>{Ic.trash}</button>
+                </div>
+              );
+            })}
+          </div>
+          <div style={{display:'flex',gap:6,flexWrap:'wrap',alignItems:'center',fontSize:12,color:'var(--text-secondary)'}}>
+            <select className="input" style={{width:'auto',padding:'5px 8px'}} value={examOpts.durationMin} onChange={e=>setExamOpts(o=>({ ...o, durationMin:+e.target.value }))}>
+              {[15,30,45,60,90].map(m => <option key={m} value={m}>{m} min</option>)}
+            </select>
+            <button className="btn-ghost" disabled={working || !noteIds.length}
+              onClick={()=>onGenerate({ kinds:['exam'], newOnly:false, examOptions:{ ...examOpts, mcq: Math.round(examOpts.durationMin / 5), written: Math.max(1, Math.round(examOpts.durationMin / 10)) } })}>
+              New exam · {cfgLabel('exam')}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div style={{...studyEyebrow('var(--text-secondary)'),margin:'20px 0 8px'}}>Notes · blank-page recall</div>
+      <div style={{...studyMuted,marginBottom:10}}>Write everything you remember about a note, then see what you missed. Each note gets its own recall schedule.</div>
+      {noteIds.map(id => {
+        const n = state.notes.find(x => x.id === id);
+        if (!n) return null;
+        const nc = cards.filter(c => c.noteId === id && c.kind === 'qa');
+        const rc = cards.find(c => c.id === `r_${id}`);
+        const dueRecall = rc && rc.fsrs.due <= Date.now();
+        return (
+          <div key={id} className="row-soft" style={{marginBottom:6,flexWrap:isMobile?'wrap':'nowrap'}}>
+            <span style={{fontSize:16}}>{n.emoji || '📝'}</span>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{fontSize:13,fontWeight:600,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{n.title || 'Untitled'}</div>
+              <div style={{fontSize:11.5,color:'var(--text-muted)'}}>
+                {nc.length} card{nc.length===1?'':'s'}
+                {rc ? ` · recall ${rc.coverage ?? '–'}% · ${dueRecall ? 'due now' : `next ${new Date(rc.fsrs.due).toLocaleDateString('en-GB',{day:'numeric',month:'short'})}`}` : ''}
+              </div>
+            </div>
+            <button className={dueRecall ? 'btn-primary' : 'btn-ghost'} style={{padding:'5px 12px',fontSize:12}} onClick={()=>onRecall(id)}>Recall</button>
+            <button className="btn-ghost" style={{padding:'5px 12px',fontSize:12}} disabled={!F || !nc.length} onClick={()=>onReview(new Set([id]), 'flip')}>Cards</button>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/* ── review session ──
+   Flip: answer in your head, reveal, rate. Type: write the answer first; an
+   exact/near match is marked locally for free, anything else goes to the
+   cardCheck model, which suggests a rating you can override. Ratings write
+   with {lazy:true} so a long session doesn't re-upload the blob per card. */
+function ReviewSession({ F, state, update, cardIds, mode: initialMode, isMobile, flushSave, onExit }) {
+  const [queue, setQueue]       = useState(cardIds);
+  const [pos, setPos]           = useState(0);
+  const [mode, setMode]         = useState(initialMode);
+  const [revealed, setRevealed] = useState(false);
+  const [typed, setTyped]       = useState('');
+  const [check, setCheck]       = useState(null);   /* {status, verdict?, feedback?, missing?, suggested?, message?} */
+  const [history, setHistory]   = useState([]);
+  const [stats, setStats]       = useState({ reviewed:0, again:0 });
+  const [editing, setEditing]   = useState(null);   /* {front, back} */
+  const [recalling, setRecalling] = useState(false);
+  const checkFor = useRef(null);
+  const answerRef = useRef(null);
+
+  const cardsById = useMemo(() => new Map((state.cards || []).map(c => [c.id, c])), [state.cards]);
+  /* Skip cards deleted mid-session (here or by a sync). */
+  useEffect(() => {
+    if (pos < queue.length && !cardsById.has(queue[pos])) setPos(p => p + 1);
+  }, [pos, queue, cardsById]);
+  useEffect(() => () => { flushSave?.(); }, []);
+
+  const card = cardsById.get(queue[pos]);
+  const note = card && state.notes.find(n => n.id === card.noteId);
+  const retention = studyNum(state, 'retention');
+  const intervals = useMemo(() => card ? previewIntervals(F, card, retention) : null, [card, retention]);
+
+  const resetCardUi = () => { setRevealed(false); setTyped(''); setCheck(null); setEditing(null); setRecalling(false); checkFor.current = null; };
+
+  const rate = useCallback((rating) => {
+    if (!card) return;
+    const now = new Date();
+    const next = rateCard(F, card, rating, retention, now);
+    setHistory(h => [...h.slice(-30), { prev: card, pos, queue, stats }]);
+    update('cards', prev => prev.map(c => c.id === card.id ? next : c), { lazy:true });
+    /* Short learning steps come back within this session, like Anki. */
+    setQueue(q => next.fsrs.due - +now < 20 * 60 * 1000 ? [...q, card.id] : q);
+    setPos(p => p + 1);
+    setStats(s => ({ reviewed: s.reviewed + 1, again: s.again + (rating === 1 ? 1 : 0) }));
+    resetCardUi();
+  }, [card, pos, queue, stats, retention]);
+
+  const undo = () => {
+    const last = history[history.length - 1];
+    if (!last) return;
+    update('cards', prev => prev.map(c => c.id === last.prev.id ? { ...last.prev, updated: Date.now() } : c), { lazy:true });
+    setQueue(last.queue); setPos(last.pos); setStats(last.stats);
+    setHistory(h => h.slice(0, -1));
+    resetCardUi();
+  };
+
+  const submitTyped = async () => {
+    if (!card || !typed.trim() || revealed) return;
+    setRevealed(true);
+    if (fuzzyMatch(typed, card.back)) {
+      setCheck({ status:'done', verdict:'correct', feedback:'Matches the answer.', suggested:3 });
+      return;
+    }
+    if (!Sync.configured() || !navigator.onLine) { setCheck({ status:'self' }); return; }
+    const id = card.id;
+    checkFor.current = id;
+    setCheck({ status:'checking' });
+    try {
+      const r = await StudyAPI.check({ model: studyCfg(state, 'cardCheck').model, question: card.front, expected: card.back, answer: typed });
+      if (checkFor.current !== id) return;
+      const v = r.result;
+      setCheck({ status:'done', ...v, suggested: v.verdict === 'correct' ? 3 : v.verdict === 'partial' ? 2 : 1 });
+    } catch (e) {
+      if (checkFor.current === id) setCheck({ status:'error', message: studyErrorLabel(e) });
+    }
+  };
+
+  useEffect(() => {
+    const onKey = e => {
+      if (editing || recalling) return;
+      const inField = /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName);
+      if (inField) {
+        if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); submitTyped(); }
+        return;
+      }
+      if (e.key === 'Escape') { onExit(); return; }
+      if ((e.key === 'z' || e.key === 'u') && !e.ctrlKey && !e.metaKey) { undo(); return; }
+      if (!card) return;
+      if (!revealed && (e.key === ' ' || e.key === 'Enter') && mode === 'flip') { e.preventDefault(); setRevealed(true); return; }
+      if (revealed && ['1','2','3','4'].includes(e.key) && check?.status !== 'checking') { e.preventDefault(); rate(+e.key); return; }
+      if (revealed && (e.key === ' ' || e.key === 'Enter') && check?.suggested) { e.preventDefault(); rate(check.suggested); }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  });
+
+  useEffect(() => { if (mode === 'type' && card?.kind === 'qa' && !revealed) answerRef.current?.focus(); }, [pos, mode]);
+
+  const done = pos >= queue.length;
+  const remaining = queue.length - pos;
+
+  if (recalling && card && note) {
+    return (
+      <StudyPage isMobile={isMobile}>
+        <BlankRecall state={state} update={update} note={note} isMobile={isMobile}
+          onCancel={()=>setRecalling(false)}
+          onDone={res => { setRecalling(false); rate(res.rating); }}/>
+      </StudyPage>
+    );
+  }
+
+  return (
+    <div style={{flex:1,minHeight:0,overflow:'auto',display:'flex',flexDirection:'column'}} className="scrollbar">
+      <div style={{display:'flex',alignItems:'center',gap:10,padding:isMobile?'12px 16px':'14px 32px',borderBottom:'1px solid var(--border)',flexShrink:0}}>
+        <button className="btn-ghost" style={{padding:'5px 12px',fontSize:12}} onClick={onExit}>← Done</button>
+        <div style={{flex:1,height:4,borderRadius:99,background:'var(--fill)',overflow:'hidden'}}>
+          <div style={{height:'100%',width:`${queue.length ? Math.min(100, pos / queue.length * 100) : 100}%`,background:'var(--accent)',transition:'width 200ms var(--ease)'}}/>
+        </div>
+        <span style={{fontSize:12,color:'var(--text-secondary)',fontVariantNumeric:'tabular-nums'}}>{Math.max(0, remaining)} left</span>
+        <div className="seg">
+          <button aria-pressed={mode==='flip'} onClick={()=>{ setMode('flip'); resetCardUi(); }}>Flip</button>
+          <button aria-pressed={mode==='type'} onClick={()=>{ setMode('type'); resetCardUi(); }}>Type</button>
+        </div>
+        <button className="icon-btn" title="Undo last rating (Z)" disabled={!history.length} onClick={undo}>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 14 4 9 9 4"/><path d="M20 20v-7a4 4 0 0 0-4-4H4"/></svg>
+        </button>
+      </div>
+
+      <div style={{flex:1,display:'flex',justifyContent:'center',padding:isMobile?'20px 16px 40px':'40px 32px'}}>
+        <div style={{width:'100%',maxWidth:680}}>
+          {done ? (
+            <div className="card fadeUp" style={{padding:'28px 26px',textAlign:'center'}}>
+              <div style={{fontFamily:'Fraunces,serif',fontSize:24,fontWeight:600,marginBottom:6}}>Session complete</div>
+              <div style={{...studyMuted,marginBottom:18}}>
+                {stats.reviewed} review{stats.reviewed===1?'':'s'}{stats.reviewed ? ` · ${Math.round((1 - stats.again / stats.reviewed) * 100)}% remembered` : ''}
+              </div>
+              <button className="btn-primary" onClick={onExit}>Back to study</button>
+            </div>
+          ) : !card ? null : card.kind === 'recall' ? (
+            <div className="card fadeUp" style={{padding:'26px 24px'}}>
+              <div style={studyEyebrow('var(--warning)')}>Blank-page recall</div>
+              <div style={{fontFamily:'Fraunces,serif',fontSize:22,fontWeight:600,margin:'10px 0 6px'}}>{note?.emoji || '📝'} {note?.title || 'Untitled'}</div>
+              <div style={{...studyMuted,marginBottom:16}}>Write down everything you remember about this note, without looking. Last time: {card.coverage ?? '–'}%.</div>
+              <div style={{display:'flex',gap:8}}>
+                <button className="btn-primary" onClick={()=>setRecalling(true)}>Start recall</button>
+                <button className="btn-ghost" onClick={()=>{ setQueue(q => [...q, card.id]); setPos(p => p + 1); resetCardUi(); }}>Later</button>
+              </div>
+            </div>
+          ) : (
+            <div key={`${card.id}-${pos}`} className="card fadeUp" style={{padding:isMobile?'22px 18px':'30px 30px 24px'}}>
+              <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:14}}>
+                <span style={{fontSize:11.5,color:'var(--text-muted)',flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
+                  {note?.emoji || '📝'} {note?.title || 'Untitled'}{card.fsrs.state === 0 ? ' · new' : ''}
+                </span>
+                {!editing && <button className="icon-btn" title="Edit card" onClick={()=>setEditing({ front:card.front, back:card.back })}>{Ic.edit}</button>}
+                {!editing && <button className="icon-btn danger" title="Delete card"
+                  onClick={()=>{ deleteStudyCards(update, [card.id]); resetCardUi(); }}>{Ic.trash}</button>}
+              </div>
+
+              {editing ? (
+                <div style={{display:'flex',flexDirection:'column',gap:8}}>
+                  <textarea className="input" rows={2} value={editing.front} onChange={e=>setEditing(v=>({ ...v, front:e.target.value }))}/>
+                  <textarea className="input" rows={3} value={editing.back} onChange={e=>setEditing(v=>({ ...v, back:e.target.value }))}/>
+                  <div style={{display:'flex',gap:8,justifyContent:'flex-end'}}>
+                    <button className="btn-ghost" onClick={()=>setEditing(null)}>Cancel</button>
+                    <button className="btn-primary" onClick={()=>{
+                      update('cards', prev => prev.map(c => c.id === card.id ? { ...c, front:editing.front.trim() || c.front, back:editing.back.trim() || c.back, updated:Date.now() } : c));
+                      setEditing(null);
+                    }}>Save</button>
+                  </div>
+                </div>
+              ) : (<>
+                <div style={{fontSize:isMobile?18:21,fontWeight:600,lineHeight:1.45,whiteSpace:'pre-wrap',wordBreak:'break-word'}}>{card.front}</div>
+
+                {mode === 'type' && (
+                  <div style={{marginTop:16}}>
+                    <textarea ref={answerRef} className="input" rows={3} placeholder="Type your answer…  (Ctrl/⌘ + Enter to check)"
+                      value={typed} disabled={revealed} onChange={e=>setTyped(e.target.value)}/>
+                    {!revealed && (
+                      <div style={{display:'flex',gap:8,marginTop:8}}>
+                        <button className="btn-primary" disabled={!typed.trim()} onClick={submitTyped}>Check</button>
+                        <button className="btn-ghost" onClick={()=>{ setRevealed(true); setCheck({ status:'self' }); }}>I don’t know</button>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {revealed ? (
+                  <div className="fadeUp" style={{marginTop:18,paddingTop:16,borderTop:'1px solid var(--border)'}}>
+                    <div style={{...studyEyebrow('var(--text-muted)'),marginBottom:6}}>Answer</div>
+                    <div style={{fontSize:15.5,lineHeight:1.6,whiteSpace:'pre-wrap',wordBreak:'break-word',color:'var(--text-quaternary)'}}>{card.back}</div>
+                    {check?.status === 'checking' && <div style={{...studyMuted,marginTop:12}}>Checking your answer…</div>}
+                    {check?.status === 'error' && <div style={{fontSize:12.5,color:'var(--danger)',marginTop:12}}>{check.message} — rate yourself.</div>}
+                    {check?.status === 'done' && (
+                      <div style={{marginTop:12,padding:'10px 12px',borderRadius:'var(--r-md)',
+                        background: check.verdict === 'correct' ? 'rgba(16,185,129,.1)' : check.verdict === 'partial' ? 'rgba(245,158,11,.1)' : 'rgba(244,63,94,.1)'}}>
+                        <div style={{fontSize:13,fontWeight:600,color: check.verdict === 'correct' ? 'var(--success)' : check.verdict === 'partial' ? 'var(--warning)' : 'var(--danger)'}}>
+                          {check.verdict === 'correct' ? 'Correct' : check.verdict === 'partial' ? 'Partly right' : 'Not quite'}
+                        </div>
+                        {check.feedback && <div style={{fontSize:12.5,color:'var(--text-tertiary)',marginTop:2}}>{check.feedback}</div>}
+                        {check.missing && <div style={{fontSize:12.5,color:'var(--text-secondary)',marginTop:2}}>Missing: {check.missing}</div>}
+                      </div>
+                    )}
+                    <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:8,marginTop:18}}>
+                      {RATINGS.map(({ r, label, color }) => {
+                        const suggested = check?.suggested === r;
+                        return (
+                          <button key={r} onClick={()=>rate(r)} disabled={check?.status === 'checking'}
+                            style={{border:`1px solid ${suggested ? color : 'var(--hairline)'}`,background: suggested ? `color-mix(in srgb, ${color} 18%, transparent)` : 'var(--fill)',
+                              borderRadius:'var(--r-md)',padding:'10px 4px',cursor:'pointer',color:'var(--text-primary)',fontFamily:'Manrope,sans-serif',
+                              display:'flex',flexDirection:'column',alignItems:'center',gap:2,opacity: check?.status === 'checking' ? .5 : 1}}>
+                            <span style={{fontSize:13,fontWeight:700,color}}>{label}</span>
+                            <span style={{fontSize:11,color:'var(--text-muted)'}}>{intervals ? fmtInterval(intervals[r]) : ''} · {r}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ) : mode === 'flip' && (
+                  <button className="btn-primary" style={{marginTop:22,width:'100%'}} onClick={()=>setRevealed(true)}>Show answer · Space</button>
+                )}
+              </>)}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ── blank-page recall ── */
+function BlankRecall({ state, update, note, isMobile, onDone, onCancel }) {
+  const [text, setText]     = useState('');
+  const [phase, setPhase]   = useState('write');  /* write | checking | result */
+  const [error, setError]   = useState(null);
+  const [result, setResult] = useState(null);
+  const [showNote, setShowNote] = useState(false);
+  const [cardsAdded, setCardsAdded] = useState(false);
+  const started = useRef(Date.now());
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => { const t = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(t); }, []);
+  const secs = Math.floor((now - started.current) / 1000);
+
+  const submit = async () => {
+    setPhase('checking'); setError(null);
+    try {
+      const material = await noteToStudyText(note);
+      const r = await StudyAPI.recall({ model: studyCfg(state, 'blankRecall').model, noteId: note.id, material: noteBlock(note, material), recall: text });
+      setResult(r.result); setPhase('result');
+    } catch (e) {
+      setError(studyErrorLabel(e)); setPhase('write');
+    }
+  };
+  const addCards = () => {
+    const now = Date.now(), tag = Math.random().toString(36).slice(2, 8);
+    const fresh = (result.cards || []).map((c, i) => ({
+      id:`g_${tag}_${i}`, kind:'qa', noteId:note.id, front:c.front, back:c.back, fsrs:newCardFsrs(now),
+      firstReview:null, suspended:false, created:now, updated:now,
+    }));
+    update('cards', prev => [...(prev || []), ...fresh]);
+    setCardsAdded(true);
+  };
+  const List = ({ items, color, mark }) => items?.length ? (
+    <ul style={{listStyle:'none',padding:0,margin:'6px 0 0'}}>
+      {items.map((s, i) => <li key={i} style={{display:'flex',gap:8,fontSize:13.5,lineHeight:1.55,padding:'2px 0'}}><span style={{color,flexShrink:0}}>{mark}</span><span>{s}</span></li>)}
+    </ul>
+  ) : <div style={{...studyMuted,marginTop:4}}>None</div>;
+
+  return (
+    <div className="fadeUp">
+      <button className="btn-ghost" style={{padding:'5px 12px',fontSize:12,marginBottom:14}} onClick={onCancel}>← Back</button>
+      <div style={studyEyebrow('var(--warning)')}>Blank-page recall</div>
+      <div style={{fontFamily:'Fraunces,serif',fontSize:isMobile?21:25,fontWeight:600,margin:'6px 0 4px'}}>{note.emoji || '📝'} {note.title || 'Untitled'}</div>
+
+      {phase !== 'result' ? (<>
+        <div style={{...studyMuted,marginBottom:12}}>
+          Write everything you can remember — key ideas, definitions, examples, how things connect. Don’t look at the note. {Math.floor(secs / 60)}:{String(secs % 60).padStart(2,'0')}
+        </div>
+        <textarea className="input" autoFocus rows={isMobile ? 12 : 16} value={text} onChange={e=>setText(e.target.value)}
+          placeholder="Start writing…" style={{lineHeight:1.6,fontSize:14}} disabled={phase === 'checking'}/>
+        {error && <div style={{fontSize:12.5,color:'var(--danger)',marginTop:8}}>{error}</div>}
+        <div style={{display:'flex',gap:8,marginTop:12,alignItems:'center'}}>
+          <button className="btn-primary" disabled={!text.trim() || phase === 'checking'} onClick={submit}>
+            {phase === 'checking' ? 'Comparing with your note…' : 'Check my recall'}
+          </button>
+          <span style={{fontSize:11.5,color:'var(--text-muted)'}}>{studyModel(studyCfg(state, 'blankRecall').model).short}</span>
+        </div>
+      </>) : (<>
+        <div className="card" style={{padding:'16px 18px',margin:'14px 0'}}>
+          <div style={{display:'flex',alignItems:'baseline',gap:10,marginBottom:8}}>
+            <span style={{fontFamily:'Fraunces,serif',fontSize:34,fontWeight:600,color: result.coverage >= 70 ? 'var(--success)' : result.coverage >= 40 ? 'var(--warning)' : 'var(--danger)'}}>{result.coverage}%</span>
+            <span style={studyMuted}>of the key ideas recalled · next recall scheduled as “{RATINGS[coverageRating(result.coverage) - 1].label}”</span>
+          </div>
+          <div style={{height:6,borderRadius:99,background:'var(--fill)',overflow:'hidden'}}>
+            <div style={{height:'100%',width:`${result.coverage}%`,background:'var(--accent)'}}/>
+          </div>
+        </div>
+        <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr':'1fr 1fr',gap:14}}>
+          <div className="card" style={{padding:'14px 16px'}}><div style={studyEyebrow('var(--success)')}>You remembered</div><List items={result.recalled} color="var(--success)" mark="✓"/></div>
+          <div className="card" style={{padding:'14px 16px'}}><div style={studyEyebrow('var(--danger)')}>You missed</div><List items={result.missed} color="var(--danger)" mark="✗"/></div>
+        </div>
+        {result.misconceptions?.length > 0 && (
+          <div className="card" style={{padding:'14px 16px',marginTop:14}}><div style={studyEyebrow('var(--warning)')}>Check these</div><List items={result.misconceptions} color="var(--warning)" mark="!"/></div>
+        )}
+        <div style={{display:'flex',gap:8,marginTop:16,flexWrap:'wrap'}}>
+          {(result.cards || []).length > 0 && (
+            <button className="btn-ghost" disabled={cardsAdded} onClick={addCards}>
+              {cardsAdded ? `Added ${result.cards.length} cards` : `Make ${result.cards.length} cards from what I missed`}
+            </button>
+          )}
+          <button className="btn-ghost" onClick={()=>setShowNote(v=>!v)}>{showNote ? 'Hide note' : 'Show note'}</button>
+          <button className="btn-primary" onClick={()=>onDone({ rating: coverageRating(result.coverage), coverage: result.coverage })}>Done</button>
+        </div>
+        {showNote && <div className="card" style={{padding:'16px 18px',marginTop:14}}><MarkdownView content={parseBody(note.body).filter(p=>p.type==='text').map(p=>p.content).join('\n')}/></div>}
+      </>)}
+    </div>
+  );
+}
+
+/* ── quiz ── marked locally; the set keeps the last 10 scores. */
+function QuizRunner({ set, update, onExit }) {
+  const [questions] = useState(() => [...(set.quiz || [])].sort(() => Math.random() - 0.5).slice(0, 10));
+  const [i, setI]           = useState(0);
+  const [picked, setPicked] = useState(null);
+  const [score, setScore]   = useState(0);
+  const [missed, setMissed] = useState([]);
+  const q = questions[i];
+  const finished = i >= questions.length;
+
+  useEffect(() => {
+    if (!finished || !questions.length) return;
+    update('studySets', prev => prev.map(s => s.id === set.id
+      ? { ...s, quizAttempts: [...(s.quizAttempts || []), { at:Date.now(), score, max:questions.length }].slice(-10), updated:Date.now() } : s));
+  }, [finished]);
+
+  const pick = idx => {
+    if (picked !== null) return;
+    setPicked(idx);
+    if (idx === q.answer) setScore(s => s + 1); else setMissed(m => [...m, q]);
+  };
+
+  return (
+    <div className="fadeUp">
+      <button className="btn-ghost" style={{padding:'5px 12px',fontSize:12,marginBottom:14}} onClick={onExit}>← {set.title}</button>
+      {finished ? (
+        <div className="card" style={{padding:'24px 22px'}}>
+          <div style={{fontFamily:'Fraunces,serif',fontSize:26,fontWeight:600}}>{score} / {questions.length}</div>
+          <div style={{...studyMuted,marginBottom:14}}>{score === questions.length ? 'Perfect.' : 'Review the ones you missed:'}</div>
+          {missed.map(m => (
+            <div key={m.id} style={{padding:'8px 0',borderTop:'1px solid var(--border)'}}>
+              <div style={{fontSize:13.5,fontWeight:600}}>{m.q}</div>
+              <div style={{fontSize:13,color:'var(--success)',marginTop:2}}>{m.options[m.answer]}</div>
+              {m.why && <div style={{...studyMuted,marginTop:2}}>{m.why}</div>}
+            </div>
+          ))}
+          <button className="btn-primary" style={{marginTop:16}} onClick={onExit}>Done</button>
+        </div>
+      ) : (
+        <div className="card" style={{padding:'22px 22px'}}>
+          <div style={{fontSize:11.5,color:'var(--text-muted)',marginBottom:10}}>Question {i + 1} of {questions.length} · score {score}</div>
+          <div style={{fontSize:18,fontWeight:600,lineHeight:1.45,marginBottom:16}}>{q.q}</div>
+          <div style={{display:'flex',flexDirection:'column',gap:8}}>
+            {q.options.map((opt, idx) => {
+              const isRight = picked !== null && idx === q.answer, isWrong = picked === idx && idx !== q.answer;
+              return (
+                <button key={idx} onClick={()=>pick(idx)} disabled={picked !== null}
+                  style={{textAlign:'left',padding:'11px 14px',borderRadius:'var(--r-md)',cursor:picked===null?'pointer':'default',fontFamily:'Manrope,sans-serif',fontSize:14,
+                    color:'var(--text-primary)',background: isRight ? 'rgba(16,185,129,.14)' : isWrong ? 'rgba(244,63,94,.14)' : 'var(--fill)',
+                    border:`1px solid ${isRight ? 'var(--success)' : isWrong ? 'var(--danger)' : 'var(--hairline)'}`}}>
+                  <b style={{marginRight:8,color:'var(--text-muted)'}}>{'ABCD'[idx] || idx + 1}</b>{opt}
+                </button>
+              );
+            })}
+          </div>
+          {picked !== null && (
+            <div className="fadeUp" style={{marginTop:14}}>
+              {q.why && <div style={studyMuted}>{q.why}</div>}
+              <button className="btn-primary" style={{marginTop:12}} onClick={()=>{ setI(x => x + 1); setPicked(null); }}>
+                {i + 1 < questions.length ? 'Next' : 'See score'}
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── timed mock exam ──
+   Start time and answers persist in localStorage, so a reload or a phone
+   killing the tab neither resets the clock nor loses what you wrote. MCQs
+   are marked locally; written answers go to the examMarking model, with a
+   self-marking fallback when that isn't reachable. */
+function ExamRunner({ state, update, set, exam, isMobile, onExit }) {
+  const KEY = `folio_exam_${exam.id}`;
+  const load = () => { try { return JSON.parse(localStorage.getItem(KEY)) || null; } catch { return null; } };
+  const [run, setRun]         = useState(load);           /* {startedAt, answers} | null */
+  const [phase, setPhase]     = useState(() => load() ? 'running' : 'intro');
+  const [marking, setMarking] = useState(null);           /* {results, score, max, mcq} */
+  const [error, setError]     = useState(null);
+  const [selfMarks, setSelfMarks] = useState({});
+  const [now, setNow] = useState(Date.now());
+  const save = r => { setRun(r); try { localStorage.setItem(KEY, JSON.stringify(r)); } catch {} };
+  const clear = () => { try { localStorage.removeItem(KEY); } catch {} };
+
+  const total = exam.questions.reduce((s, q) => s + (q.marks || 1), 0);
+  const endsAt = run ? run.startedAt + exam.durationMin * 60000 : 0;
+  const left = Math.max(0, endsAt - now);
+
+  useEffect(() => {
+    if (phase !== 'running') return;
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [phase]);
+  useEffect(() => { if (phase === 'running' && run && left === 0) submit(); }, [left, phase]);
+
+  const answer = (idx, v) => save({ ...run, answers: { ...run.answers, [idx]: v } });
+
+  const recordAttempt = (score) => {
+    update('studySets', prev => prev.map(s => s.id !== set.id ? s : {
+      ...s,
+      exams: (s.exams || []).map(e => e.id === exam.id ? { ...e, attempts: [...(e.attempts || []), { at:Date.now(), score, max:total }].slice(-5) } : e),
+      updated: Date.now(),
+    }));
+  };
+
+  const submit = async () => {
+    if (phase !== 'running') return;
+    setPhase('marking'); setError(null);
+    const answers = run?.answers || {};
+    const mcq = exam.questions.map((q, idx) => q.type === 'mcq'
+      ? { idx, score: answers[idx] === q.answer ? (q.marks || 1) : 0, max: q.marks || 1 } : null).filter(Boolean);
+    const written = exam.questions.map((q, idx) => q.type === 'written'
+      ? { index: idx, q: q.q, marks: q.marks, mark_scheme: q.mark_scheme, model_answer: q.model_answer, answer: answers[idx] || '' } : null).filter(Boolean);
+    const mcqScore = mcq.reduce((s, m) => s + m.score, 0);
+    let results = [];
+    if (written.length) {
+      try {
+        const r = await StudyAPI.mark({ model: studyCfg(state, 'examMarking').model, setId:set.id, examId:exam.id, questions:written });
+        results = r.result.results;
+      } catch (e) {
+        setError(`${studyErrorLabel(e)} — mark your written answers yourself using the mark schemes below.`);
+        setMarking({ results:null, mcq, mcqScore });
+        setPhase('results');
+        clear();
+        return;
+      }
+    }
+    const score = mcqScore + results.reduce((s, r) => s + r.score, 0);
+    setMarking({ results, mcq, mcqScore, score });
+    recordAttempt(score);
+    clear();
+    setPhase('results');
+  };
+
+  const fmtLeft = ms => { const s = Math.ceil(ms / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2,'0')}`; };
+  const answers = run?.answers || {};
+
+  if (phase === 'intro') return (
+    <div className="fadeUp">
+      <button className="btn-ghost" style={{padding:'5px 12px',fontSize:12,marginBottom:14}} onClick={onExit}>← {set.title}</button>
+      <div className="card" style={{padding:'24px 22px'}}>
+        <div style={studyEyebrow('var(--warning)')}>Mock exam</div>
+        <div style={{fontFamily:'Fraunces,serif',fontSize:24,fontWeight:600,margin:'8px 0'}}>{exam.title}</div>
+        <div style={{...studyMuted,marginBottom:16}}>
+          {exam.durationMin} minutes · {exam.questions.length} questions · {total} marks. The timer keeps running if you leave; the paper submits itself when time is up.
+        </div>
+        <button className="btn-primary" onClick={()=>{ save({ startedAt:Date.now(), answers:{} }); setNow(Date.now()); setPhase('running'); }}>Start exam</button>
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="fadeUp">
+      <div style={{position:'sticky',top:0,zIndex:2,background:'var(--bg-app)',padding:'8px 0 10px',display:'flex',alignItems:'center',gap:10,borderBottom:'1px solid var(--border)',marginBottom:16}}>
+        <div style={{flex:1,minWidth:0,fontSize:14,fontWeight:600,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{exam.title}</div>
+        {phase === 'running' && <span style={{fontFamily:'"JetBrains Mono",monospace',fontSize:15,fontWeight:600,color: left < 60000 ? 'var(--danger)' : left < 300000 ? 'var(--warning)' : 'var(--text-primary)'}}>{fmtLeft(left)}</span>}
+        {phase === 'running' && <button className="btn-primary" style={{padding:'6px 14px'}} onClick={()=>{ if (confirm('Submit your paper now?')) submit(); }}>Submit</button>}
+        {phase !== 'running' && <button className="btn-ghost" style={{padding:'6px 14px'}} onClick={onExit}>Done</button>}
+      </div>
+
+      {phase === 'marking' && <StudyBanner busy>Marking your written answers…</StudyBanner>}
+      {phase === 'results' && marking && (
+        <div className="card" style={{padding:'18px 20px',marginBottom:16}}>
+          <div style={{fontFamily:'Fraunces,serif',fontSize:30,fontWeight:600}}>
+            {marking.results
+              ? <>{Math.round(marking.score * 10) / 10} / {total} <span style={{fontSize:16,color:'var(--text-secondary)'}}>({Math.round(marking.score / total * 100)}%)</span></>
+              : <>{marking.mcqScore + Object.values(selfMarks).reduce((a, b) => a + (+b || 0), 0)} / {total}</>}
+          </div>
+          {error && <div style={{fontSize:12.5,color:'var(--warning)',marginTop:6}}>{error}</div>}
+          {!marking.results && (
+            <button className="btn-ghost" style={{marginTop:10}} onClick={()=>{
+              const s = marking.mcqScore + Object.values(selfMarks).reduce((a, b) => a + (+b || 0), 0);
+              recordAttempt(s); setMarking(m => ({ ...m, results:[], score:s, selfSaved:true }));
+            }} disabled={marking.selfSaved}>Save my self-marked score</button>
+          )}
+        </div>
+      )}
+
+      {exam.questions.map((q, idx) => {
+        const res = marking?.results?.find(r => r.index === idx);
+        const mcqRes = marking?.mcq?.find(m => m.idx === idx);
+        return (
+          <div key={idx} className="card" style={{padding:'16px 18px',marginBottom:12}}>
+            <div style={{display:'flex',gap:10,marginBottom:10}}>
+              <span style={{fontSize:12,fontWeight:700,color:'var(--text-muted)'}}>{idx + 1}.</span>
+              <div style={{flex:1,fontSize:14.5,fontWeight:600,lineHeight:1.5,whiteSpace:'pre-wrap'}}>{q.q}</div>
+              <span style={{fontSize:11.5,color:'var(--text-muted)',whiteSpace:'nowrap'}}>
+                {phase === 'results' && (res || mcqRes) ? `${res ? res.score : mcqRes.score} / ` : ''}{q.marks || 1} mark{(q.marks || 1) === 1 ? '' : 's'}
+              </span>
+            </div>
+            {q.type === 'mcq' ? (
+              <div style={{display:'flex',flexDirection:'column',gap:6}}>
+                {q.options.map((opt, oi) => {
+                  const chosen = answers[idx] === oi;
+                  const showRight = phase === 'results' && oi === q.answer;
+                  const showWrong = phase === 'results' && chosen && oi !== q.answer;
+                  return (
+                    <button key={oi} disabled={phase !== 'running'} onClick={()=>answer(idx, oi)}
+                      style={{textAlign:'left',padding:'9px 12px',borderRadius:'var(--r-sm)',fontFamily:'Manrope,sans-serif',fontSize:13.5,color:'var(--text-primary)',cursor:phase==='running'?'pointer':'default',
+                        background: showRight ? 'rgba(16,185,129,.14)' : showWrong ? 'rgba(244,63,94,.14)' : chosen ? 'var(--accent-soft)' : 'var(--fill)',
+                        border:`1px solid ${showRight ? 'var(--success)' : showWrong ? 'var(--danger)' : chosen ? 'var(--accent)' : 'var(--hairline)'}`}}>
+                      <b style={{marginRight:8,color:'var(--text-muted)'}}>{'ABCD'[oi] || oi + 1}</b>{opt}
+                    </button>
+                  );
+                })}
+              </div>
+            ) : (
+              <textarea className="input" rows={isMobile ? 6 : 7} disabled={phase !== 'running'} value={answers[idx] || ''}
+                onChange={e=>answer(idx, e.target.value)} placeholder="Your answer…" style={{lineHeight:1.6}}/>
+            )}
+            {phase === 'results' && q.type === 'written' && (
+              <div style={{marginTop:12,paddingTop:12,borderTop:'1px solid var(--border)',fontSize:13,lineHeight:1.55}}>
+                {res && (<>
+                  {res.hit?.length > 0 && <div style={{color:'var(--success)'}}>✓ {res.hit.join(' · ')}</div>}
+                  {res.missed?.length > 0 && <div style={{color:'var(--danger)',marginTop:4}}>✗ {res.missed.join(' · ')}</div>}
+                  {res.tip && <div style={{color:'var(--text-secondary)',marginTop:6}}>{res.tip}</div>}
+                </>)}
+                {!marking.results && (
+                  <label style={{display:'flex',alignItems:'center',gap:8,marginBottom:8,color:'var(--text-secondary)'}}>
+                    Your mark <input className="input" type="number" min="0" max={q.marks} step="0.5" style={{width:70,padding:'4px 8px'}}
+                      value={selfMarks[idx] ?? ''} onChange={e=>setSelfMarks(m=>({ ...m, [idx]: Math.max(0, Math.min(q.marks, +e.target.value || 0)) }))}/> / {q.marks}
+                  </label>
+                )}
+                <details style={{marginTop:8}}>
+                  <summary style={{cursor:'pointer',color:'var(--accent)',fontSize:12.5}}>Mark scheme and model answer</summary>
+                  <ul style={{margin:'6px 0 0 18px'}}>{(q.mark_scheme || []).map((m, i) => <li key={i}>{m}</li>)}</ul>
+                  <div style={{marginTop:6,color:'var(--text-tertiary)',whiteSpace:'pre-wrap'}}>{q.model_answer}</div>
+                </details>
+              </div>
+            )}
+            {phase === 'results' && q.type === 'mcq' && q.mark_scheme?.[0] && (
+              <div style={{...studyMuted,marginTop:8}}>{q.mark_scheme[0]}</div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/* ── add material: record / PDF / paste ── */
+function StudySourceModal({ state, update, initialMode = 'pdf', onClose, onCreated }) {
+  const [mode, setMode]   = useState(initialMode);
+  const [title, setTitle] = useState('');
+  const [folderId, setFolderId] = useState(state.ui.folderId || '');
+  const [kinds, setKinds] = useState({ smartNotes:true, flashcards:true, quiz:true });
+  const [pasted, setPasted] = useState('');
+  const [status, setStatus] = useState(null);  /* {label, error?} */
+  const [recording, setRecording] = useState(false);
+  const pdfRef = useRef(null);
+
+  const folders = useMemo(() => {
+    const out = [];
+    const walk = (nodes, depth) => nodes.forEach(n => { out.push({ id:n.id, label:`${'  '.repeat(depth)}${n.name}` }); walk(n.children || [], depth + 1); });
+    walk(buildFolderTree(state.folders || []), 0);
+    return out;
+  }, [state.folders]);
+  const chosen = Object.keys(kinds).filter(k => kinds[k]);
+  const defaultTitle = mode === 'record'
+    ? `Lecture — ${new Date().toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'})}`
+    : mode === 'paste' ? 'Captions' : '';
+
+  const finish = note => onCreated({ note, kinds: chosen });
+
+  const fromTranscript = async (text, emoji) => {
+    if (!text.trim()) { setStatus({ label:'Nothing was transcribed.', error:true }); return; }
+    setStatus({ label:'Saving transcript…' });
+    const note = await createTranscriptNote({ state, update, title: title.trim() || defaultTitle, transcript: text, folderId: folderId || null, emoji });
+    finish(note);
+  };
+
+  const fromPdf = async file => {
+    if (!file) return;
+    if (file.type !== 'application/pdf') { setStatus({ label:'Not a PDF file', error:true }); return; }
+    if (file.size > MAX_PDF_BYTES) { setStatus({ label:`Too large — max ${fmtBytes(MAX_PDF_BYTES)}`, error:true }); return; }
+    try {
+      setStatus({ label:`Uploading ${file.name}…` });
+      const bytes = await file.arrayBuffer();
+      const meta = await Files.upload(file);
+      let extracted = { text:'', truncated:false };
+      try {
+        extracted = await extractPdfText(bytes, (p, total) => setStatus({ label:`Reading text… page ${p} of ${total}` }));
+      } catch {}
+      const fileId = uid(), now = Date.now();
+      const rec = { id:fileId, key:meta.key, name:meta.name, size:meta.size, type:meta.type, uploadedAt:now };
+      _studyFileText.set(meta.key, extracted.text);
+      const body = [`[pdf:${fileId}]`, '---', extracted.text || '_No selectable text found in this PDF (it may be a scan)._'].join('\n\n');
+      const note = {
+        id:uid(), emoji:'📄', title: title.trim() || (file.name || 'document.pdf').replace(/\.pdf$/i, '').replace(/[_-]+/g, ' ').trim() || 'Untitled PDF',
+        body, tags:[], links:[], images:[], files:[rec], folderId: folderId || null, created:now, updated:now,
+      };
+      update('notes', prev => [note, ...prev]);
+      if (!extracted.text) { setStatus({ label:'Saved the PDF, but it has no selectable text (a scan?) — nothing to study from.', error:true }); return; }
+      finish(note);
+    } catch (e) {
+      setStatus({ label: pdfErrorLabel(e), error:true });
+    }
+  };
+
+  return (
+    <StudyModal title="Add study material" onClose={recording ? ()=>{} : onClose} width={580}>
+      {!recording && (
+        <div className="seg" style={{marginBottom:14}}>
+          {[['record','Record lecture'],['pdf','PDF'],['paste','Paste text / captions']].map(([id, label]) => (
+            <button key={id} aria-pressed={mode===id} onClick={()=>{ setMode(id); setStatus(null); }}>{label}</button>
+          ))}
+        </div>
+      )}
+
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:12}}>
+        <input className="input" placeholder={defaultTitle || 'Title (optional)'} value={title} onChange={e=>setTitle(e.target.value)}/>
+        <select className="input" value={folderId} onChange={e=>setFolderId(e.target.value)}>
+          <option value="">No folder</option>
+          {folders.map(f => <option key={f.id} value={f.id}>{f.label}</option>)}
+        </select>
+      </div>
+
+      <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:14,alignItems:'center'}}>
+        <span style={{fontSize:12,color:'var(--text-secondary)',marginRight:4}}>Then make:</span>
+        {['smartNotes','flashcards','quiz'].map(k => (
+          <button key={k} className={`pill${kinds[k]?' on':''}`} onClick={()=>setKinds(v=>({ ...v, [k]:!v[k] }))}>{studyKind(k).label}</button>
+        ))}
+      </div>
+
+      {mode === 'record' && (
+        <Recorder onRecordingChange={setRecording}
+          onFinish={text => fromTranscript(text, '🎙️')}/>
+      )}
+      {mode === 'pdf' && (<>
+        <input ref={pdfRef} type="file" accept="application/pdf,.pdf" style={{display:'none'}} onChange={e=>fromPdf(e.target.files?.[0])}/>
+        <button className="btn-primary" onClick={()=>pdfRef.current?.click()}>Choose a PDF…</button>
+        <div style={{...studyMuted,marginTop:8}}>Slides, handouts or papers. The PDF is attached to a new note and its text is used for the study set.</div>
+      </>)}
+      {mode === 'paste' && (<>
+        <textarea className="input" rows={9} value={pasted} onChange={e=>setPasted(e.target.value)}
+          placeholder="Paste notes, an article, or a video transcript. For YouTube: under the video, …more → Show transcript, then copy. Caption files (.vtt/.srt) are cleaned up automatically."/>
+        <button className="btn-primary" style={{marginTop:10}} disabled={!pasted.trim()}
+          onClick={()=>{ const isCaptions = /-->/.test(pasted) || /^WEBVTT/m.test(pasted); fromTranscript(isCaptions ? captionsToText(pasted) : pasted.trim(), isCaptions ? '📺' : '📋'); }}>
+          Save & continue
+        </button>
+      </>)}
+      {status && <div style={{fontSize:12.5,marginTop:12,color:status.error?'var(--danger)':'var(--text-secondary)'}}>{status.label}</div>}
+    </StudyModal>
+  );
+}
+
+/* ── lecture recorder ──
+   MediaRecorder in ~4.5-minute segments: each segment is a complete,
+   independently decodable file (a byte-slice of one long webm/mp4 isn't),
+   small enough for one Whisper call. Segments sit in IndexedDB until their
+   transcript is back, and transcription runs while recording continues. */
+const SEGMENT_MS = 270000;
+function Recorder({ onFinish, onRecordingChange }) {
+  const [phase, setPhase]   = useState('idle');   /* idle | recording | finishing | error */
+  const [error, setError]   = useState(null);
+  const [elapsed, setElapsed] = useState(0);
+  const [segs, setSegs]     = useState({ total:0, done:0, failed:0 });
+  const [preview, setPreview] = useState('');
+  const [leftovers, setLeftovers] = useState([]);
+  const r = useRef({ stream:null, rec:null, recId:null, idx:0, texts:[], chain:Promise.resolve(), rotate:null, tick:null, started:0, wake:null, mime:'' });
+
+  useEffect(() => { RecStore.all().then(list => setLeftovers(list)); }, []);
+  useEffect(() => { onRecordingChange?.(phase === 'recording' || phase === 'finishing'); }, [phase]);
+  useEffect(() => () => {
+    const s = r.current;
+    clearTimeout(s.rotate); clearInterval(s.tick);
+    try { s.rec?.state !== 'inactive' && s.rec?.stop(); } catch {}
+    s.stream?.getTracks().forEach(t => t.stop());
+    s.wake?.release?.().catch(() => {});
+  }, []);
+
+  const transcribeSeg = async (idx, blob, key) => {
+    let lastErr;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const prompt = r.current.texts.slice(0, idx).join(' ').slice(-300);
+        const { text } = await StudyAPI.transcribe(blob, prompt);
+        r.current.texts[idx] = text;
+        setPreview(r.current.texts.join(' ').slice(-400));
+        setSegs(s => ({ ...s, done: s.done + 1 }));
+        if (key) RecStore.del(key);
+        return;
+      } catch (e) {
+        lastErr = e;
+        await new Promise(res => setTimeout(res, 2000 * (attempt + 1)));
+      }
+    }
+    setSegs(s => ({ ...s, failed: s.failed + 1 }));
+    setError(`A segment failed to transcribe (${studyErrorLabel(lastErr)}). It’s kept on this device — you can recover it later.`);
+  };
+
+  const startSegment = () => {
+    const s = r.current;
+    const idx = s.idx++;
+    const chunks = [];
+    const rec = new MediaRecorder(s.stream, { ...(s.mime ? { mimeType:s.mime } : {}), audioBitsPerSecond:32000 });
+    rec.ondataavailable = e => { if (e.data?.size) chunks.push(e.data); };
+    rec.onstop = () => {
+      const blob = new Blob(chunks, { type: (rec.mimeType || s.mime || 'audio/webm') });
+      if (!blob.size) return;
+      const key = `${s.recId}:${String(idx).padStart(4,'0')}`;
+      setSegs(v => ({ ...v, total: v.total + 1 }));
+      s.chain = s.chain.then(async () => {
+        await RecStore.put({ key, recId:s.recId, idx, blob, created:Date.now() });
+        await transcribeSeg(idx, blob, key);
+      });
+    };
+    rec.start();
+    s.rec = rec;
+    s.rotate = setTimeout(() => { try { rec.stop(); } catch {} startSegment(); }, SEGMENT_MS);
+  };
+
+  const keepAwake = async () => {
+    try { r.current.wake = await navigator.wakeLock?.request('screen'); } catch {}
+  };
+
+  const start = async () => {
+    setError(null);
+    if (!Sync.configured()) { setError(studyErrorLabel(new Error('NO_TOKEN'))); return; }
+    const mime = pickAudioMime();
+    if (mime === null) { setError('This browser can’t record audio.'); return; }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation:true, noiseSuppression:true, channelCount:1 } });
+      Object.assign(r.current, { stream, mime, recId: crypto.randomUUID(), idx:0, texts:[], chain:Promise.resolve(), started:Date.now() });
+      setSegs({ total:0, done:0, failed:0 }); setPreview(''); setElapsed(0);
+      startSegment();
+      r.current.tick = setInterval(() => setElapsed(Date.now() - r.current.started), 1000);
+      keepAwake();
+      document.addEventListener('visibilitychange', onVisible);
+      setPhase('recording');
+    } catch (e) {
+      setError(e?.name === 'NotAllowedError' ? 'Microphone permission was denied.' : `Couldn’t start recording: ${e.message}`);
+    }
+  };
+  const onVisible = () => { if (document.visibilityState === 'visible' && r.current.stream) keepAwake(); };
+
+  const stop = async () => {
+    const s = r.current;
+    clearTimeout(s.rotate); clearInterval(s.tick);
+    document.removeEventListener('visibilitychange', onVisible);
+    setPhase('finishing');
+    await new Promise(res => {
+      if (!s.rec || s.rec.state === 'inactive') return res();
+      const prev = s.rec.onstop;
+      s.rec.onstop = e => { prev?.(e); res(); };
+      try { s.rec.stop(); } catch { res(); }
+    });
+    s.stream?.getTracks().forEach(t => t.stop());
+    s.wake?.release?.().catch(() => {});
+    await s.chain;
+    setPhase('idle');
+    onFinish(s.texts.filter(Boolean).join(' ').trim());
+  };
+
+  const recover = async () => {
+    setPhase('finishing'); setError(null);
+    const list = [...leftovers].sort((a, b) => a.recId === b.recId ? a.idx - b.idx : a.created - b.created);
+    r.current.texts = [];
+    setSegs({ total:list.length, done:0, failed:0 });
+    for (let i = 0; i < list.length; i++) await transcribeSeg(i, list[i].blob, list[i].key);
+    setLeftovers([]);
+    setPhase('idle');
+    onFinish(r.current.texts.filter(Boolean).join(' ').trim());
+  };
+
+  const mm = Math.floor(elapsed / 60000), ss = Math.floor(elapsed / 1000) % 60;
+  return (
+    <div>
+      {phase === 'idle' && (<>
+        <button className="btn-primary" onClick={start} style={{background:'var(--danger)'}}>● Start recording</button>
+        <div style={{...studyMuted,marginTop:8}}>
+          Transcribed as you go with Whisper (free within Cloudflare’s daily allowance). Keep Folio open and the screen on — iPhone pauses recording when the screen locks.
+        </div>
+        {leftovers.length > 0 && (
+          <div className="row-soft" style={{marginTop:12}}>
+            <span style={{flex:1,fontSize:12.5}}>{leftovers.length} untranscribed segment{leftovers.length===1?'':'s'} from an earlier recording.</span>
+            <button className="btn-ghost" style={{padding:'5px 12px',fontSize:12}} onClick={recover}>Recover</button>
+            <button className="btn-ghost" style={{padding:'5px 12px',fontSize:12}} onClick={()=>{ leftovers.forEach(l => RecStore.del(l.key)); setLeftovers([]); }}>Discard</button>
+          </div>
+        )}
+      </>)}
+      {(phase === 'recording' || phase === 'finishing') && (
+        <div className="card" style={{padding:'16px 18px'}}>
+          <div style={{display:'flex',alignItems:'center',gap:12}}>
+            <span style={{position:'relative',width:12,height:12}}>
+              <span style={{position:'absolute',inset:0,borderRadius:99,background:'var(--danger)'}}/>
+              {phase === 'recording' && <span style={{position:'absolute',inset:0,borderRadius:99,background:'var(--danger)',animation:'ping 1.4s cubic-bezier(0,0,.2,1) infinite'}}/>}
+            </span>
+            <span style={{fontFamily:'"JetBrains Mono",monospace',fontSize:22,fontWeight:600}}>{mm}:{String(ss).padStart(2,'0')}</span>
+            <span style={{flex:1,fontSize:12,color:'var(--text-secondary)'}}>
+              {segs.done}/{Math.max(segs.total, segs.done)} segment{segs.total===1?'':'s'} transcribed{segs.failed ? ` · ${segs.failed} failed` : ''}
+            </span>
+            {phase === 'recording'
+              ? <button className="btn-primary" onClick={stop}>Stop & transcribe</button>
+              : <span style={{fontSize:12.5,color:'var(--text-secondary)'}}>Finishing transcript…</span>}
+          </div>
+          {preview && <div style={{...studyMuted,marginTop:12,fontStyle:'italic'}}>…{preview}</div>}
+        </div>
+      )}
+      {error && <div style={{fontSize:12.5,color:'var(--danger)',marginTop:10}}>{error}</div>}
+    </div>
+  );
+}
+
+/* ── note editor: transcript attachments (text/plain in R2) ── */
+function TranscriptAttachment({ file }) {
+  const [text, setText] = useState(null);
+  const [open, setOpen] = useState(false);
+  const [err, setErr]   = useState(null);
+  const toggle = async () => {
+    if (!open && text === null) {
+      try { setText(await studyFileText(file)); } catch (e) { setErr(pdfErrorLabel(e)); }
+    }
+    setOpen(v => !v);
+  };
+  return (
+    <div className="row-soft" style={{flexDirection:'column',alignItems:'stretch',margin:'12px 0'}}>
+      <div style={{display:'flex',alignItems:'center',gap:10}}>
+        <span>🎙️</span>
+        <span style={{flex:1,fontSize:13,fontWeight:600,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>Transcript · {file.name}</span>
+        <span style={{fontSize:11,color:'var(--text-muted)'}}>{fmtBytes(file.size || 0)}</span>
+        <button className="btn-ghost" style={{padding:'4px 12px',fontSize:12}} onClick={toggle}>{open ? 'Hide' : 'Show'}</button>
+      </div>
+      {err && <div style={{fontSize:12,color:'var(--danger)',marginTop:6}}>{err}</div>}
+      {open && text !== null && <div style={{marginTop:10,fontSize:13.5,lineHeight:1.7,color:'var(--text-tertiary)',whiteSpace:'pre-wrap',maxHeight:420,overflow:'auto'}} className="scrollbar">{text}</div>}
+    </div>
+  );
+}
+
+/* ── Today: cards due ── */
+function StudyDueCard({ state, update }) {
+  const { due, fresh, total } = useMemo(() => buildStudyQueue(state), [state.cards, state.notes, state.studySettings]);
+  if (!total) return null;
+  return (
+    <div className="card" style={{padding:'18px 20px'}}>
+      <div style={{...studyEyebrow('var(--accent)'),marginBottom:12}}>Study</div>
+      <div style={{display:'flex',gap:22,alignItems:'baseline'}}>
+        <StudyStat n={due.length} label="due" color="var(--accent)"/>
+        <StudyStat n={fresh.length} label="new"/>
+      </div>
+      <button onClick={()=>update('ui',{ ...state.ui, view:'study' })}
+        style={{marginTop:12,background:'none',border:'none',color:'var(--accent)',fontSize:12,cursor:'pointer',padding:0}}>
+        {due.length + fresh.length ? 'Start reviewing →' : 'Open study →'}
+      </button>
+    </div>
+  );
+}
+
+/* ── Admin → Study & AI ── */
+function StudySettings({ state, update }) {
+  const [diag, setDiag]   = useState(null);
+  const [busy, setBusy]   = useState(null);
+  const setKind = (k, cfg) => update('studySettings', prev => ({ ...(prev || {}), [k]: { model:cfg.model, batch:!!cfg.batch } }));
+  const setNum = (key, v) => update('studySettings', prev => ({ ...(prev || {}), [key]: v }));
+  const blobBytes = useMemo(() => new Blob([JSON.stringify(state)]).size, [state]);
+  const cardCount = (state.cards || []).length;
+
+  const test = async () => {
+    setBusy('test'); setDiag(null);
+    try {
+      const h = await fetch('/api/health', { cache:'no-store' }).then(r => r.json()).catch(() => ({}));
+      const p = await StudyAPI.ping(true);
+      setDiag({ ok:true, lines: [
+        `Anthropic key: ${p.anthropic ? (p.anthropicCall || 'set') : 'missing'}`,
+        `Workers AI (Whisper, Llama): ${p.workersAi ? (p.workersAiCall || 'bound') : 'not bound'}`,
+        `Database: ${p.db ? 'ok' : 'missing'}${h.study ? '' : ' · /api/health is from an older deploy'}`,
+      ]});
+    } catch (e) {
+      setDiag({ ok:false, lines:[studyErrorLabel(e)] });
+    }
+    setBusy(null);
+  };
+  const section = { marginBottom:28 };
+  const h = { fontSize:15,fontWeight:600,marginBottom:4 };
+
+  return (
+    <div>
+      <div style={section}>
+        <div style={h}>Models</div>
+        <div style={{...studyMuted,marginBottom:12}}>
+          Choose the model for each kind of study work. Batch sends generation through Anthropic’s batch queue at half price — results arrive in minutes and you get a notification. Llama runs free on Cloudflare within the daily allowance, with weaker results. See the Costs tab for what this adds up to.
+        </div>
+        {STUDY_KINDS.map(k => {
+          const cfg = studyCfg(state, k.id);
+          return (
+            <div key={k.id} className="row-soft" style={{marginBottom:8,flexWrap:'wrap'}}>
+              <div style={{flex:'1 1 200px',minWidth:0}}>
+                <div style={{fontSize:13,fontWeight:600}}>{k.label}</div>
+                <div style={{fontSize:11.5,color:'var(--text-muted)'}}>{k.desc} · {studyCostHint(k.id, cfg)}</div>
+              </div>
+              <StudyModelPicker kindId={k.id} cfg={cfg} onChange={c=>setKind(k.id, c)}/>
+            </div>
+          );
+        })}
+      </div>
+
+      <div style={section}>
+        <div style={h}>Spaced repetition</div>
+        <div style={{...studyMuted,marginBottom:12}}>FSRS schedules each card for when you’re about to forget it. Higher retention means more reviews.</div>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(170px,1fr))',gap:10}}>
+          <label style={{fontSize:12.5,color:'var(--text-secondary)'}}>Target retention
+            <select className="input" style={{marginTop:4}} value={studyNum(state,'retention')} onChange={e=>setNum('retention', +e.target.value)}>
+              {[0.8,0.85,0.9,0.93,0.95,0.97].map(v => <option key={v} value={v}>{Math.round(v*100)}%{v===0.9?' (recommended)':''}</option>)}
+            </select>
+          </label>
+          <label style={{fontSize:12.5,color:'var(--text-secondary)'}}>New cards per day
+            <input className="input" type="number" min="0" max="500" style={{marginTop:4}} value={studyNum(state,'newPerDay')}
+              onChange={e=>setNum('newPerDay', Math.max(0, Math.min(500, +e.target.value || 0)))}/>
+          </label>
+          <label style={{fontSize:12.5,color:'var(--text-secondary)'}}>Max reviews per day
+            <input className="input" type="number" min="10" max="2000" style={{marginTop:4}} value={studyNum(state,'maxReviews')}
+              onChange={e=>setNum('maxReviews', Math.max(10, Math.min(2000, +e.target.value || 10)))}/>
+          </label>
+        </div>
+      </div>
+
+      <div style={section}>
+        <div style={h}>Connection</div>
+        <button className="btn-ghost" disabled={busy==='test'} onClick={test}>{busy==='test' ? 'Testing…' : 'Test connection'}</button>
+        {diag && <div style={{marginTop:10,fontSize:12.5,lineHeight:1.7,color:diag.ok?'var(--text-secondary)':'var(--danger)'}}>{diag.lines.map((l,i)=><div key={i}>{l}</div>)}</div>}
+      </div>
+
+      <div style={section}>
+        <div style={h}>Storage</div>
+        <div style={{...studyMuted,marginBottom:8}}>Everything syncs as one blob capped at 5 MB. Cards: {cardCount} of {MAX_ACTIVE_CARDS}.</div>
+        <div style={{height:8,borderRadius:99,background:'var(--fill)',overflow:'hidden',maxWidth:420}}>
+          <div style={{height:'100%',width:`${Math.min(100, blobBytes / (5*1024*1024) * 100)}%`,background: blobBytes > 4*1024*1024 ? 'var(--danger)' : 'var(--accent)'}}/>
+        </div>
+        <div style={{fontSize:11.5,color:'var(--text-muted)',marginTop:4}}>{fmtBytes(blobBytes)} of 5 MB</div>
+      </div>
+    </div>
+  );
+}
+
+/* ── Admin → Costs ──
+   Two halves: what Study has actually cost (from token usage the server logs
+   on every model call), and what the current model choices should cost for
+   a given study load. Estimator inputs are device-local — they describe a
+   hypothetical, not shared state. */
+const COST_INPUTS_KEY = 'folio_cost_inputs';
+const COST_PRESETS = {
+  light: { label:'Light',  lectureHours:2.5, pdfs:1.25, pdfPages:30, exams:1, typedPerDay:5,  recalls:2 },
+  heavy: { label:'Heavy',  lectureHours:10,  pdfs:5,    pdfPages:30, exams:4, typedPerDay:30, recalls:7 },
+};
+const WEEKS_PER_MONTH = 4.33;
+const TOKENS_PER_PDF_PAGE = 750;     /* extracted text, not page images */
+const TOKENS_PER_LECTURE_HOUR = 13000;
+const WHISPER_PER_MIN = 0.0005;
+/* Typed answers that match the expected answer closely are marked locally
+   for free; only the rest reach a model. */
+const TYPED_NEEDING_MODEL = 0.6;
+
+function expectedMonthlyCosts(state, inp) {
+  /* Everything generated from material is priced per "lecture hour" of text. */
+  const materialHours = (inp.lectureHours + inp.pdfs * inp.pdfPages * TOKENS_PER_PDF_PAGE / TOKENS_PER_LECTURE_HOUR) * WEEKS_PER_MONTH;
+  const uses = {
+    flashcards:  materialHours,
+    quiz:        materialHours,
+    smartNotes:  materialHours,
+    exam:        inp.exams * WEEKS_PER_MONTH,
+    examMarking: inp.exams * WEEKS_PER_MONTH,
+    cardCheck:   inp.typedPerDay * 30 * TYPED_NEEDING_MODEL,
+    blankRecall: inp.recalls * WEEKS_PER_MONTH,
+  };
+  const rows = STUDY_KINDS.map(k => {
+    const cfg = studyCfg(state, k.id);
+    return { kind:k, cfg, uses: uses[k.id], usd: uses[k.id] * studyUnitCost(k.id, cfg) };
+  });
+  const whisperMin = inp.lectureHours * 60 * WEEKS_PER_MONTH;
+  /* ~220 audio minutes a day fit in Workers AI's free daily allowance, so
+     ordinary lecture loads cost nothing; only the excess is charged. */
+  const whisperUsd = Math.max(0, whisperMin - 220 * 30) * WHISPER_PER_MIN;
+  return { rows, whisperMin, whisperUsd, total: rows.reduce((s, r) => s + r.usd, 0) + whisperUsd };
+}
+
+function CostsSettings({ state }) {
+  const [inp, setInp] = useState(() => {
+    try { return { ...COST_PRESETS.light, ...(JSON.parse(localStorage.getItem(COST_INPUTS_KEY)) || {}) }; }
+    catch { return { ...COST_PRESETS.light }; }
+  });
+  const [usage, setUsage] = useState(null);   /* null = loading */
+  const save = next => { setInp(next); try { localStorage.setItem(COST_INPUTS_KEY, JSON.stringify(next)); } catch {} };
+  const setField = (k, v) => save({ ...inp, [k]: Math.max(0, +v || 0) });
+
+  const load = useCallback(async () => {
+    if (!Sync.configured()) { setUsage({ error: studyErrorLabel(new Error('NO_TOKEN')) }); return; }
+    setUsage(null);
+    try { setUsage(await StudyAPI.usage()); } catch (e) { setUsage({ error: studyErrorLabel(e) }); }
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const exp = expectedMonthlyCosts(state, inp);
+  const section = { marginBottom:30 };
+  const h = { fontSize:15, fontWeight:600, marginBottom:4 };
+  const th = { textAlign:'left', fontSize:11, fontWeight:700, letterSpacing:'.06em', textTransform:'uppercase', color:'var(--text-muted)', padding:'6px 8px', borderBottom:'1px solid var(--border)' };
+  const td = { padding:'7px 8px', fontSize:12.5, borderBottom:'1px solid var(--border)', color:'var(--text-tertiary)', verticalAlign:'top' };
+  const num = { ...td, textAlign:'right', fontVariantNumeric:'tabular-nums', whiteSpace:'nowrap' };
+  const Big = ({ label, value, sub, color }) => (
+    <div className="card" style={{padding:'14px 16px',flex:'1 1 150px'}}>
+      <div style={{fontSize:11,fontWeight:700,letterSpacing:'.08em',textTransform:'uppercase',color:'var(--text-secondary)'}}>{label}</div>
+      <div style={{fontFamily:'Fraunces,serif',fontSize:26,fontWeight:600,color:color||'var(--text-primary)',margin:'4px 0 2px'}}>{value}</div>
+      {sub && <div style={{fontSize:11.5,color:'var(--text-muted)'}}>{sub}</div>}
+    </div>
+  );
+  const field = (key, label, step = 1) => (
+    <label style={{fontSize:12,color:'var(--text-secondary)'}}>{label}
+      <input className="input" type="number" min="0" step={step} style={{marginTop:4}} value={inp[key]} onChange={e=>setField(key, e.target.value)}/>
+    </label>
+  );
+
+  /* Daily bars for the last 30 days, oldest first. */
+  const days = [];
+  if (usage && !usage.error) {
+    for (let i = 29; i >= 0; i--) {
+      const d = new Date(Date.now() - i * 864e5);
+      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+      days.push({ key, usd: usage.daily?.[key] || 0 });
+    }
+  }
+  const maxDay = Math.max(0.0001, ...days.map(d => d.usd));
+  const sortedEntries = obj => Object.entries(obj || {}).filter(([, c]) => c > 0).sort((a, b) => b[1] - a[1]);
+
+  return (
+    <div>
+      <div style={section}>
+        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:10,marginBottom:10}}>
+          <div>
+            <div style={h}>Actual spend</div>
+            <div style={studyMuted}>Estimated from the tokens each AI call used, at Anthropic’s list prices. Your Anthropic Console bill is the source of truth.</div>
+          </div>
+          <button className="btn-ghost" style={{flexShrink:0}} disabled={usage === null} onClick={load}>{usage === null ? 'Loading…' : 'Refresh'}</button>
+        </div>
+        {usage?.error && <div style={{fontSize:12.5,color:'var(--danger)'}}>{usage.error}</div>}
+        {usage && !usage.error && (<>
+          <div style={{display:'flex',gap:10,flexWrap:'wrap',marginBottom:14}}>
+            <Big label="This month so far" value={fmtUsd(usage.monthToDate)} sub={`day ${usage.dayOfMonth} of ${usage.daysInMonth}`}/>
+            <Big label="Projected this month" value={fmtUsd(usage.projectedMonth)} sub="at the current pace" color="var(--accent)"/>
+            <Big label="Last 30 days" value={fmtUsd(usage.total)} sub={`${usage.calls} AI call${usage.calls===1?'':'s'}`}/>
+          </div>
+          <div className="card" style={{padding:'12px 14px 8px',marginBottom:14}}>
+            <div style={{display:'flex',alignItems:'flex-end',gap:2,height:70}}>
+              {days.map(d => (
+                <div key={d.key} title={`${d.key}: ${fmtUsd(d.usd)}`}
+                  style={{flex:1,minWidth:2,height:`${Math.max(d.usd ? 4 : 1, d.usd / maxDay * 100)}%`,borderRadius:2,
+                    background: d.usd ? 'var(--accent)' : 'var(--fill-hover)'}}/>
+              ))}
+            </div>
+            <div style={{display:'flex',justifyContent:'space-between',fontSize:10.5,color:'var(--text-muted)',marginTop:4}}>
+              <span>30 days ago</span><span>today</span>
+            </div>
+          </div>
+          {usage.calls === 0
+            ? <div style={studyMuted}>No AI calls in the last 30 days.</div>
+            : <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(240px,1fr))',gap:14}}>
+                <table style={{width:'100%',borderCollapse:'collapse'}}>
+                  <thead><tr><th style={th}>By study type</th><th style={{...th,textAlign:'right'}}>30 days</th></tr></thead>
+                  <tbody>{sortedEntries(usage.byKind).map(([k, c]) => (
+                    <tr key={k}><td style={td}>{studyKind(k)?.label || k}</td><td style={num}>{fmtUsd(c)}</td></tr>
+                  ))}</tbody>
+                </table>
+                <table style={{width:'100%',borderCollapse:'collapse'}}>
+                  <thead><tr><th style={th}>By model</th><th style={{...th,textAlign:'right'}}>30 days</th></tr></thead>
+                  <tbody>{sortedEntries(usage.byModel).map(([m, c]) => (
+                    <tr key={m}><td style={td}>{studyModel(m).label}{studyModel(m).free ? ' *' : ''}</td><td style={num}>{fmtUsd(c)}</td></tr>
+                  ))}</tbody>
+                </table>
+              </div>}
+          {Object.keys(usage.byModel || {}).some(m => studyModel(m).free) && (
+            <div style={{fontSize:11.5,color:'var(--text-muted)',marginTop:8}}>* Llama is shown at Workers AI list price; within Cloudflare’s free daily allowance it costs nothing.</div>
+          )}
+        </>)}
+      </div>
+
+      <div style={section}>
+        <div style={h}>Expected monthly cost</div>
+        <div style={{...studyMuted,marginBottom:12}}>
+          What your current model choices (Admin → Study &amp; AI) should cost for a given study load. Rough sizes per use — compare with actual spend above after a few weeks.
+        </div>
+        <div style={{display:'flex',gap:6,marginBottom:12,flexWrap:'wrap'}}>
+          {Object.entries(COST_PRESETS).map(([id, p]) => (
+            <button key={id} className="pill" onClick={()=>save({ ...p })}>{p.label} load</button>
+          ))}
+        </div>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))',gap:10,marginBottom:16}}>
+          {field('lectureHours', 'Lecture hours / week', 0.5)}
+          {field('pdfs', 'PDFs / week', 0.25)}
+          {field('pdfPages', 'Pages per PDF')}
+          {field('exams', 'Mock exams / week')}
+          {field('typedPerDay', 'Typed answers / day')}
+          {field('recalls', 'Blank recalls / week')}
+        </div>
+        <table style={{width:'100%',borderCollapse:'collapse'}}>
+          <thead><tr>
+            <th style={th}>Study type</th><th style={th}>Model</th>
+            <th style={{...th,textAlign:'right'}}>Uses / month</th><th style={{...th,textAlign:'right'}}>$ / month</th>
+          </tr></thead>
+          <tbody>
+            {exp.rows.map(r => (
+              <tr key={r.kind.id}>
+                <td style={td}>{r.kind.label}</td>
+                <td style={td}>{studyModel(r.cfg.model).short}{r.cfg.batch ? ' · batch' : ''}</td>
+                <td style={num}>{Math.round(r.uses * 10) / 10} {r.kind.unit}{Math.round(r.uses) === 1 ? '' : 's'}</td>
+                <td style={num}>{studyModel(r.cfg.model).free ? 'free' : fmtUsd(r.usd)}</td>
+              </tr>
+            ))}
+            <tr>
+              <td style={td}>Transcription</td><td style={td}>Whisper</td>
+              <td style={num}>{Math.round(exp.whisperMin)} min</td>
+              <td style={num}>{exp.whisperUsd ? fmtUsd(exp.whisperUsd) : 'free'}</td>
+            </tr>
+            <tr>
+              <td style={{...td,fontWeight:700,color:'var(--text-primary)'}} colSpan={3}>Expected total</td>
+              <td style={{...num,fontWeight:700,color:'var(--accent)',fontSize:14}}>{fmtUsd(exp.total)}</td>
+            </tr>
+          </tbody>
+        </table>
+        {usage && !usage.error && usage.projectedMonth > 0 && (
+          <div style={{...studyMuted,marginTop:10}}>
+            You’re on pace for <b style={{color:'var(--text-primary)'}}>{fmtUsd(usage.projectedMonth)}</b> this month
+            {exp.total > 0 ? ` — ${usage.projectedMonth > exp.total * 1.25 ? 'above' : usage.projectedMonth < exp.total * 0.75 ? 'below' : 'in line with'} this estimate.` : '.'}
+          </div>
+        )}
+        <div style={{fontSize:11.5,color:'var(--text-muted)',marginTop:10,lineHeight:1.6}}>
+          Assumes ~{TOKENS_PER_LECTURE_HOUR.toLocaleString()} tokens of text per lecture hour and {TOKENS_PER_PDF_PAGE} per PDF page;
+          {' '}{Math.round(TYPED_NEEDING_MODEL * 100)}% of typed answers need a model (exact matches are checked for free);
+          Sonnet and Opus include extra tokens for their reasoning. Set a monthly limit in the Anthropic Console as a hard cap.
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ── AdminView ──
    One consolidated settings page instead of separate modals, so notification
    diagnostics/history have a real home instead of being crammed into a
@@ -7377,6 +9787,8 @@ const ADMIN_TABS = [
   { id: 'appearance',    label: 'Appearance'    },
   { id: 'sync',          label: 'Sync'          },
   { id: 'data',          label: 'Data'          },
+  { id: 'study',         label: 'Study & AI'    },
+  { id: 'costs',         label: 'Costs'         },
 ];
 function AdminView({ state, update, hydrate, replaceState, theme, changeTheme, background, changeBackground, syncStatus, onSync, onConnected, isMobile }) {
   const [tab, setTab] = useState(() => {
@@ -7407,6 +9819,8 @@ function AdminView({ state, update, hydrate, replaceState, theme, changeTheme, b
         {tab==='appearance'    && <AppearanceSettings theme={theme} onChangeTheme={changeTheme} background={background} onChangeBackground={changeBackground}/>}
         {tab==='sync'          && <SyncSettings onConnected={onConnected} onSync={onSync} syncStatus={syncStatus}/>}
         {tab==='data'          && <DataSettings state={state} hydrate={hydrate} replaceState={replaceState}/>}
+        {tab==='study'         && <StudySettings state={state} update={update}/>}
+        {tab==='costs'         && <CostsSettings state={state}/>}
       </div>
     </div>
   );
@@ -7775,7 +10189,7 @@ function App() {
   }, [fullView, state?.ui?.view, state?.ui?.noteId, state?.notes, isMobile]);
 
   /* Respect ?view= from manifest shortcuts */
-  const VALID_VIEWS = ['today','notes','journal','tasks','calendar','tags','admin'];
+  const VALID_VIEWS = ['today','notes','journal','tasks','calendar','tags','folders','study','admin'];
   const urlView = new URLSearchParams(location.search).get('view');
   const startView = VALID_VIEWS.includes(urlView) ? urlView : null;
 
@@ -7932,7 +10346,7 @@ function App() {
   useEffect(() => {
     const flush = () => {
       if (!pendingFlush.current) return;
-      clearTimeout(saveTimer.current);
+      clearTimeout(saveTimer.current); saveTimer.current = null;
       Sync.save(pendingFlush.current, { keepalive: true }).catch(() => {});
       pendingFlush.current = null;
     };
@@ -7953,7 +10367,7 @@ function App() {
     }
     if (syncingRef.current) return;
     syncingRef.current = true;
-    clearTimeout(saveTimer.current);
+    clearTimeout(saveTimer.current); saveTimer.current = null;
     const pending = pendingFlush.current;
     setSyncStatus('syncing');
     try {
@@ -8017,8 +10431,28 @@ function App() {
     };
   }, [pullIfChanged]);
 
-  /* ── update: write localStorage immediately, debounce D1 by 1.5s ── */
-  const update = useCallback((key, val) => {
+  /* ── update: write localStorage immediately, debounce D1 by 1.5s ──
+     {lazy:true} is for high-frequency writes (a flashcard rating per
+     second): localStorage still gets every change at once, but the PUT — the
+     WHOLE state blob, several MB with images — goes out at most every 20s,
+     instead of after every card. A normal update in the meantime pulls the
+     save forward again. The timer always saves the latest pending snapshot. */
+  const runSave = useCallback(async () => {
+    saveTimer.current = null;
+    const snap = pendingFlush.current;
+    if (!snap) return;
+    try {
+      await Sync.save(snap);
+      if (pendingFlush.current === snap) {
+        pendingFlush.current = null;
+        setSyncStatus('synced');
+      }
+    } catch(e) {
+      setSyncStatus(e.message === 'UNAUTHORIZED' ? 'unauth' : 'offline');
+    }
+  }, []);
+
+  const update = useCallback((key, val, opts) => {
     setStateRaw(prev => {
       const next = typeof val === 'function'
         ? { ...prev, [key]: val(prev[key]) }
@@ -8027,20 +10461,23 @@ function App() {
       if (Sync.configured()) {
         pendingFlush.current = next;
         setSyncStatus('saving');
-        clearTimeout(saveTimer.current);
-        saveTimer.current = setTimeout(async () => {
-          try {
-            await Sync.save(next);
-            pendingFlush.current = null;
-            setSyncStatus('synced');
-          } catch(e) {
-            setSyncStatus(e.message === 'UNAUTHORIZED' ? 'unauth' : 'offline');
-          }
-        }, 1500);
+        if (opts?.lazy) {
+          if (!saveTimer.current) saveTimer.current = setTimeout(runSave, LAZY_SAVE_MS);
+        } else {
+          clearTimeout(saveTimer.current);
+          saveTimer.current = setTimeout(runSave, 1500);
+        }
       }
       return next;
     });
-  }, []);
+  }, [runSave]);
+
+  /* Push any lazily-held changes now — e.g. when a review session ends. */
+  const flushSave = useCallback(() => {
+    if (!pendingFlush.current || !Sync.configured()) return;
+    clearTimeout(saveTimer.current);
+    runSave();
+  }, [runSave]);
 
   /* Whole-state replace for Admin → Data → Import, which restores a full
      backup rather than editing one key — same write/debounce path as
@@ -8052,17 +10489,9 @@ function App() {
       pendingFlush.current = next;
       setSyncStatus('saving');
       clearTimeout(saveTimer.current);
-      saveTimer.current = setTimeout(async () => {
-        try {
-          await Sync.save(next);
-          pendingFlush.current = null;
-          setSyncStatus('synced');
-        } catch(e) {
-          setSyncStatus(e.message === 'UNAUTHORIZED' ? 'unauth' : 'offline');
-        }
-      }, 1500);
+      saveTimer.current = setTimeout(runSave, 1500);
     }
-  }, []);
+  }, [runSave]);
 
   if (!state) return (
     <div style={{display:'flex',height:'100vh',alignItems:'center',justifyContent:'center',flexDirection:'column',gap:10,color:'var(--text-muted)'}}>
@@ -8071,7 +10500,7 @@ function App() {
     </div>
   );
 
-  const views = { today:TodayView, notes:NotesView, journal:JournalView, tasks:TasksView, calendar:CalendarView, tags:TagsView, folders:FoldersView, admin:AdminView };
+  const views = { today:TodayView, notes:NotesView, journal:JournalView, tasks:TasksView, calendar:CalendarView, tags:TagsView, folders:FoldersView, study:StudyView, admin:AdminView };
   const View  = views[state.ui.view] || TodayView;
 
   const notesFullView = isNotesFullView(fullView, state, isMobile);
@@ -8102,7 +10531,7 @@ function App() {
             fullView={fullView} setFullView={setFullView}
             hydrate={hydrate} replaceState={replaceState}
             theme={theme} changeTheme={changeTheme} background={background} changeBackground={changeBackground}
-            syncStatus={syncStatus} onSync={syncNow} onConnected={handleSyncConnected}/>
+            syncStatus={syncStatus} onSync={syncNow} onConnected={handleSyncConnected} flushSave={flushSave}/>
         </div>
       </div>
       {!notesFullView && (

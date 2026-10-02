@@ -45,8 +45,16 @@
  *   VAPID_SUBJECT      — mailto: contact URI (e.g. mailto:you@example.com)
  *   SYNC_TOKEN         — same value as the Pages project; guards POST /run and /test
  *
+ * Optional secret:
+ *   ANTHROPIC_API_KEY  — enables the study-batch poll (pollStudyJobs below)
+ *
  * Required D1 binding: DB (same database as the Pages project)
+ *
+ * @anthropic-ai/sdk is resolved from the repo root's node_modules (this folder
+ * has no package.json) — run `npm install` at the repo root before deploying.
  */
+
+import Anthropic from '@anthropic-ai/sdk';
 
 const VAPID_PUBLIC_KEY = 'BMg79Dc4KgbVAa253omi5oER5VpB3ErcDnjaR5lgmIinGMVlUpe4-LUgfuQrTb9a3urAaLnDZgQ_vtE4OvVLcPA';
 const VAPID_PUBLIC_X   = 'yDv0NzgqBtUBrbneiaLmgRHlWkHcStwOeNpHmWCYiKc';
@@ -527,6 +535,77 @@ async function cleanupStaleSubscriptions(env) {
   }
 }
 
+// ─── Study batches ────────────────────────────────────────────────────────────
+/* AI study sets generated through the Anthropic Batches API (half price) can
+   take minutes to finish. This only CHECKS status and sends a push when a
+   batch ends; results are streamed, validated and stored by the Pages
+   function (functions/api/study/[action].js) the next time the app asks, so
+   the parsing logic exists in one place. The conditional UPDATE makes the
+   notification fire once even if two ticks overlap. */
+const STUDY_POLL_EVERY_MIN = 5;
+const STUDY_RETAIN_MS = 35 * 24 * 60 * 60 * 1000;
+
+async function notifyAllDevices(env, payload, ttlMs) {
+  const rows = await env.DB.prepare('SELECT id, subscription FROM push_subs').all();
+  for (const row of rows.results || []) {
+    const sub = parseJson(row.subscription, null);
+    if (!sub?.endpoint) continue;
+    try {
+      const status = await sendPush(sub, payload, env.VAPID_PRIVATE_KEY, env.VAPID_SUBJECT, ttlMs);
+      if (status === 404 || status === 410) {
+        await env.DB.prepare('DELETE FROM push_subs WHERE id = ?').bind(row.id).run();
+      }
+    } catch (e) {
+      console.error('study push failed:', e.message);
+    }
+  }
+}
+
+async function pollStudyJobs(env) {
+  if (!env.ANTHROPIC_API_KEY) return;
+  try {
+    const rows = (await env.DB.prepare(
+      `SELECT id, batch_id, request_meta FROM study_jobs
+        WHERE mode = 'batch' AND status = 'submitted' AND notified = 0 LIMIT 10`,
+    ).all()).results || [];
+    if (!rows.length) return;
+    const client = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
+    for (const row of rows) {
+      let batch;
+      try {
+        batch = await client.messages.batches.retrieve(row.batch_id);
+      } catch (e) {
+        console.error('study batch retrieve failed:', row.id, e.message);
+        continue;
+      }
+      if (batch.processing_status !== 'ended') continue;
+      const claimed = await env.DB.prepare(
+        `UPDATE study_jobs SET status = 'ended', notified = 1, updated_at = ?
+          WHERE id = ? AND status = 'submitted' AND notified = 0`,
+      ).bind(Date.now(), row.id).run();
+      if (!claimed.meta?.changes) continue;
+      const title = parseJson(row.request_meta, {})?.title || 'Your notes';
+      const ok = batch.request_counts?.succeeded || 0;
+      await notifyAllDevices(env, {
+        title: 'Study set ready',
+        body: ok ? `${title}: your new cards and questions are ready.` : `${title}: generation failed. Open Folio to try again.`,
+        id: `study-${row.id}`, type: 'study', prayer: null, url: '/?view=study',
+      }, 24 * 60 * 60_000);
+    }
+  } catch (e) {
+    /* Missing table (schema not re-run yet) lands here too — never fatal. */
+    console.error('pollStudyJobs failed:', e.message);
+  }
+}
+
+async function cleanupStudyJobs(env) {
+  try {
+    await env.DB.prepare('DELETE FROM study_jobs WHERE created_at < ?').bind(Date.now() - STUDY_RETAIN_MS).run();
+  } catch (e) {
+    console.error('cleanupStudyJobs failed:', e.message);
+  }
+}
+
 /* Immediate one-off to every registered device — proves the whole pipeline
    (VAPID keys, encryption, subscription validity, service worker) end to end
    without waiting for a real reminder to come due. */
@@ -560,8 +639,14 @@ export default {
      silently disables things whenever the deployed schedule doesn't match. */
   async scheduled(_event, env, ctx) {
     await tick(env);
+    const minute = new Date().getUTCMinutes();
+    /* Side jobs run after the delivery pass and can never fail it. */
+    if (minute % STUDY_POLL_EVERY_MIN === 0) ctx.waitUntil(pollStudyJobs(env));
     /* Housekeeping only — must never delay or fail a delivery tick. */
-    if (new Date().getUTCMinutes() === 0) ctx.waitUntil(cleanupStaleSubscriptions(env));
+    if (minute === 0) {
+      ctx.waitUntil(cleanupStaleSubscriptions(env));
+      ctx.waitUntil(cleanupStudyJobs(env));
+    }
   },
 
   async fetch(req, env) {

@@ -1,4 +1,4 @@
-const CACHE = 'folio-v33';
+const CACHE = 'folio-v34';
 
 /* Caches used as cross-context storage rather than HTTP caching — a SW has no
    localStorage, so the sync token (needed to re-register a subscription with
@@ -59,6 +59,8 @@ const SHELL = [
   '/vendor/react.min.js',
   '/vendor/react-dom.min.js',
   '/vendor/babel.min.js',
+  /* ~72 KB — precached so flashcard reviews (FSRS scheduling) work offline. */
+  '/vendor/ts-fsrs.umd.js',
   '/vendor/tailwind.min.js',
   '/vendor/prism-tomorrow.min.css',
   '/vendor/prism.min.js',
@@ -210,13 +212,16 @@ self.addEventListener('message', (event) => {
 self.addEventListener('push', (event) => {
   const d = event.data?.json() ?? {};
   const { title = 'Folio', body = '', id, type, prayer } = d;
+  /* Only same-origin paths — a push payload must not be able to send a tap
+     somewhere else. */
+  const url = typeof d.url === 'string' && d.url.startsWith('/') && !d.url.startsWith('//') ? d.url : '/';
   const tag = id || type || title;
   const isDupe = alreadyShown(tag);
 
   const notify = isDupe
     ? Promise.resolve()
     : swNotify(title, body, tag, false, {
-        data:    { type, prayer, url: '/' },
+        data:    { type, prayer, url },
         vibrate: type === 'salah_athan' ? [200, 100, 200, 100, 200] : [200, 100, 200],
       });
   const logged = isDupe ? Promise.resolve() : logNotification({ id: tag, title, body, firedAt: Date.now(), source: 'push' });
@@ -267,10 +272,16 @@ self.addEventListener('pushsubscriptionchange', (event) => {
 
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
+  const url = event.notification.data?.url || '/';
   event.waitUntil(
-    clients.matchAll({ type: 'window' }).then((list) => {
-      if (list.length) return list[0].focus();
-      return clients.openWindow(event.notification.data?.url || '/');
+    clients.matchAll({ type: 'window' }).then(async (list) => {
+      if (!list.length) return clients.openWindow(url);
+      /* A deep link (e.g. /?view=study) has to move the open window there;
+         plain reminders just bring the app forward as before. */
+      if (url !== '/' && list[0].navigate) {
+        try { await list[0].navigate(url); } catch {}
+      }
+      return list[0].focus();
     })
   );
 });

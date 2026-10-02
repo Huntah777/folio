@@ -13,3 +13,8 @@ database_id = "c0d1bd3a-e24b-4e8b-af38-b69028465b57"
 [[r2_buckets]]
 binding = "FILES"
 bucket_name = "folio-files"
+
+# Workers AI — Whisper transcription and the free Llama option for study
+# features. Billed per use beyond the free daily allocation.
+[ai]
+binding = "AI"

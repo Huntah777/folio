@@ -146,6 +146,76 @@ sync/setup modal.
 
 Live logs: `npx wrangler tail` from `push-worker/`.
 
+## 4. Study & AI (flashcards, recall, quizzes, exams, lecture recording)
+
+The Study view turns notes, PDFs, pasted captions and recorded lectures into
+FSRS-scheduled flashcards, blank-page recall, quizzes and timed mock exams.
+Model calls go through `functions/api/study/[action].js`:
+
+- **Claude** (Anthropic API): Haiku 4.5 / Sonnet 5.5 / Opus 5.5.
+- **Workers AI**: Whisper transcription, plus Llama 3.3 70B as a free option.
+
+You can change the model for each study type in **Admin → Study & AI**.
+
+### One-time setup
+
+1. **Tables:** re-run the schema. It's safe to re-run; it adds `study_jobs` and `study_attempts`.
+
+   ```
+   npx wrangler d1 execute folio-db --remote --file=./schema.sql
+   ```
+
+2. **Workers AI binding:** this is declared in `wrangler.toml` (`[ai] binding = "AI"`). Also add it in
+   *Dashboard → Workers & Pages → folio → Settings → Bindings → Add → Workers AI*,
+   with variable name `AI`, for Production (and Preview if you use it).
+
+3. **Anthropic API key:** create one at console.anthropic.com and set a monthly
+   spend limit there.
+
+   ```powershell
+   npx wrangler pages secret put ANTHROPIC_API_KEY --project-name folio
+   ```
+
+4. **Dependencies:** `@anthropic-ai/sdk` is a real dependency now. Pages runs
+   `npm clean-install` when it finds `package-lock.json`; check that the build log
+   shows *Installing project dependencies*. If it doesn't, set the Pages build
+   command to `npm ci`, with `.` still as the output directory.
+
+5. **Push notifications for finished batches (optional):**
+
+   ```powershell
+   npm install                      # at the repo root — the worker imports the SDK from ../node_modules
+   cd push-worker
+   npx wrangler secret put ANTHROPIC_API_KEY
+   npx wrangler deploy
+   cd ..
+   ```
+
+   Without this, batch results still arrive. They're imported the next time you
+   open the Study view; you just don't get a notification.
+
+6. **Microphone:** `_headers` now allows `microphone=(self)`. Recording only
+   works after that deploy is live.
+
+7. **Check it:** go to *Admin → Study & AI → Test connection*. It makes one tiny
+   Haiku call and one tiny Llama call.
+
+### How it works, briefly
+
+- **Batch vs live.** Batch (half price) suits flashcards, quizzes and smart notes,
+  because they can wait a few minutes. Live suits exams and anything interactive.
+  The defaults are Haiku in batch for everyday material, Sonnet live for exams
+  and marking, and Llama for checking typed answers.
+- **Results stay out of the state blob.** AI results never go into the `state`
+  blob from the server. They sit in `study_jobs` until a device imports them,
+  using deterministic ids so two devices can't duplicate cards. The import is
+  then acked and the stored result dropped.
+- **Recordings** are cut into ~4.5-minute segments. Each one is saved in
+  IndexedDB until Whisper has transcribed it. The transcript goes to R2 as a
+  `text/plain` attachment, because an hour is about 50 KB, too much for the blob.
+- **Spend:** *Admin → Study & AI → Show last 30 days* reports an estimate from
+  logged token usage.
+
 ---
 
 ## Environment variables (Pages → Settings → Environment variables)
@@ -153,8 +223,9 @@ Live logs: `npx wrangler tail` from `push-worker/`.
 | Name | Notes |
 |---|---|
 | `SYNC_TOKEN` | Secret. Same value on every device you sync. Guards `/api/state`, `/api/push` and `/api/files`, and the push Worker's `/run`, `/test` and `/status`. |
+| `ANTHROPIC_API_KEY` | Secret. Claude calls for Study (see section 4). Also set on the push Worker if you want batch-ready notifications. |
 
 ## After deploying
 
 Bump `CACHE` in `sw.js` whenever static assets change, or clients keep serving
-the old cached copy. Currently `folio-v20`.
+the old cached copy. Currently `folio-v34`.

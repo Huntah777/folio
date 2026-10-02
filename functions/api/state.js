@@ -24,7 +24,7 @@ const TOMBSTONE_TTL_MS   = 90 * 24 * 60 * 60 * 1000; /* 90 days */
 
 /* Collections carrying soft-delete tombstones in a sibling `<key>Deleted` array.
    Must stay in step with SEED() in index.html. */
-const TOMBSTONED = ['notes', 'tasks', 'meetings', 'journal'];
+const TOMBSTONED = ['notes', 'tasks', 'meetings', 'journal', 'cards', 'studySets'];
 
 const json = (data, status = 200, extraHeaders = {}) =>
   new Response(JSON.stringify(data), {
@@ -145,6 +145,9 @@ export function mergeState(existing, incoming, now = Date.now()) {
   out.banners = { ...(existing.banners || {}), ...(incoming.banners || {}) };
   out.salah   = { ...(existing.salah   || {}), ...(incoming.salah   || {}) };
   out.ui      = { ...(existing.ui      || {}), ...(incoming.ui      || {}) };
+  /* Per study type (flashcards, quiz, …) so changing one model on the phone
+     doesn't revert another changed on the laptop. */
+  out.studySettings = { ...(existing.studySettings || {}), ...(incoming.studySettings || {}) };
 
   return out;
 }

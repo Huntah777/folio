@@ -48,3 +48,46 @@ CREATE TABLE IF NOT EXISTS push_subs (
 -- previous design filtered on it, so a row that drained to 0 stopped being
 -- selected and went silent forever.
 CREATE INDEX IF NOT EXISTS idx_push_subs_next_fire ON push_subs (next_fire_at);
+
+-- ── Study (functions/api/study/[action].js) ──
+-- AI results live here, never in the `state` blob: the client PUTs that blob
+-- whole, so a server-side write into it would be overwritten. The client
+-- imports finished results through its own update() and then acks them.
+--
+-- Batch jobs:  id = client-generated job id; status submitted → (ended) →
+--              collecting → done | error → imported (result dropped on ack).
+-- Live calls:  id = "<jobId>:<kind>:<chunk>" for generations (so a retried
+--              request returns the stored result instead of paying twice),
+--              or a random id for checks/marking; status done. Kept 35 days
+--              so /api/study/usage can report spend.
+CREATE TABLE IF NOT EXISTS study_jobs (
+  id           TEXT PRIMARY KEY,
+  set_id       TEXT,
+  kinds        TEXT NOT NULL,              -- comma-separated: flashcards,quiz,exam,smartNotes,cardCheck,…
+  model        TEXT NOT NULL,              -- comma-separated when a batch mixes models
+  mode         TEXT NOT NULL,              -- 'live' | 'batch'
+  batch_id     TEXT,                       -- Anthropic message batch id
+  status       TEXT NOT NULL,
+  request_meta TEXT NOT NULL DEFAULT '{}', -- JSON: { title, items:[{custom_id, kind, model, chunk}] }
+  result       TEXT,                       -- JSON
+  error        TEXT,
+  usage        TEXT,                       -- JSON token counts (batch rows also carry byModel cost)
+  notified     INTEGER NOT NULL DEFAULT 0, -- push sent by the push worker
+  created_at   INTEGER NOT NULL,
+  updated_at   INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_study_jobs_status ON study_jobs (status);
+CREATE INDEX IF NOT EXISTS idx_study_jobs_created ON study_jobs (created_at);
+
+-- Exam attempts: written answers + marking are 5–15 KB each, too big to keep
+-- in the synced blob. The study set itself only keeps the last 5 scores.
+CREATE TABLE IF NOT EXISTS study_attempts (
+  id         TEXT PRIMARY KEY,
+  set_id     TEXT,
+  exam_id    TEXT,
+  data       TEXT NOT NULL,                -- JSON: { questions, results }
+  score      REAL NOT NULL,
+  max        REAL NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_study_attempts_exam ON study_attempts (exam_id);
