@@ -61,12 +61,14 @@ tailwind.config = {
      legible on both the plain background and a photo background. */
   --fill:rgba(255,255,255,.055); --fill-hover:rgba(255,255,255,.085); --fill-active:rgba(255,255,255,.12);
   --hairline:rgba(255,255,255,.09);
-  --vibrancy:rgba(22,22,27,.72);
+  --glass-rgb:30 30 37;
+  --glass-edge-rgb:255 255 255;
+  --tab-selected:rgba(0,0,0,.34);
   --accent-ring:rgba(129,140,248,.35);
   --accent-soft:rgba(129,140,248,.14);
   --shadow-1:0 1px 2px rgba(0,0,0,.28);
   --shadow-2:0 4px 16px -4px rgba(0,0,0,.5);
-  --shadow-3:0 18px 48px -12px rgba(0,0,0,.72);
+  --shadow-3:0 2px 10px -3px rgba(0,0,0,.30);
 }
 :root[data-theme="ghibli"]{
   --bg-app:#f2e4c9; --bg-sidebar:#e9d7b3; --bg-surface:#fbf3e2; --bg-surface-2:#f5e8ca; --bg-surface-3:#f0e0bd; --modal-bg:#fbf3e2;
@@ -76,13 +78,35 @@ tailwind.config = {
   /* On a light ground the same idea inverts: tint with shadow, not light. */
   --fill:rgba(60,44,30,.06); --fill-hover:rgba(60,44,30,.10); --fill-active:rgba(60,44,30,.15);
   --hairline:rgba(60,44,30,.12);
-  --vibrancy:rgba(251,243,226,.78);
+  --glass-rgb:251 243 226;
+  --glass-edge-rgb:92 70 44;
+  --tab-selected:rgba(60,44,30,.10);
   --accent-ring:rgba(122,158,111,.38);
   --accent-soft:rgba(122,158,111,.18);
   --shadow-1:0 1px 2px rgba(120,92,54,.12);
   --shadow-2:0 4px 16px -4px rgba(120,92,54,.20);
-  --shadow-3:0 18px 48px -12px rgba(120,92,54,.32);
+  --shadow-3:0 2px 10px -3px rgba(120,92,54,.22);
 }
+/* ── glass (iOS 27) ──
+   --glass is the user's clarity setting, 0 = Ultra Clear … 1 = Tinted (Admin →
+   Appearance; see GlassPref). Everything glass derives from it, so one slider
+   moves menus, modals, the tab bar and popovers together.
+   iOS 27's refinements over iOS 26, mirrored here: glass is less translucent by
+   default; surfaces are outlined with a defined border instead of floating on
+   a drop shadow (the clearer the glass, the stronger the edge, so it stays
+   legible); translucency is fixed rather than adapting to what's behind it;
+   and the tab bar is a docked, solid-edged bar with a darker selected pill. */
+:root{
+  --glass:.72;
+  --vibrancy:rgb(var(--glass-rgb) / calc(.30 + var(--glass) * .62));
+  --glass-border:rgb(var(--glass-edge-rgb) / calc(.20 - var(--glass) * .08));
+  --glass-edge:rgb(var(--glass-edge-rgb) / .09);
+  --glass-blur:blur(24px) saturate(calc(1.4 + (1 - var(--glass)) * .5));
+}
+/* The OS's Reduce Transparency / Increase Contrast win over the slider. */
+@media (prefers-reduced-transparency:reduce){:root{--glass:1}}
+@media (prefers-contrast:more){:root{--glass:1;--glass-border:rgb(var(--glass-edge-rgb) / .45)}}
+
 /* One radius scale and one motion curve for the whole app, so nothing has to
    guess. The curve is the decelerating ease Apple uses everywhere — fast to
    start, settling at the end — which is most of why a UI "feels" native. */
@@ -140,14 +164,14 @@ html,body{height:100%;background:var(--bg-app);color:var(--text-primary);font-fa
 .note-cb{opacity:0;transition:opacity 120ms;flex-shrink:0}
 .note-card:hover .note-cb,.note-card.checked .note-cb{opacity:1}
 /* context menu */
-.ctx-menu{background:var(--vibrancy);-webkit-backdrop-filter:blur(24px) saturate(180%);backdrop-filter:blur(24px) saturate(180%);border:1px solid var(--hairline);border-radius:var(--r-md);padding:5px;min-width:180px;box-shadow:var(--shadow-3);z-index:9999;position:fixed;animation:popIn 160ms var(--ease) both}
+.ctx-menu{background:var(--vibrancy);-webkit-backdrop-filter:var(--glass-blur);backdrop-filter:var(--glass-blur);border:1px solid var(--glass-border);border-radius:var(--r-md);padding:5px;min-width:180px;box-shadow:var(--shadow-3);z-index:9999;position:fixed;animation:popIn 160ms var(--ease) both}
 .ctx-item{display:flex;align-items:center;gap:9px;padding:7px 11px;border-radius:var(--r-xs);font-size:13px;cursor:pointer;color:var(--text-tertiary);transition:background 100ms var(--ease),color 100ms var(--ease);user-select:none;font-family:'Manrope',sans-serif;font-weight:500}
 .ctx-item:hover{background:var(--accent);color:#fff}
 .ctx-item.danger{color:var(--text-secondary)}
 .ctx-item.danger:hover{background:var(--danger);color:#fff}
 .ctx-sep{height:1px;background:var(--hairline);margin:4px 8px}
 /* bulk action bar */
-.bulk-bar{position:sticky;bottom:8px;background:var(--vibrancy);-webkit-backdrop-filter:blur(24px) saturate(180%);backdrop-filter:blur(24px) saturate(180%);border:1px solid var(--accent-ring);border-radius:var(--r-lg);padding:9px 13px;display:flex;align-items:center;gap:8px;margin-top:8px;box-shadow:var(--shadow-3)}
+.bulk-bar{position:sticky;bottom:8px;background:var(--vibrancy);-webkit-backdrop-filter:var(--glass-blur);backdrop-filter:var(--glass-blur);border:1px solid var(--glass-border);border-radius:var(--r-lg);padding:9px 13px;display:flex;align-items:center;gap:8px;margin-top:8px;box-shadow:var(--shadow-3)}
 /* folder action buttons */
 .folder-action{background:none;border:1px solid transparent;cursor:pointer;padding:2px 5px;border-radius:4px;font-size:11px;line-height:1;font-family:'Manrope',sans-serif;font-weight:600;transition:all 110ms}
 .folder-action.rename{color:var(--text-muted)}
@@ -200,7 +224,7 @@ input:focus,textarea:focus{outline:none}
 
 /* modal */
 .modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.42);-webkit-backdrop-filter:blur(14px) saturate(140%);backdrop-filter:blur(14px) saturate(140%);z-index:50;display:flex;align-items:center;justify-content:center;animation:fadeIn 180ms var(--ease) both;padding:16px}
-.modal{background:var(--modal-bg);border:1px solid var(--hairline);border-radius:var(--r-xl);width:480px;max-width:100%;box-shadow:var(--shadow-3),inset 0 1px 0 var(--hairline);max-height:90vh;overflow-y:auto}
+.modal{background:var(--modal-bg);border:1px solid var(--glass-border);border-radius:var(--r-xl);width:480px;max-width:100%;box-shadow:var(--shadow-3),inset 0 1px 0 var(--hairline);max-height:90vh;overflow-y:auto}
 @keyframes fadeIn{from{opacity:0}to{opacity:1}}
 @keyframes popIn{from{opacity:0;transform:scale(.96) translateY(-4px)}to{opacity:1;transform:none}}
 
@@ -216,17 +240,17 @@ input:focus,textarea:focus{outline:none}
 .btn-primary:active{transform:scale(.96)}
 .btn-primary:focus-visible{outline:none;box-shadow:0 0 0 3.5px var(--accent-ring)}
 .btn-primary:disabled{opacity:.45;cursor:default;transform:none}
-.btn-ghost{background:var(--fill);color:var(--text-tertiary);border:1px solid transparent;border-radius:var(--r-pill);padding:8px 16px;font-family:'Manrope',sans-serif;font-size:13px;font-weight:500;cursor:pointer;transition:background var(--dur) var(--ease),color var(--dur) var(--ease),transform 140ms var(--ease)}
+.btn-ghost{background:var(--fill);color:var(--text-tertiary);border:1px solid var(--glass-edge);border-radius:var(--r-pill);padding:8px 16px;font-family:'Manrope',sans-serif;font-size:13px;font-weight:500;cursor:pointer;transition:background var(--dur) var(--ease),color var(--dur) var(--ease),transform 140ms var(--ease)}
 .btn-ghost:hover{background:var(--fill-hover);color:var(--text-primary)}
 .btn-ghost:active{transform:scale(.96)}
 .btn-ghost:focus-visible{outline:none;box-shadow:0 0 0 3.5px var(--accent-ring)}
 .btn-ghost:disabled{opacity:.45;cursor:default;transform:none}
 
 /* Capsule toggle — the "bubble" used for tag filters and any on/off chip. */
-.pill{display:inline-flex;align-items:center;gap:6px;padding:6px 13px;border-radius:var(--r-pill);border:1px solid transparent;background:var(--fill);color:var(--text-secondary);font-family:'Manrope',sans-serif;font-size:12.5px;font-weight:600;cursor:pointer;white-space:nowrap;transition:background var(--dur) var(--ease),color var(--dur) var(--ease),transform 140ms var(--ease);user-select:none}
+.pill{display:inline-flex;align-items:center;gap:6px;padding:6px 13px;border-radius:var(--r-pill);border:1px solid var(--glass-edge);background:var(--fill);color:var(--text-secondary);font-family:'Manrope',sans-serif;font-size:12.5px;font-weight:600;cursor:pointer;white-space:nowrap;transition:background var(--dur) var(--ease),color var(--dur) var(--ease),transform 140ms var(--ease);user-select:none}
 .pill:hover{background:var(--fill-hover);color:var(--text-primary)}
 .pill:active{transform:scale(.95)}
-.pill.on{background:var(--accent);color:#fff;box-shadow:var(--shadow-1)}
+.pill.on{background:var(--accent);color:#fff;border-color:transparent;box-shadow:var(--shadow-1)}
 .pill.on:hover{background:var(--accent-strong);color:#fff}
 .pill-count{font-size:10.5px;font-weight:700;opacity:.65;font-family:'JetBrains Mono',monospace}
 
@@ -235,6 +259,20 @@ input:focus,textarea:focus{outline:none}
 .seg > button{background:none;border:none;border-radius:var(--r-pill);padding:5px 13px;font-family:'Manrope',sans-serif;font-size:12px;font-weight:600;color:var(--text-secondary);cursor:pointer;transition:background var(--dur) var(--ease),color var(--dur) var(--ease);white-space:nowrap}
 .seg > button:hover{color:var(--text-primary)}
 .seg > button[aria-pressed="true"]{background:var(--bg-surface);color:var(--text-primary);box-shadow:var(--shadow-1),inset 0 1px 0 var(--hairline)}
+
+/* Glass slider: a capsule track with a white thumb, like the iOS 27 control.
+   The fill shows how far toward Tinted it's set. */
+.glass-slider{-webkit-appearance:none;appearance:none;width:100%;height:30px;background:transparent;cursor:pointer;--pct:50%}
+.glass-slider:focus{outline:none}
+.glass-slider::-webkit-slider-runnable-track{height:8px;border-radius:99px;border:1px solid var(--glass-border);
+  background:linear-gradient(to right,var(--accent) var(--pct),var(--fill-hover) var(--pct))}
+.glass-slider::-moz-range-track{height:8px;border-radius:99px;border:1px solid var(--glass-border);
+  background:linear-gradient(to right,var(--accent) var(--pct),var(--fill-hover) var(--pct))}
+.glass-slider::-webkit-slider-thumb{-webkit-appearance:none;width:26px;height:26px;margin-top:-10px;border-radius:99px;background:#fff;
+  border:1px solid rgba(0,0,0,.14);box-shadow:0 1px 3px rgba(0,0,0,.3);transition:transform 140ms var(--ease)}
+.glass-slider::-moz-range-thumb{width:24px;height:24px;border-radius:99px;background:#fff;border:1px solid rgba(0,0,0,.14);box-shadow:0 1px 3px rgba(0,0,0,.3)}
+.glass-slider:active::-webkit-slider-thumb{transform:scale(1.08)}
+.glass-slider:focus-visible::-webkit-slider-thumb{box-shadow:0 0 0 3.5px var(--accent-ring),0 1px 3px rgba(0,0,0,.3)}
 
 /* Circular icon button — toolbar affordance, thumb-sized on purpose. */
 .icon-btn{display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;border-radius:var(--r-pill);border:none;background:transparent;color:var(--text-secondary);cursor:pointer;flex-shrink:0;transition:background var(--dur) var(--ease),color var(--dur) var(--ease),transform 140ms var(--ease)}
@@ -268,7 +306,7 @@ input:focus,textarea:focus{outline:none}
 /* sidebar collapsed */
 .sidebar-collapsed{width:52px!important;min-width:52px!important}
 /* mobile nav */
-.mobile-nav{display:none;position:fixed;bottom:0;left:0;right:0;background:var(--vibrancy);-webkit-backdrop-filter:blur(24px) saturate(180%);backdrop-filter:blur(24px) saturate(180%);border-top:1px solid var(--hairline);z-index:100;align-items:stretch}
+.mobile-nav{display:none;position:fixed;bottom:0;left:0;right:0;background:var(--vibrancy);-webkit-backdrop-filter:var(--glass-blur);backdrop-filter:var(--glass-blur);border-top:1px solid var(--glass-border);z-index:100;align-items:stretch}
 @media(max-width:768px){
   .sidebar{display:none!important}
   .mobile-nav{display:flex!important;height:calc(56px + env(safe-area-inset-bottom,0px));padding-bottom:env(safe-area-inset-bottom,0px)}
@@ -1679,6 +1717,27 @@ function applyTheme(id) {
   try { window.dispatchEvent(new CustomEvent('folio-theme-change')); } catch {}
 }
 
+/* ── glass clarity (device-local — never synced) ──
+   Web apps can't read iOS's own Liquid Glass slider, so Folio has its own:
+   0 = Ultra Clear … 100 = Tinted. Stored as a whole number; applied as the
+   --glass CSS variable that every glass surface derives from. */
+const GLASS_KEY = 'folio_glass';
+const GLASS_DEFAULT = 72;
+const GlassPref = {
+  get() {
+    try {
+      const v = localStorage.getItem(GLASS_KEY);
+      if (v === null) return GLASS_DEFAULT;
+      const n = Number(v);
+      return Number.isFinite(n) ? Math.max(0, Math.min(100, Math.round(n))) : GLASS_DEFAULT;
+    } catch { return GLASS_DEFAULT; }
+  },
+  set(n) { try { localStorage.setItem(GLASS_KEY, String(Math.max(0, Math.min(100, Math.round(n))))); } catch {} },
+};
+function applyGlass(n) {
+  document.documentElement.style.setProperty('--glass', String(Math.max(0, Math.min(100, n)) / 100));
+}
+
 /* ── open note tabs + full view (device-local — never synced) ──
    Deliberately NOT part of state.ui, which syncs: which notes you have open is
    a per-device workspace, and syncing it would rearrange your laptop's tabs
@@ -2115,7 +2174,7 @@ function TagFilterBar({ tags, counts, value, onChange, max = TAG_BAR_MAX }) {
           <button className="pill" onClick={() => setOpen(o => !o)} aria-expanded={open}>+{rest.length}</button>
           {open && (
             <div style={{position:'absolute',top:'calc(100% + 6px)',right:0,zIndex:60,width:230,padding:6,
-                         background:'var(--vibrancy)',backdropFilter:'blur(24px) saturate(180%)',WebkitBackdropFilter:'blur(24px) saturate(180%)',
+                         background:'var(--vibrancy)',backdropFilter:'var(--glass-blur)',WebkitBackdropFilter:'var(--glass-blur)',
                          border:'1px solid var(--hairline)',borderRadius:'var(--r-md)',boxShadow:'var(--shadow-3)',animation:'popIn 160ms var(--ease) both'}}>
               <input autoFocus value={query} onChange={e => setQuery(e.target.value)} placeholder="Find a tag…"
                 className="input" style={{marginBottom:6,fontSize:12.5,padding:'7px 10px'}}/>
@@ -2627,7 +2686,7 @@ function Popover({ anchorRef, onClose, children, width = 250, align = 'start', g
   return ReactDOM.createPortal(
     <div ref={ref} style={{position:'fixed',zIndex:400,width,left:pos?.left ?? -9999,top:pos?.top ?? -9999,
                            maxHeight:pos?.maxHeight,overflow:'auto',visibility:pos?'visible':'hidden',
-                           background:'var(--vibrancy)',WebkitBackdropFilter:'blur(24px) saturate(180%)',backdropFilter:'blur(24px) saturate(180%)',
+                           background:'var(--vibrancy)',WebkitBackdropFilter:'var(--glass-blur)',backdropFilter:'var(--glass-blur)',
                            border:'1px solid var(--hairline)',borderRadius:'var(--r-md)',boxShadow:'var(--shadow-3)',
                            padding:8,animation:'popIn 160ms var(--ease) both'}}
       className="scrollbar">
@@ -3109,7 +3168,7 @@ function FolderPickerDropdown({ value, folders, onChange }) {
       {open && (
         <div style={{position:'absolute',right:0,top:'calc(100% + 4px)',zIndex:300,
           background:'var(--bg-surface-2)',border:'1px solid var(--border-strong)',
-          borderRadius:10,boxShadow:'0 8px 32px rgba(0,0,0,.4)',
+          borderRadius:10,boxShadow:'var(--shadow-3)',
           minWidth:180,maxWidth:260,maxHeight:280,overflowY:'auto'}}>
           <div
             onClick={()=>{ onChange(null); setOpen(false); }}
@@ -3565,7 +3624,7 @@ function NoteEditor({ note, state, update, isMobile }) {
                   <button type="button" onClick={()=>{setShowTagPicker(false);setTagInput('');}} style={{background:'none',border:'none',color:'var(--text-secondary)',cursor:'pointer',fontSize:15,lineHeight:1}}>×</button>
                 </form>
                 {tagFocused && suggestions.length>0 && (
-                  <div style={{position:'absolute',top:'100%',left:0,marginTop:4,background:'var(--modal-bg)',border:'1px solid var(--border-strong)',borderRadius:8,padding:'4px',zIndex:20,minWidth:140,boxShadow:'0 8px 24px rgba(0,0,0,.5)'}}>
+                  <div style={{position:'absolute',top:'100%',left:0,marginTop:4,background:'var(--modal-bg)',border:'1px solid var(--glass-border)',borderRadius:8,padding:'4px',zIndex:20,minWidth:140,boxShadow:'var(--shadow-3)'}}>
                     {suggestions.map(t=>(
                       <div key={t} onMouseDown={()=>{addTag(t);setTagInput('');setShowTagPicker(false);}}
                         style={{display:'flex',alignItems:'center',gap:6,padding:'5px 8px',borderRadius:5,cursor:'pointer',transition:'background 100ms'}}
@@ -3688,7 +3747,7 @@ function NoteEditor({ note, state, update, isMobile }) {
 
         {/* web link panel */}
         {showWebLink && (
-          <form onSubmit={addWebLink} style={{background:'var(--bg-surface)',border:'1px solid var(--border-strong)',borderRadius:10,padding:'10px 12px',marginBottom:14,display:'flex',flexDirection:'column',gap:8}}>
+          <form onSubmit={addWebLink} style={{background:'var(--bg-surface)',border:'1px solid var(--glass-border)',borderRadius:10,padding:'10px 12px',marginBottom:14,display:'flex',flexDirection:'column',gap:8}}>
             <div style={{fontSize:11,color:'var(--text-secondary)'}}>Add a web link:</div>
             <input autoFocus value={wlUrl} onChange={e=>setWlUrl(e.target.value)} placeholder="https://example.com"
               style={{background:'var(--bg-sidebar)',border:'1px solid var(--border-strong)',borderRadius:6,padding:'6px 10px',color:'var(--text-primary)',fontSize:13,outline:'none',fontFamily:'Manrope,sans-serif'}}/>
@@ -3703,7 +3762,7 @@ function NoteEditor({ note, state, update, isMobile }) {
 
         {/* link search dropdown */}
         {showLinkSearch && (
-          <div style={{background:'var(--bg-surface)',border:'1px solid var(--border-strong)',borderRadius:10,padding:'10px 12px',marginBottom:14}}>
+          <div style={{background:'var(--bg-surface)',border:'1px solid var(--glass-border)',borderRadius:10,padding:'10px 12px',marginBottom:14}}>
             <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:6}}>
               <div style={{fontSize:11,color:'var(--text-secondary)'}}>Link notes — click to add or remove:</div>
               <button onClick={()=>{setShowLinkSearch(false);setLinkQuery('');}} style={{background:'none',border:'none',color:'var(--text-secondary)',cursor:'pointer',fontSize:11,padding:'0 2px'}}>Done</button>
@@ -3801,7 +3860,7 @@ function NoteEditor({ note, state, update, isMobile }) {
 
         {/* code insert panel */}
         {showCode && (
-          <div style={{marginTop:16,background:'var(--bg-surface)',border:'1px solid var(--border-strong)',borderRadius:10,padding:'14px 16px'}}>
+          <div style={{marginTop:16,background:'var(--bg-surface)',border:'1px solid var(--glass-border)',borderRadius:10,padding:'14px 16px'}}>
             <div style={{fontSize:11,color:'var(--text-secondary)',marginBottom:8}}>Insert code snippet:</div>
             <CodeBlock value={codeVal} lang={codeLang} onChange={setCodeVal} onLangChange={setCodeLang}/>
             <div style={{display:'flex',gap:8,marginTop:10}}>
@@ -4744,7 +4803,7 @@ function TasksView({ state, update, isMobile, pom, setPom }) {
                         </svg>
                       </button>
                       {blockerEdit?.id===t.id&&(
-                        <div style={{position:'absolute',right:0,top:'calc(100% + 4px)',zIndex:60,background:'var(--bg-surface)',border:'1px solid var(--border-strong)',borderRadius:10,padding:'12px',minWidth:210,boxShadow:'0 8px 24px rgba(0,0,0,.5)'}}>
+                        <div style={{position:'absolute',right:0,top:'calc(100% + 4px)',zIndex:60,background:'var(--bg-surface)',border:'1px solid var(--glass-border)',borderRadius:10,padding:'12px',minWidth:210,boxShadow:'var(--shadow-3)'}}>
                           <div style={{fontSize:12,fontWeight:600,color:'var(--text-secondary)',marginBottom:8}}>Flag as on hold</div>
                           <input autoFocus placeholder="Waiting for… (optional)"
                             value={blockerEdit.reason}
@@ -5791,7 +5850,7 @@ function FoldersView({ state, update, isMobile }) {
           <div onClick={e=>e.stopPropagation()}
             style={{marginLeft:12+indent,marginBottom:6,background:'var(--bg-surface-2)',
               border:'1px solid var(--border-strong)',borderRadius:10,padding:'12px',
-              overflow:'hidden',boxShadow:'0 4px 20px rgba(0,0,0,.28)'}}>
+              overflow:'hidden',boxShadow:'var(--shadow-3)'}}>
             <div style={{fontSize:10,fontWeight:700,letterSpacing:'.07em',textTransform:'uppercase',color:'var(--text-muted)',marginBottom:8}}>Color</div>
             <div style={{display:'flex',gap:6,marginBottom:12,flexWrap:'wrap'}}>
               {FOLDER_COLORS.map(c=>(
@@ -6224,7 +6283,7 @@ function JournalEntryTags({ tags, onChange, allTags=[] }) {
           placeholder="#tag"
           style={{background:'var(--bg-surface)',border:'1px solid var(--border-strong)',borderRadius:6,padding:'2px 8px',color:'var(--text-primary)',fontSize:12,width:80,outline:'none'}}/>
         {focused && suggestions.length>0 && (
-          <div style={{position:'absolute',top:'100%',left:0,marginTop:4,background:'var(--modal-bg)',border:'1px solid var(--border-strong)',borderRadius:8,padding:'4px',zIndex:20,minWidth:140,boxShadow:'0 8px 24px rgba(0,0,0,.5)'}}>
+          <div style={{position:'absolute',top:'100%',left:0,marginTop:4,background:'var(--modal-bg)',border:'1px solid var(--glass-border)',borderRadius:8,padding:'4px',zIndex:20,minWidth:140,boxShadow:'var(--shadow-3)'}}>
             {suggestions.map(t=>(
               <div key={t} onMouseDown={()=>add(t)}
                 style={{display:'flex',alignItems:'center',gap:6,padding:'5px 8px',borderRadius:5,cursor:'pointer',transition:'background 100ms'}}
@@ -6461,7 +6520,7 @@ function JournalView({ state, update, isMobile }) {
                 {isEditing ? (
                   <div style={{display:'flex',flexDirection:'column',gap:10}}>
                     <textarea value={editText} onChange={ev=>setEditText(ev.target.value)} rows={4}
-                      style={{background:'var(--bg-surface)',border:'1px solid var(--border-strong)',borderRadius:8,padding:10,outline:'none',fontFamily:'Manrope,sans-serif',fontSize:14,color:'var(--text-primary)',lineHeight:1.6,width:'100%',resize:'vertical'}}/>
+                      style={{background:'var(--bg-surface)',border:'1px solid var(--glass-border)',borderRadius:8,padding:10,outline:'none',fontFamily:'Manrope,sans-serif',fontSize:14,color:'var(--text-primary)',lineHeight:1.6,width:'100%',resize:'vertical'}}/>
                     <div style={{display:'flex',alignItems:'center',gap:14,flexWrap:'wrap'}}>
                       <MoodPicker value={editMood} onChange={setEditMood}/>
                       <JournalEntryTags tags={editTags} onChange={setEditTags} allTags={allJournalTags}/>
@@ -6567,7 +6626,7 @@ function InstallBanner() {
       background:'var(--bg-sidebar)',borderBottom:'1px solid var(--border)',
       padding:'10px 16px',
       display:'flex',alignItems:'center',justifyContent:'space-between',gap:12,
-      boxShadow:'0 8px 32px rgba(0,0,0,.5)',
+      boxShadow:'var(--shadow-3)',
     }}>
       <div style={{display:'flex',alignItems:'center',gap:10,minWidth:0}}>
         <img src="/folio-icon.svg" alt="" style={{width:28,height:28,borderRadius:7,flexShrink:0}}/>
@@ -6748,7 +6807,7 @@ function Sidebar({ state, update, syncStatus, onSync, collapsed, onToggle }) {
             style={{margin:'2px 6px 6px',background:'var(--bg-surface-2)',
                     border:'1px solid var(--border-strong)',borderRadius:8,
                     padding:'10px 10px 8px',overflow:'hidden',
-                    boxShadow:'0 4px 20px rgba(0,0,0,.28)'}}>
+                    boxShadow:'var(--shadow-3)'}}>
             <div style={{fontSize:9.5,fontWeight:700,letterSpacing:'.07em',textTransform:'uppercase',color:'var(--text-muted)',marginBottom:7}}>Color</div>
             <div style={{display:'flex',gap:4,marginBottom:10,flexWrap:'wrap'}}>
               {FOLDER_COLORS.map(c=>(
@@ -7011,11 +7070,15 @@ function MobileNav({ state, update, syncStatus }) {
     syncStatus==='unauth'  ? 'var(--warning)' : null;
   const navBtnStyle = active => ({
     flex:1,minWidth:0,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',
-    gap:2,background:'none',border:'none',cursor:'pointer',overflow:'hidden',
+    gap:2,border:'none',cursor:'pointer',overflow:'hidden',
+    /* iOS 27: the selected tab sits in its own pill, darker than the bar. */
+    background:active?'var(--tab-selected)':'transparent',borderRadius:'var(--r-md)',margin:'5px 1px',
     color:active?'var(--accent)':'var(--text-muted)',
-    fontSize:10,fontFamily:'Manrope,sans-serif',fontWeight:700,
-    letterSpacing:'.02em',textTransform:'uppercase',whiteSpace:'nowrap',textOverflow:'ellipsis',
-    transition:'color 110ms',position:'relative',padding:'6px 2px',
+    /* Sentence case like iOS tab labels — and narrower, which matters with
+       eight tabs on a 390px screen. */
+    fontSize:10.5,fontFamily:'Manrope,sans-serif',fontWeight:600,
+    letterSpacing:0,whiteSpace:'nowrap',textOverflow:'ellipsis',
+    transition:'color 110ms,background 160ms var(--ease)',position:'relative',padding:'5px 2px',
   });
   const navUtilStyle = extra => ({
     flex:'0 0 44px',width:44,display:'flex',alignItems:'center',justifyContent:'center',
@@ -7186,7 +7249,7 @@ function PrayerSettings({ state, update }) {
             <div>
               <label style={{fontSize:12,color:'var(--text-secondary)',display:'block',marginBottom:8}}>Calculation Method</label>
               <select value={method} onChange={e=>setMethod(e.target.value)}
-                style={{width:'100%',background:'var(--bg-surface)',border:'1px solid var(--border-strong)',borderRadius:8,color:'var(--text-primary)',fontSize:13,padding:'8px 10px',fontFamily:'Manrope,sans-serif',cursor:'pointer',outline:'none'}}>
+                style={{width:'100%',background:'var(--bg-surface)',border:'1px solid var(--glass-border)',borderRadius:8,color:'var(--text-primary)',fontSize:13,padding:'8px 10px',fontFamily:'Manrope,sans-serif',cursor:'pointer',outline:'none'}}>
                 {Object.entries(SALAH_METHODS).map(([k,v])=>(
                   <option key={k} value={k}>{v.name}</option>
                 ))}
@@ -7599,7 +7662,35 @@ function SectionBanner({ sectionId, banner, onChange, isMobile }) {
 }
 
 /* ── AppearanceSettings (Admin → Appearance tab) ── */
-function AppearanceSettings({ theme, onChangeTheme, background, onChangeBackground }) {
+/* Live preview of the clarity setting: the same glass tokens the app uses,
+   over a busy backdrop so the difference is actually visible. */
+function GlassSetting({ value, onChange }) {
+  return (
+    <div>
+      <div style={{position:'relative',height:96,borderRadius:'var(--r-lg)',overflow:'hidden',marginBottom:12,border:'1px solid var(--border)',
+        background:'linear-gradient(120deg,#6366f1 0%,#ec4899 38%,#f59e0b 68%,#10b981 100%)'}}>
+        {[8,22,40,58,76].map((l,i)=>(
+          <span key={i} style={{position:'absolute',top:i%2?58:10,left:`${l}%`,width:34,height:34,borderRadius:99,background:'rgba(255,255,255,.55)'}}/>
+        ))}
+        <div style={{position:'absolute',left:'50%',top:'50%',transform:'translate(-50%,-50%)',display:'flex',alignItems:'center',gap:10,
+          padding:'9px 16px',borderRadius:'var(--r-pill)',background:'var(--vibrancy)',WebkitBackdropFilter:'var(--glass-blur)',backdropFilter:'var(--glass-blur)',
+          border:'1px solid var(--glass-border)',boxShadow:'var(--shadow-3)',fontSize:13,fontWeight:600,whiteSpace:'nowrap'}}>
+          <span style={{width:9,height:9,borderRadius:99,background:'var(--accent)'}}/>Liquid Glass
+        </div>
+      </div>
+      <input type="range" min="0" max="100" step="1" value={value} className="glass-slider" aria-label="Glass clarity"
+        style={{'--pct':`${value}%`}} onChange={e=>onChange(+e.target.value)}/>
+      <div style={{display:'flex',justifyContent:'space-between',fontSize:11.5,color:'var(--text-muted)',marginTop:2}}>
+        <span>Ultra Clear</span><span>Tinted</span>
+      </div>
+      <div style={{fontSize:12,color:'var(--text-secondary)',marginTop:8,lineHeight:1.5}}>
+        Controls menus, dialogs, popovers and the tab bar. If your device is set to Reduce Transparency or Increase Contrast, that takes priority.
+      </div>
+    </div>
+  );
+}
+
+function AppearanceSettings({ theme, onChangeTheme, glass, onChangeGlass, background, onChangeBackground }) {
   return (
     <div style={{display:'flex',flexDirection:'column',gap:22,maxWidth:640}}>
       <div style={{fontSize:12,color:'var(--text-secondary)'}}>Applies to this device only — not synced.</div>
@@ -7619,6 +7710,13 @@ function AppearanceSettings({ theme, onChangeTheme, background, onChangeBackgrou
             </div>
           ))}
         </div>
+      </div>
+
+      <div className="divider"/>
+
+      <div>
+        <div style={{fontSize:11,fontWeight:700,letterSpacing:'.06em',color:'var(--text-muted)',textTransform:'uppercase',marginBottom:10}}>Glass</div>
+        <GlassSetting value={glass} onChange={onChangeGlass}/>
       </div>
 
       <div className="divider"/>
@@ -9790,7 +9888,7 @@ const ADMIN_TABS = [
   { id: 'study',         label: 'Study & AI'    },
   { id: 'costs',         label: 'Costs'         },
 ];
-function AdminView({ state, update, hydrate, replaceState, theme, changeTheme, background, changeBackground, syncStatus, onSync, onConnected, isMobile }) {
+function AdminView({ state, update, hydrate, replaceState, theme, changeTheme, glass, changeGlass, background, changeBackground, syncStatus, onSync, onConnected, isMobile }) {
   const [tab, setTab] = useState(() => {
     try {
       const t = localStorage.getItem(ADMIN_TAB_KEY);
@@ -9816,7 +9914,7 @@ function AdminView({ state, update, hydrate, replaceState, theme, changeTheme, b
 
         {tab==='notifications' && <NotificationsSettings state={state}/>}
         {tab==='prayer'        && <PrayerSettings state={state} update={update}/>}
-        {tab==='appearance'    && <AppearanceSettings theme={theme} onChangeTheme={changeTheme} background={background} onChangeBackground={changeBackground}/>}
+        {tab==='appearance'    && <AppearanceSettings theme={theme} onChangeTheme={changeTheme} glass={glass} onChangeGlass={changeGlass} background={background} onChangeBackground={changeBackground}/>}
         {tab==='sync'          && <SyncSettings onConnected={onConnected} onSync={onSync} syncStatus={syncStatus}/>}
         {tab==='data'          && <DataSettings state={state} hydrate={hydrate} replaceState={replaceState}/>}
         {tab==='study'         && <StudySettings state={state} update={update}/>}
@@ -10005,7 +10103,7 @@ function PomodoroWidget({ pom, setPom, tasks, update, isMobile }) {
     <div style={{position:'fixed',bottom:isMobile?72:24,right:16,
       background:'var(--modal-bg)',border:`1px solid ${accent}30`,borderRadius:16,
       padding:'14px 16px',width:220,
-      boxShadow:`0 8px 32px rgba(0,0,0,.6),0 0 0 1px ${accent}18`,
+      boxShadow:`var(--shadow-3),0 0 0 1px ${accent}30`,
       zIndex:9000,fontFamily:'Manrope,sans-serif',userSelect:'none'}}>
 
       {/* header row */}
@@ -10066,7 +10164,7 @@ function PomodoroWidget({ pom, setPom, tasks, update, isMobile }) {
           </button>
           {!isCap&&(
             <button onClick={()=>pomSkip(pom,setPom,tasks,update,task)}
-              style={{background:'var(--bg-surface)',border:'1px solid var(--border-strong)',borderRadius:8,
+              style={{background:'var(--bg-surface)',border:'1px solid var(--glass-border)',borderRadius:8,
                 color:'var(--text-secondary)',fontSize:12,padding:'7px 10px',cursor:'pointer',
                 fontFamily:'Manrope,sans-serif'}} title={isWork?'Skip to break':'Skip to focus'}>
               ⏭
@@ -10109,6 +10207,7 @@ function App() {
   const [state, setStateRaw]   = useState(null);
   const [syncStatus, setSyncStatus] = useState('idle'); /* idle|saving|synced|offline|unauth|local */
   const [theme, setTheme]           = useState(() => ThemePref.get());
+  const [glass, setGlass]           = useState(() => GlassPref.get());
   const [background, setBackground] = useState(() => BackgroundPref.get());
   const [sidebarOpen, setSidebarOpen] = useState(true);
   /* Full view for the notes editor. Owned here because it also hides the
@@ -10151,6 +10250,8 @@ function App() {
   /* ── theme: device-local, applied via data-theme attribute + CSS vars ── */
   useEffect(() => { applyTheme(theme); }, [theme]);
   const changeTheme = id => { ThemePref.set(id); setTheme(id); };
+  useEffect(() => { applyGlass(glass); }, [glass]);
+  const changeGlass = n => { GlassPref.set(n); setGlass(n); };
 
   /* ── background image/gif: device-local, applied via CSS vars ── */
   useEffect(() => { applyBackground(background); }, [background]);
@@ -10530,7 +10631,7 @@ function App() {
           <View state={state} update={update} isMobile={isMobile} pom={pom} setPom={setPom}
             fullView={fullView} setFullView={setFullView}
             hydrate={hydrate} replaceState={replaceState}
-            theme={theme} changeTheme={changeTheme} background={background} changeBackground={changeBackground}
+            theme={theme} changeTheme={changeTheme} glass={glass} changeGlass={changeGlass} background={background} changeBackground={changeBackground}
             syncStatus={syncStatus} onSync={syncNow} onConnected={handleSyncConnected} flushSave={flushSave}/>
         </div>
       </div>
