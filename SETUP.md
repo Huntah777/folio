@@ -165,9 +165,9 @@ You can change the model for each study type in **Admin → Study & AI**.
    npx wrangler d1 execute folio-db --remote --file=./schema.sql
    ```
 
-2. **Workers AI binding:** this is declared in `wrangler.toml` (`[ai] binding = "AI"`). Also add it in
-   *Dashboard → Workers & Pages → folio → Settings → Bindings → Add → Workers AI*,
-   with variable name `AI`, for Production (and Preview if you use it).
+2. **Workers AI binding:** nothing to do. It's declared in `wrangler.toml`
+   (`[ai] binding = "AI"`), which manages this project's bindings, so it can't
+   be added in the dashboard and is applied on the next deploy.
 
 3. **Anthropic API key:** create one at console.anthropic.com and set a monthly
    spend limit there.
