@@ -8354,12 +8354,12 @@ function StudyView({ state, update, isMobile, flushSave }) {
     return () => { stopped = true; clearTimeout(timer); };
   }, [pollJobs]);
 
-  const ensureSet = (scope, title) => {
+  const ensureSet = (scope, title, folderId = null) => {
     const cur = stateRef.current;
     const existing = (cur.studySets || []).find(s => sameScope(s.scope, scope));
     if (existing) return { id: existing.id, state: cur };
     const now = Date.now();
-    const set = { id:uid(), title: title || scopeTitle(cur, scope), scope, sourceHashes:{}, quiz:[], exams:[], quizAttempts:[], created:now, updated:now };
+    const set = { id:uid(), title: title || scopeTitle(cur, scope), scope, folderId, sourceHashes:{}, quiz:[], exams:[], quizAttempts:[], created:now, updated:now };
     update('studySets', prev => [...(prev || []), set]);
     return { id: set.id, state: { ...cur, studySets: [...(cur.studySets || []), set] } };
   };
@@ -8438,20 +8438,24 @@ function StudyView({ state, update, isMobile, flushSave }) {
     {modal?.type === 'new' && (
       <NewStudySetModal state={state} initialScope={modal.scope} onClose={()=>setModal(null)}
         onCreate={({ scope, title, kinds, overrides, examOptions }) => {
+          const folderCtx = screen.type === 'folder' ? screen.folderId : null;
+          const backCtx   = screen.type === 'folder' ? screen : null;
           setModal(null);
-          const { id, state: snap } = ensureSet(scope, title);
-          setScreen({ type:'set', setId:id });
+          const { id, state: snap } = ensureSet(scope, title, folderCtx);
+          setScreen({ type:'set', setId:id, back: backCtx });
           if (kinds.length) generate({ setId:id, snapshot:snap, kinds, noteIds: scopeNoteIds(snap, scope), overrides, examOptions, title });
         }}/>
     )}
     {modal?.type === 'source' && (
       <StudySourceModal state={state} update={update} initialMode={modal.mode} onClose={()=>setModal(null)}
         onCreated={({ note, kinds }) => {
+          const folderCtx = screen.type === 'folder' ? screen.folderId : null;
+          const backCtx   = screen.type === 'folder' ? screen : null;
           setModal(null);
           const cur = { ...stateRef.current, notes: stateRef.current.notes.some(n => n.id === note.id) ? stateRef.current.notes : [note, ...stateRef.current.notes] };
           stateRef.current = cur;
-          const { id, state: snap } = ensureSet({ type:'note', id:note.id }, note.title);
-          setScreen({ type:'set', setId:id });
+          const { id, state: snap } = ensureSet({ type:'note', id:note.id }, note.title, folderCtx);
+          setScreen({ type:'set', setId:id, back: backCtx });
           if (kinds.length) generate({ setId:id, snapshot:snap, kinds, noteIds:[note.id], title: note.title });
         }}/>
     )}
@@ -8487,7 +8491,12 @@ function StudyView({ state, update, isMobile, flushSave }) {
         <div style={{display:'flex',alignItems:'center',gap:12,marginBottom:20,flexWrap:'wrap'}}>
           <button className="btn-ghost" style={{padding:'5px 12px',fontSize:12}} onClick={()=>setScreen({ type:'home' })}>← Study</button>
           <div style={{fontFamily:'Fraunces,serif',fontSize:isMobile?20:24,fontWeight:600}}>{folder.name}</div>
-          {fDue > 0 && <span style={{fontSize:12,color:'var(--accent)',marginLeft:'auto'}}>{fDue} due</span>}
+          <div style={{display:'flex',gap:8,marginLeft:'auto',flexWrap:'wrap',alignItems:'center'}}>
+            {fDue > 0 && <span style={{fontSize:12,color:'var(--accent)'}}>{fDue} due</span>}
+            <button className="btn-ghost" style={{fontSize:12}} onClick={()=>setModal({ type:'source', mode:'record' })}>● Record</button>
+            <button className="btn-ghost" style={{fontSize:12}} onClick={()=>setModal({ type:'source', mode:'pdf' })}>Add material</button>
+            <button className="btn-primary" style={{fontSize:12}} onClick={()=>setModal({ type:'new' })}>New set</button>
+          </div>
         </div>
         {folderSets.length === 0 && <div style={studyMuted}>No study sets in this folder yet — open a set and assign it here.</div>}
         <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr':'repeat(2,minmax(0,1fr))',gap:12}}>
