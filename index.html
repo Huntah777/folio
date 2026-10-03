@@ -10130,11 +10130,10 @@ function YouTubeSource({ cta, ctaNoTranscript, onCreate, autoFocus, prefill }) {
     /* No captions from YouTube → Gemini, window by window (free tier: 8 h/day). */
     if (!info.transcript?.length && info.gemini && info.reason !== 'unavailable') {
       const W = info.geminiWindow || 600, dur = info.duration || 0;
-      const windows = dur > W ? Math.ceil(dur / W) : 1;
       const all = [];
       /* A window that times out (HTTP 524/504) is split in half and retried, so
          a slow stretch of video costs time rather than failing the whole run. */
-      const timedOut = e => e.code === 'timeout' || [502, 504, 524].includes(e.status) || /HTTP_5(02|04|24)/.test(e.message);
+      const timedOut = e => e.code === 'timeout' || [504, 524].includes(e.status) || /HTTP_5(04|24)/.test(e.message);
       const fetchRange = async (a, b, depth = 0) => {
         try { return (await StudyAPI.ytTranscript(id, a, b)).lines; }
         catch (e) {
@@ -10144,11 +10143,24 @@ function YouTubeSource({ cta, ctaNoTranscript, onCreate, autoFocus, prefill }) {
         }
       };
       try {
-        for (let i = 0; i < windows; i++) {
-          setProgress(`Transcribing with Gemini${windows > 1 ? ` · part ${i + 1} of ${windows}` : ''}…`);
-          const a = windows > 1 ? i * W : 0, b = windows > 1 ? Math.min(dur, (i + 1) * W) : 0;
-          if (windows === 1 && !dur) all.push(...(await StudyAPI.ytTranscript(id, 0, 0)).lines);
-          else all.push(...await fetchRange(a, windows > 1 ? b : dur));
+        /* Always windowed. The length comes from YouTube's page, which it often
+           blocks for servers — then it's unknown, and sending the whole video as
+           one request would time out. So walk 10-minute windows until Gemini runs
+           past the end (an out-of-range error, or two empty windows in a row). */
+        const MAX_WINDOWS = 24;   /* 4 hours */
+        const total = dur ? Math.ceil(dur / W) : null;
+        let empties = 0;
+        for (let i = 0; i < (total || MAX_WINDOWS); i++) {
+          setProgress(`Transcribing with Gemini · part ${i + 1}${total ? ` of ${total}` : ''}…`);
+          let lines;
+          try { lines = await fetchRange(i * W, dur ? Math.min(dur, (i + 1) * W) : (i + 1) * W); }
+          catch (e) {
+            if (!total && i > 0 && (e.code === 'unavailable' || /HTTP[ _]4\d\d/.test(e.message))) break;   /* ran past the end of the video */
+            throw e;
+          }
+          all.push(...lines);
+          empties = lines.length ? 0 : empties + 1;
+          if (!total && empties >= 2) break;
         }
         setMeta(m => ({ ...m, transcript: all.length ? all : null, source:'gemini', reason: all.length ? null : 'no_captions' }));
       } catch (e) {
