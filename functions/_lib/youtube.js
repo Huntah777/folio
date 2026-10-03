@@ -246,16 +246,31 @@ Do not summarise, translate, or describe visuals. If there is no speech, return 
     if (/private|unlisted|not (?:be )?accessible|unavailable/i.test(msg)) {
       throw new StudyError('unavailable', 'Gemini can only read public videos', 422);
     }
-    throw new StudyError('gemini_failed', `Gemini couldn’t transcribe this: ${msg}`, 502);
+    throw new StudyError('gemini_failed', `Gemini couldn’t transcribe this (Google said HTTP ${r.status}: ${String(msg).slice(0, 240)})`, 502);
   }
 
   const text = geminiText(j).trim().replace(/^```(?:json)?\s*|\s*```$/g, '');
   let data;
-  try { data = JSON.parse(text); } catch { throw new StudyError('gemini_failed', 'Gemini returned an unreadable transcript', 502); }
+  try { data = JSON.parse(text); } catch { throw new StudyError('gemini_failed', `Gemini answered, but not in a readable form. Reply began: ${(text || raw).slice(0, 200).replace(/\s+/g, ' ')}`, 502); }
   const lines = (Array.isArray(data?.lines) ? data.lines : [])
     .map((l) => ({ t: Math.round((start + Math.max(0, Number(l?.t) || 0)) * 10) / 10, text: String(l?.text || '').replace(/\s+/g, ' ').trim() }))
     .filter((l) => l.text && (!clipped || l.t <= end + 5))
     .sort((a, b) => a.t - b.t)
     .slice(0, MAX_LINES);
   return { lines, usage: { ...geminiUsage(j), model: GEMINI_MODEL } };
+}
+
+/* Real round trip with no video: proves the endpoint, model name, auth and
+   response parsing all line up, without spending any video allowance. */
+export async function geminiSelfTest(env) {
+  const r = await fetch('https://generativelanguage.googleapis.com/v1beta/interactions', {
+    method: 'POST', signal: AbortSignal.timeout(20000),
+    headers: { 'Content-Type': 'application/json', 'x-goog-api-key': env.GEMINI_API_KEY },
+    body: JSON.stringify({ model: GEMINI_MODEL, input: [{ type: 'text', text: 'Reply with exactly: OK' }] }),
+  });
+  const raw = await r.text();
+  let j = null; try { j = JSON.parse(raw); } catch {}
+  if (!r.ok) return `HTTP ${r.status}: ${(j?.error?.message || raw).slice(0, 200)}`;
+  const text = geminiText(j).trim();
+  return text ? 'ok' : `answered, but no text found in: ${raw.slice(0, 200)}`;
 }

@@ -269,4 +269,4 @@ You can change the model for each study type in **Admin → Study & AI**.
 ## After deploying
 
 Bump `CACHE` in `sw.js` whenever static assets change, or clients keep serving
-the old cached copy. Currently `folio-v39`.
+the old cached copy. Currently `folio-v40`.
