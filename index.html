@@ -10212,6 +10212,12 @@ async function geminiTranscribeVideo({ videoId, duration = 0, windowSec = 900, o
     let lines;
     try { lines = await runWindow(a, b, label); }
     catch (e) {
+      /* Google won't take a clip of this video → one request for all of it. */
+      if (e.code === 'clip_unsupported') {
+        const label = 'Transcribing with Gemini · whole video';
+        onProgress?.(label + '…');
+        return runWindow(0, 0, label);
+      }
       /* Length unknown: only an error that actually says the range is past the
          end counts as "finished" — any other failure must surface, or a real
          mid-video error would silently cut the transcript short. */

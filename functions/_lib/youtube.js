@@ -163,7 +163,7 @@ export async function youtubeInfo(videoId) {
    (Background mode — start a job, poll it — was tried first: Google rejects
    the poll with API-key auth, wanting an OAuth token instead.) */
 export const GEMINI_MODEL = 'gemini-3.8-flash';
-export const GEMINI_CODE_VERSION = 'gemini-stream-4';
+export const GEMINI_CODE_VERSION = 'gemini-clip-5';
 /* 15 minutes of speech is ~2,500 words, well inside max_output_tokens, and
    keeps each Gemini call to a few minutes. */
 export const GEMINI_WINDOW_SEC = 900;
@@ -315,20 +315,41 @@ export async function geminiTranscribe(env, videoId, start = 0, end = 0) {
   const prompt = `Transcribe all speech in this video${clipped ? ' clip' : ''} verbatim, in the language spoken.
 Return one entry per sentence or short phrase. "t" is when it starts, in seconds from the start of ${clipped ? 'this clip' : 'the video'}.
 Do not summarise, translate, or describe visuals. If there is no speech, return an empty list.`;
-  const { j, model } = await createInteraction(env, {
-    input: [
-      { type: 'text', text: prompt },
-      {
-        type: 'video',
-        uri: `https://www.youtube.com/watch?v=${videoId}`,
-        resolution: 'low',   /* transcription needs the audio, not detailed frames */
-        ...(clipped ? { processing: { type: 'static', start_offset: start, end_offset: end } } : {}),
-      },
-    ],
-    response_format: { type: 'text', mime_type: 'application/json', schema: GEMINI_SCHEMA },
-    generation_config: { max_output_tokens: 32000 },
-  }, { budgetMs: 9 * 60 * 1000, attemptMs: 7 * 60 * 1000 });
-  return { lines: linesFrom(j, start, end), usage: { ...geminiUsage(j), model: String(j?.model || model) } };
+  /* The API reference gives the offsets as duration strings ("1200s") while
+     the video guide shows plain numbers — try the reference form first and
+     the other only if Google rejects the clip itself. */
+  const clips = clipped
+    ? [{ type: 'static', start_offset: `${start}s`, end_offset: `${end}s` }, { type: 'static', start_offset: start, end_offset: end }]
+    : [null];
+  const t0 = Date.now();
+  for (let i = 0; ; i++) {
+    try {
+      const { j, model } = await createInteraction(env, {
+        input: [
+          { type: 'text', text: prompt },
+          {
+            type: 'video',
+            uri: `https://www.youtube.com/watch?v=${videoId}`,
+            resolution: 'low',   /* transcription needs the audio, not detailed frames */
+            ...(clips[i] ? { processing: clips[i] } : {}),
+          },
+        ],
+        response_format: { type: 'text', mime_type: 'application/json', schema: GEMINI_SCHEMA },
+        generation_config: { max_output_tokens: 32000 },
+      }, { budgetMs: 9 * 60 * 1000 - (Date.now() - t0), attemptMs: 7 * 60 * 1000 });
+      return { lines: linesFrom(j, start, end), usage: { ...geminiUsage(j), model: String(j?.model || model) } };
+    } catch (e) {
+      if (!(clipped && isClipRejection(e))) throw e;
+      if (i + 1 < clips.length) continue;
+      throw new StudyError('clip_unsupported', `Gemini won’t take part of this video (${e.message})`, 422);
+    }
+  }
+}
+
+/* A 400 that names the clip settings — Google refusing the request shape,
+   not the video. */
+function isClipRejection(e) {
+  return e?.code === 'gemini_failed' && /HTTP 400/.test(e.message) && /processing|offset/i.test(e.message);
 }
 
 /* The streaming wrapper the endpoint returns: answers immediately, sends
