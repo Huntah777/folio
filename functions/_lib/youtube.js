@@ -148,26 +148,27 @@ export async function youtubeInfo(videoId) {
 
 /* ── Gemini: the sanctioned way to get a transcript from a YouTube link ──
    Google's Gemini API accepts a public YouTube URL directly (Interactions
-   API, /v1beta/interactions). Free tier: 8 hours of YouTube video a day;
+   API, POST /v1beta/interactions). Free tier: 8 hours of YouTube video a day;
    paid: $0.75 per 1M input tokens, ~100 tokens per second of video at low
    resolution (≈ $0.27 per hour plus output). Figures from Google's docs,
    2026-10-03.
 
-   WHY BACKGROUND MODE: Gemini has to fetch and process the video on Google's
-   side, which for a long video (or a busy model) takes longer than the ~100 s
-   Cloudflare allows any request to stay open — the 504/524 errors. So nothing
-   here ever waits on Gemini:
-     start  POST /interactions with background:true → returns an id at once
-     poll   GET  /interactions/{id}                 → in_progress | completed | …
-   Each call is a quick round trip; the client drives the loop and the waiting.
-   Free-tier results are kept for 1 day, far longer than any poll needs. */
+   HOW LONG WAITS ARE HANDLED: Gemini fetches and processes the video on
+   Google's side, which can take minutes. Cloudflare cuts off a request that
+   hasn't started answering within ~100 s (HTTP 524), so the transcribe
+   endpoint (geminiTranscribeStream, used by /api/study/ytStream) answers at
+   once and streams newline-delimited JSON: a heartbeat every 10 s while
+   Gemini works, then the result. Nothing ever sits silent long enough to be
+   cut off, and only the ordinary POST is used.
+   (Background mode — start a job, poll it — was tried first: Google rejects
+   the poll with API-key auth, wanting an OAuth token instead.) */
 export const GEMINI_MODEL = 'gemini-3.8-flash';
-/* With no request held open, a window's size is limited only by output length:
-   15 minutes of speech is ~2,500 words, well inside max_output_tokens. */
+export const GEMINI_CODE_VERSION = 'gemini-stream-4';
+/* 15 minutes of speech is ~2,500 words, well inside max_output_tokens, and
+   keeps each Gemini call to a few minutes. */
 export const GEMINI_WINDOW_SEC = 900;
 const GEMINI_PRICE = { in: 0.75, out: 3.75 };   /* USD per 1M tokens, paid tier, until 2026-12-31 */
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta';
-const START_BUDGET_MS = 30000;
 
 const GEMINI_SCHEMA = {
   type: 'object',
@@ -218,13 +219,17 @@ async function readJson(r) {
   const raw = await r.text();
   let j = null;
   try { j = JSON.parse(raw); } catch {}
-  return { raw, j, msg: String(j?.error?.message || raw || `HTTP ${r.status}`).slice(0, 240) };
+  /* Google sometimes wraps its error object in a one-element array. */
+  const err = Array.isArray(j) ? j[0]?.error : j?.error;
+  return { raw, j, msg: String(err?.message || raw || `HTTP ${r.status}`).slice(0, 240) };
 }
 
 /* Google's own errors → errors the client can act on. "busy" and
    "rate_limited" mean wait and try again; "quota" means stop for today. */
 function googleError(status, msg) {
-  if (status === 401 || status === 403) return new StudyError('bad_api_key', 'Google rejected the Gemini API key', 502);
+  if (status === 401 || status === 403 || /api key not valid|invalid api key|API_KEY_INVALID/i.test(msg)) {
+    return new StudyError('bad_api_key', 'Google rejected the Gemini API key — check GEMINI_API_KEY', 502);
+  }
   if (status === 429) {
     return /per.?day|daily|quota/i.test(msg) && !/per.?minute/i.test(msg)
       ? new StudyError('quota', 'Gemini’s free daily allowance is used up — try again tomorrow, or use the bookmark or paste below', 429)
@@ -249,22 +254,27 @@ async function pickFallbackModel(env, current) {
   } catch { return null; }
 }
 
-/* Create an interaction. Creating is quick even in background mode, so a few
-   retries for "busy" (and one switch of model) fit easily in the budget. */
-async function createInteraction(env, body) {
+/* POST an interaction. "Busy" (503/500) is retried with a growing pause and,
+   after two failures, with the newest other plain Flash model. budgetMs caps
+   the whole thing; attemptMs caps one call (a video transcription can
+   legitimately take minutes). */
+async function createInteraction(env, body, { budgetMs = 30000, attemptMs = 20000 } = {}) {
   const t0 = Date.now();
   let model = GEMINI_MODEL, switched = false, lastErr = null;
-  for (let attempt = 0; attempt < 4; attempt++) {
-    const left = START_BUDGET_MS - (Date.now() - t0);
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const left = budgetMs - (Date.now() - t0);
     if (left < 3000) break;
     let r;
     try {
       r = await fetch(`${GEMINI_BASE}/interactions`, {
-        method: 'POST', headers: headers(env), signal: AbortSignal.timeout(Math.min(left, 20000)),
+        method: 'POST', headers: headers(env), signal: AbortSignal.timeout(Math.min(left, attemptMs)),
         body: JSON.stringify({ ...body, model }),
       });
     } catch (e) {
-      lastErr = new StudyError('busy', `Couldn’t reach Gemini (${e?.name === 'TimeoutError' ? 'timed out' : e?.message || 'network error'})`, 503);
+      lastErr = e?.name === 'TimeoutError'
+        ? new StudyError('timeout', 'Gemini took too long on this part', 504)
+        : new StudyError('busy', `Couldn’t reach Gemini (${e?.message || 'network error'})`, 503);
+      if (lastErr.code === 'timeout') throw lastErr;
       continue;
     }
     const { j, msg } = await readJson(r);
@@ -276,58 +286,12 @@ async function createInteraction(env, body) {
       const alt = await pickFallbackModel(env, model);
       if (alt) { model = alt; continue; }
     }
-    await sleep(1500 * (attempt + 1));
+    await sleep(Math.min(3000 * (attempt + 1), Math.max(0, budgetMs - (Date.now() - t0) - 3000)));
   }
   throw lastErr || new StudyError('busy', 'Gemini is busy right now', 503);
 }
 
-/* GET a background job. Two things can trip Google's "Multiple
-   authentication credentials received" (HTTP 400) here, even though the key
-   is only sent once:
-     • a redirect to a separately signed result URL, if followed with our key
-       still attached — so redirects are followed by hand, without the key;
-     • Google's newer "AQ." keys, which on some endpoints count as two
-       credentials in one depending on how they're sent.
-   So each way Google accepts a key is tried in turn (header, query
-   parameter, bearer token) and the one that works is remembered. */
-export const GEMINI_CODE_VERSION = 'gemini-bg-3';
-const AUTH_STYLES = ['header', 'query', 'bearer'];
-let _authStyle = null;   /* per isolate; re-learned after a cold start */
-export let lastAuthNote = '';
-
-function authed(url, env, style) {
-  if (style === 'query') return { url: `${url}${url.includes('?') ? '&' : '?'}key=${encodeURIComponent(env.GEMINI_API_KEY)}`, headers: {} };
-  if (style === 'bearer') return { url, headers: { Authorization: `Bearer ${env.GEMINI_API_KEY}` } };
-  return { url, headers: { 'x-goog-api-key': env.GEMINI_API_KEY } };
-}
-
-async function getInteraction(env, id, timeoutMs = 20000) {
-  const base = `${GEMINI_BASE}/interactions/${id}`;
-  const signal = AbortSignal.timeout(timeoutMs);
-  const order = _authStyle ? [_authStyle, ...AUTH_STYLES.filter((x) => x !== _authStyle)] : AUTH_STYLES;
-  const tried = [];
-  let r = null;
-  for (const style of order) {
-    const { url, headers: h } = authed(base, env, style);
-    r = await fetch(url, { headers: h, redirect: 'manual', signal });
-    const loc = r.headers.get('location');
-    if (r.status >= 300 && r.status < 400 && loc) r = await fetch(new URL(loc, base).toString(), { signal });
-    if (r.status === 400) {
-      const peek = await r.clone().text().catch(() => '');
-      if (/multiple authentication credentials/i.test(peek)) { tried.push(style); continue; }
-    }
-    _authStyle = style;
-    lastAuthNote = tried.length ? `job checks use ${style} auth (${tried.join(', ')} rejected)` : '';
-    return r;
-  }
-  lastAuthNote = `all of ${tried.join(', ')} were rejected as "multiple credentials"`;
-  return r;
-}
-
-const idOf = (j) => String(j?.id || j?.name || '').replace(/^interactions\//, '');
-const ID_RE = /^[A-Za-z0-9_-]{1,200}$/;
-
-/* Interaction (completed) → transcript lines in VIDEO time. Gemini reports
+/* Completed interaction → transcript lines in VIDEO time. Gemini reports
    times relative to the clip, so `start` is added back. */
 function linesFrom(j, start, end) {
   const text = geminiText(j).trim().replace(/^```(?:json)?\s*|\s*```$/g, '');
@@ -341,8 +305,8 @@ function linesFrom(j, start, end) {
     .slice(0, MAX_LINES);
 }
 
-/* Start transcribing one window of a video in the background. */
-export async function geminiStart(env, videoId, start = 0, end = 0) {
+/* Transcribe one window of a video (this can take minutes). */
+export async function geminiTranscribe(env, videoId, start = 0, end = 0) {
   if (!env.GEMINI_API_KEY) throw new StudyError('not_configured', 'GEMINI_API_KEY is not set', 501);
   if (!YT_ID_RE.test(videoId || '')) throw new StudyError('bad_video', 'Not a YouTube video id');
   start = Math.max(0, Math.floor(Number(start) || 0));
@@ -352,7 +316,6 @@ export async function geminiStart(env, videoId, start = 0, end = 0) {
 Return one entry per sentence or short phrase. "t" is when it starts, in seconds from the start of ${clipped ? 'this clip' : 'the video'}.
 Do not summarise, translate, or describe visuals. If there is no speech, return an empty list.`;
   const { j, model } = await createInteraction(env, {
-    background: true,
     input: [
       { type: 'text', text: prompt },
       {
@@ -364,68 +327,52 @@ Do not summarise, translate, or describe visuals. If there is no speech, return 
     ],
     response_format: { type: 'text', mime_type: 'application/json', schema: GEMINI_SCHEMA },
     generation_config: { max_output_tokens: 32000 },
-  });
-  const id = idOf(j);
-  if (!ID_RE.test(id)) throw new StudyError('gemini_failed', 'Gemini didn’t return a job id for the background request', 502);
-  return { id, model, status: String(j?.status || 'in_progress') };
+  }, { budgetMs: 9 * 60 * 1000, attemptMs: 7 * 60 * 1000 });
+  return { lines: linesFrom(j, start, end), usage: { ...geminiUsage(j), model: String(j?.model || model) } };
 }
 
-/* Check one background job. Never throws for "still working", "busy" or
-   "rate limited" — those come back as status 'running' so the client keeps
-   polling; real failures throw. */
-export async function geminiPoll(env, id, start = 0, end = 0) {
-  if (!env.GEMINI_API_KEY) throw new StudyError('not_configured', 'GEMINI_API_KEY is not set', 501);
-  if (!ID_RE.test(String(id || ''))) throw new StudyError('bad_job', 'Not a Gemini job id');
-  start = Math.max(0, Number(start) || 0);
-  end = Math.max(0, Number(end) || 0);
-  let r;
-  try {
-    r = await getInteraction(env, id);
-  } catch {
-    return { status: 'running' };   /* transient — try again on the next poll */
-  }
-  const { j, msg } = await readJson(r);
-  if (!r.ok) {
-    const err = googleError(r.status, msg);
-    if (err.code === 'busy' || err.code === 'rate_limited') return { status: 'running' };
-    if (r.status === 404) throw new StudyError('expired', 'That Gemini job has expired — start again', 410);
-    throw err;
-  }
-  const status = String(j?.status || '');
-  if (status === 'completed') {
-    return { status: 'done', lines: linesFrom(j, start, end), usage: { ...geminiUsage(j), model: String(j?.model || GEMINI_MODEL) } };
-  }
-  /* Output cut short: the client retries the window in two halves. */
-  if (status === 'incomplete') return { status: 'incomplete' };
-  if (status === 'failed' || status === 'cancelled') {
-    const why = String(j?.error?.message || j?.status_details || status).slice(0, 240);
-    if (/private|unlisted|not (?:be )?accessible|unavailable/i.test(why)) throw new StudyError('unavailable', 'Gemini can only read public videos', 422);
-    throw new StudyError('gemini_failed', `Gemini couldn’t transcribe this part (${why})`, 502);
-  }
-  return { status: 'running' };   /* queued | in_progress */
-}
-
-/* Background round trip with no video — proves endpoint, model, auth, job
-   ids and response parsing all line up, without using video allowance. */
-export async function geminiSelfTest(env) {
-  let started;
-  try {
-    const { j, model } = await createInteraction(env, { background: true, input: [{ type: 'text', text: 'Reply with exactly: OK' }] });
-    started = { id: idOf(j), model };
-  } catch (e) { return `couldn’t start a job: ${e.message}`; }
-  if (!ID_RE.test(started.id)) return 'started, but no job id came back';
-  for (let i = 0; i < 12; i++) {
-    await sleep(1500);
-    const r = await getInteraction(env, started.id).catch(() => null);
-    if (!r) continue;
-    const { j, msg } = await readJson(r);
-    if (!r.ok) return `HTTP ${r.status} while checking the job: ${msg}${lastAuthNote ? ` (${lastAuthNote})` : ''}`;
-    if (j?.status === 'completed') {
-      const note = started.model !== GEMINI_MODEL ? ` (using ${started.model}; ${GEMINI_MODEL} was busy)` : '';
-      const how = lastAuthNote ? ` · ${lastAuthNote}` : '';
-      return geminiText(j).trim() ? `ok — background jobs work${note}${how}` : 'job finished, but no text found in the reply';
+/* The streaming wrapper the endpoint returns: answers immediately, sends
+   {"type":"ping","s":<seconds>} every 10 s, then one final
+   {"type":"done",…} or {"type":"error",…} line. `onDone` runs before the
+   final line (usage logging). */
+export function geminiTranscribeStream(env, videoId, start, end, onDone, waitUntil) {
+  const { readable, writable } = new TransformStream();
+  const writer = writable.getWriter();
+  const enc = new TextEncoder();
+  const send = (o) => writer.write(enc.encode(JSON.stringify(o) + '\n')).catch(() => {});
+  const t0 = Date.now();
+  const work = (async () => {
+    await send({ type: 'ping', s: 0 });
+    const beat = setInterval(() => send({ type: 'ping', s: Math.round((Date.now() - t0) / 1000) }), 10000);
+    try {
+      const res = await geminiTranscribe(env, videoId, start, end);
+      const extra = (await onDone?.(res)) || {};
+      await send({ type: 'done', lines: res.lines, model: res.usage.model, ...extra });
+    } catch (e) {
+      await send({ type: 'error', code: e?.code || 'internal', status: e?.status || 500, message: e?.message || 'Transcription failed' });
+    } finally {
+      clearInterval(beat);
+      await writer.close().catch(() => {});
     }
-    if (j?.status === 'failed' || j?.status === 'cancelled') return `job ${j.status}: ${String(j?.error?.message || '').slice(0, 160)}`;
+  })();
+  waitUntil?.(work);
+  return new Response(readable, {
+    headers: {
+      'Content-Type': 'application/x-ndjson; charset=utf-8',
+      'Cache-Control': 'no-store',
+      'X-Content-Type-Options': 'nosniff',
+    },
+  });
+}
+
+/* Tiny real request with no video — proves endpoint, model, auth and
+   response parsing line up, without using any video allowance. */
+export async function geminiSelfTest(env) {
+  try {
+    const { j, model } = await createInteraction(env, { input: [{ type: 'text', text: 'Reply with exactly: OK' }] }, { budgetMs: 25000, attemptMs: 20000 });
+    const note = model !== GEMINI_MODEL ? ` (using ${model}; ${GEMINI_MODEL} was busy)` : '';
+    return geminiText(j).trim() ? `ok — Gemini answers${note}` : 'Gemini answered, but no text was found in the reply';
+  } catch (e) {
+    return `request failed: ${e.message}`;
   }
-  return 'job started but still running after 18 s — Gemini is slow right now; transcripts will still work, just take longer';
 }

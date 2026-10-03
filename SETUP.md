@@ -244,12 +244,14 @@ You can change the model for each study type in **Admin → Study & AI**.
   2026-10-02), so Folio has three routes, tried in this order:
   1. **Gemini (automatic, phone or desktop):** paste a link and Gemini transcribes
      the video — needs `GEMINI_API_KEY` (step 7). Public videos only; the text is
-     AI-generated, so it's close but not guaranteed word-for-word. It runs as
-     Gemini *background jobs* in 15-minute parts: the server only starts a job or
-     checks on one (each a quick request), so no request can hit Cloudflare's
-     ~100 s limit however long the video. Keep the page open while it works
-     (roughly one to three minutes per part); if a part fails, pressing Look up
-     again carries on from where it stopped.
+     AI-generated, so it's close but not guaranteed word-for-word. It works in 15-minute
+     parts, one request each. Gemini can take minutes per part, so the server
+     answers immediately and streams a heartbeat every 10 s until the transcript
+     is ready — Cloudflare only cuts off requests that go silent for ~100 s.
+     Keep the page open while it works (roughly one to three minutes per part);
+     if a part fails, pressing Look up again carries on from where it stopped.
+     (Gemini's "background job" mode can't be used: Google refuses to let an API
+     key check on a job.)
   2. **"Send to Folio" bookmark (free, desktop):** shown under the paste box. Drag
      it to the bookmarks bar once; on any YouTube video, click it and Folio opens
      with YouTube's own captions filled in. It works because YouTube still serves
@@ -273,4 +275,4 @@ You can change the model for each study type in **Admin → Study & AI**.
 ## After deploying
 
 Bump `CACHE` in `sw.js` whenever static assets change, or clients keep serving
-the old cached copy. Currently `folio-v45`.
+the old cached copy. Currently `folio-v46`.

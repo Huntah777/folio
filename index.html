@@ -1407,8 +1407,39 @@ const StudyAPI = {
   ping(deep)     { return this.call(`ping${deep ? '?deep=1' : ''}`, { method:'GET' }); },
   usage()        { return this.call(`usage?tz=${new Date().getTimezoneOffset()}`, { method:'GET' }); },
   youtube(id)    { return this.call(`youtube?v=${encodeURIComponent(id)}`, { method:'GET' }); },
-  ytStart(v, start, end)      { return this.call(`ytStart?v=${encodeURIComponent(v)}&start=${start}&end=${end}`, { method:'GET' }); },
-  ytPoll(id, start, end, v)   { return this.call(`ytPoll?id=${encodeURIComponent(id)}&start=${start}&end=${end}&v=${encodeURIComponent(v || '')}`, { method:'GET' }); },
+  /* Transcribe one window of a YouTube video with Gemini. The server answers
+     at once with a stream of {"type":"ping"} lines (every 10 s) and then one
+     {"type":"done"} or {"type":"error"} line — so a minutes-long job never
+     looks idle to Cloudflare. onPing(seconds) reports progress. */
+  async ytStream(v, start, end, onPing) {
+    const token = Sync.getToken();
+    if (!token) throw new Error('NO_TOKEN');
+    const r = await fetch(`/api/study/ytStream?v=${encodeURIComponent(v)}&start=${start}&end=${end}`, { headers: { Authorization:`Bearer ${token}` } });
+    if (r.status === 401) throw new Error('UNAUTHORIZED');
+    if (!r.ok || !r.body) {
+      const data = await r.json().catch(() => ({}));
+      const e = new Error(data.message || data.error || `HTTP_${r.status}`);
+      e.code = data.error; e.status = r.status;
+      throw e;
+    }
+    const reader = r.body.getReader(), dec = new TextDecoder();
+    let buf = '', final = null;
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream:true });
+      let i;
+      while ((i = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1);
+        if (!line) continue;
+        let m; try { m = JSON.parse(line); } catch { continue; }
+        if (m.type === 'ping') onPing?.(m.s); else final = m;
+      }
+    }
+    if (!final) { const e = new Error('The connection dropped while Gemini was working'); e.code = 'dropped'; throw e; }
+    if (final.type === 'error') { const e = new Error(final.message); e.code = final.code; e.status = final.status; throw e; }
+    return final;
+  },
   transcribe(blob, prompt) {
     return this.call('transcribe', {
       raw: true, body: blob,
@@ -10091,12 +10122,11 @@ function MediaPanel({ req, state, update, isMobile, onClose }) {
   );
 }
 
-/* ── YouTube → transcript via Gemini background jobs ──
-   The server only ever starts a job or checks one (each a quick request), so
-   the waiting happens here, where there's no time limit. Windows run one at a
-   time with unhurried polling — the free tier also limits requests per minute.
-   Finished windows are kept for the session, so pressing Look up again after
-   a failure carries on where it stopped instead of starting over. */
+/* ── YouTube → transcript via Gemini ──
+   One 15-minute window at a time, each a single streamed request (see
+   StudyAPI.ytStream) — Gemini may take minutes and the heartbeats keep the
+   connection alive. Finished windows are kept for the session, so pressing
+   Look up again after a failure carries on where it stopped. */
 const _geminiDone = new Map();   /* `${videoId}:${start}-${end}` → lines */
 
 /* Length from YouTube's own player in this browser. The server can't get it
@@ -10141,47 +10171,32 @@ async function geminiTranscribeVideo({ videoId, duration = 0, windowSec = 900, o
   /* Wait-and-retry only for "busy"/"rate limited" and for transport glitches
      (a gateway error page with no error code of ours, or the network). A
      failure our server reports explicitly is real and is shown at once. */
-  const retryable = e => ['busy', 'rate_limited'].includes(e.code)
+  const retryable = e => ['busy', 'rate_limited', 'dropped'].includes(e.code)
     || (!e.code && ([502, 503, 504, 524].includes(e.status) || /^HTTP_5\d\d$/.test(e.message) || /fetch|network|load failed/i.test(e.message || '')));
 
-  /* One window: start a background job, then poll until it finishes. */
+  /* One window = one streamed request. "Busy" and dropped connections wait and
+     retry; a part Gemini can't finish in time is split in two. */
   const runWindow = async (a, b, label, depth = 0) => {
     const key = `${videoId}:${a}-${b}`;
     if (_geminiDone.has(key)) return _geminiDone.get(key);
-    let job = null;
-    for (let attempt = 0; !job; attempt++) {
+    for (let attempt = 0; ; attempt++) {
       check();
-      try { job = await StudyAPI.ytStart(videoId, a, b); }
-      catch (e) {
-        if (!retryable(e) || attempt >= 6) throw e;
-        onProgress?.(`${label} · Gemini is busy, retrying in ${10 + attempt * 10}s…`);
-        await sleep((10 + attempt * 10) * 1000);
-      }
-    }
-    const t0 = Date.now();
-    let misses = 0;
-    for (let n = 0; ; n++) {
-      check();
-      await sleep(n === 0 ? 6000 : 8000);
-      const secs = Math.round((Date.now() - t0) / 1000);
-      onProgress?.(`${label} · ${secs}s`);
-      if (Date.now() - t0 > 20 * 60 * 1000) {
-        const e = new Error('Gemini has been working on one part for 20 minutes — try again later'); e.code = 'timeout'; throw e;
-      }
-      let r;
-      try { r = await StudyAPI.ytPoll(job.id, a, b, videoId); misses = 0; }
-      catch (e) {
-        if (retryable(e) && ++misses < 6) continue;   /* a dropped poll isn't a failed job */
-        throw e;
-      }
-      if (r.status === 'done') { _geminiDone.set(key, r.lines); return r.lines; }
-      if (r.status === 'incomplete') {
-        /* Output ran out (very dense speech): do the two halves separately. */
-        if (depth >= 2 || b - a < 120) { const e = new Error('Gemini couldn’t fit this part’s transcript'); e.code = 'gemini_failed'; throw e; }
-        const mid = Math.floor((a + b) / 2);
-        const lines = [...await runWindow(a, mid, label + ' (1st half)', depth + 1), ...await runWindow(mid, b, label + ' (2nd half)', depth + 1)];
-        _geminiDone.set(key, lines);
-        return lines;
+      try {
+        const r = await StudyAPI.ytStream(videoId, a, b, secs => { check(); onProgress?.(`${label} · ${secs}s`); });
+        _geminiDone.set(key, r.lines);
+        return r.lines;
+      } catch (e) {
+        if (e.code === 'cancelled') throw e;
+        if (e.code === 'timeout' && depth < 2 && b - a >= 120) {
+          const mid = Math.floor((a + b) / 2);
+          const lines = [...await runWindow(a, mid, label + ' (1st half)', depth + 1), ...await runWindow(mid, b, label + ' (2nd half)', depth + 1)];
+          _geminiDone.set(key, lines);
+          return lines;
+        }
+        if (!retryable(e) || attempt >= 4) throw e;
+        const wait = 15 + attempt * 15;
+        onProgress?.(`${label} · ${e.code === 'dropped' ? 'connection dropped' : 'Gemini is busy'}, retrying in ${wait}s…`);
+        await sleep(wait * 1000);
       }
     }
   };
@@ -10248,7 +10263,7 @@ function YouTubeSource({ cta, ctaNoTranscript, onCreate, autoFocus, prefill }) {
       return;
     }
     setMeta(info);
-    /* No captions from YouTube → Gemini background jobs (free tier: 8 h/day). */
+    /* No captions from YouTube → Gemini, one streamed 15-minute window at a time (free tier: 8 h/day). */
     if (!info.transcript?.length && info.gemini && info.reason !== 'unavailable') {
       cancelRef.current = false;
       try {
