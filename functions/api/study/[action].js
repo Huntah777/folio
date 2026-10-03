@@ -21,7 +21,7 @@
 
 import Anthropic from '@anthropic-ai/sdk';
 import { json, tokenOk } from '../../_lib/auth.js';
-import { youtubeInfo, geminiSelfTest, geminiTranscript, geminiCost, GEMINI_MODEL, GEMINI_WINDOW_SEC } from '../../_lib/youtube.js';
+import { youtubeInfo, geminiSelfTest, geminiStart, geminiPoll, geminiCost, GEMINI_MODEL, GEMINI_WINDOW_SEC } from '../../_lib/youtube.js';
 import {
   MODELS, KINDS, StudyError, WHISPER_MODEL,
   checkModel, checkSize, runLive, submitBatch, retrieveBatch, collectBatch, costOf, transcribe,
@@ -277,18 +277,27 @@ async function doTranscribe(env, request) {
   return transcribe(env, buffer, { prompt, language });
 }
 
-/* One Gemini window of a YouTube transcript (see _lib/youtube.js). Logged
-   like every other model call so the Costs tab can show it; cost is only
-   counted when GEMINI_BILLING=paid, because the free tier costs nothing. */
-async function ytTranscript(env, url) {
-  const v = url.searchParams.get('v');
-  const { lines, usage } = await geminiTranscript(env, v, url.searchParams.get('start'), url.searchParams.get('end'));
-  const cost = env.GEMINI_BILLING === 'paid' ? geminiCost(usage) : 0;
-  await logCall(env, {
-    id: crypto.randomUUID(), kinds: 'ytTranscript', model: GEMINI_MODEL, mode: 'live', status: 'done',
-    usage: { ...usage, cacheRead: 0, cacheWrite: 0, byModel: { [GEMINI_MODEL]: cost } }, meta: { videoId: v },
-  });
-  return { lines, usage, cost };
+/* YouTube transcripts via Gemini background jobs (see _lib/youtube.js):
+   ytStart begins one window and returns a job id at once; ytPoll checks it.
+   Neither waits on Gemini, so no request can hit Cloudflare's ~100 s limit.
+   Usage is logged when a window completes; cost counts only when
+   GEMINI_BILLING=paid, because the free tier costs nothing. */
+async function ytStart(env, url) {
+  const p = url.searchParams;
+  return geminiStart(env, p.get('v'), p.get('start'), p.get('end'));
+}
+async function ytPoll(env, url) {
+  const p = url.searchParams;
+  const res = await geminiPoll(env, p.get('id'), p.get('start'), p.get('end'));
+  if (res.status === 'done') {
+    const cost = env.GEMINI_BILLING === 'paid' ? geminiCost(res.usage) : 0;
+    await logCall(env, {
+      id: `yt:${p.get('id')}`, kinds: 'ytTranscript', model: res.usage.model, mode: 'live', status: 'done',
+      usage: { ...res.usage, cacheRead: 0, cacheWrite: 0, byModel: { [res.usage.model]: cost } }, meta: { videoId: str(p.get('v'), 20) },
+    });
+    return { status: 'done', lines: res.lines, cost };
+  }
+  return res;
 }
 
 /* ── diagnostics ── */
@@ -310,7 +319,7 @@ async function ping(env, url) {
     try {
       const r = await fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=1', { headers: { 'x-goog-api-key': env.GEMINI_API_KEY }, signal: AbortSignal.timeout(8000) });
       out.geminiCall = r.ok ? 'key ok' : r.status === 400 || r.status === 401 || r.status === 403 ? 'invalid API key' : `error ${r.status}`;
-      if (r.ok) out.geminiCall += ' · request test: ' + await geminiSelfTest(env);
+      if (r.ok) out.geminiCall += ' · ' + await geminiSelfTest(env);
     } catch (e) {
       out.geminiCall = e.message || 'failed';
     }
@@ -390,7 +399,8 @@ const ROUTES = {
     ...(await youtubeInfo(new URL(req.url).searchParams.get('v'))),
     gemini: !!env.GEMINI_API_KEY, geminiWindow: GEMINI_WINDOW_SEC,
   }) },
-  ytTranscript: { method: 'GET', run: (env, req) => ytTranscript(env, new URL(req.url)) },
+  ytStart:    { method: 'GET',  run: (env, req) => ytStart(env, new URL(req.url)) },
+  ytPoll:     { method: 'GET',  run: (env, req) => ytPoll(env, new URL(req.url)) },
   ping:       { method: 'GET',  run: (env, req) => ping(env, new URL(req.url)) },
   usage:      { method: 'GET',  run: (env, req) => usageSummary(env, new URL(req.url)) },
 };

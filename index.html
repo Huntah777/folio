@@ -1407,7 +1407,8 @@ const StudyAPI = {
   ping(deep)     { return this.call(`ping${deep ? '?deep=1' : ''}`, { method:'GET' }); },
   usage()        { return this.call(`usage?tz=${new Date().getTimezoneOffset()}`, { method:'GET' }); },
   youtube(id)    { return this.call(`youtube?v=${encodeURIComponent(id)}`, { method:'GET' }); },
-  ytTranscript(id, start, end) { return this.call(`ytTranscript?v=${encodeURIComponent(id)}&start=${start}&end=${end}`, { method:'GET' }); },
+  ytStart(v, start, end)      { return this.call(`ytStart?v=${encodeURIComponent(v)}&start=${start}&end=${end}`, { method:'GET' }); },
+  ytPoll(id, start, end, v)   { return this.call(`ytPoll?id=${encodeURIComponent(id)}&start=${start}&end=${end}&v=${encodeURIComponent(v || '')}`, { method:'GET' }); },
   transcribe(blob, prompt) {
     return this.call('transcribe', {
       raw: true, body: blob,
@@ -10090,6 +10091,125 @@ function MediaPanel({ req, state, update, isMobile, onClose }) {
   );
 }
 
+/* ── YouTube → transcript via Gemini background jobs ──
+   The server only ever starts a job or checks one (each a quick request), so
+   the waiting happens here, where there's no time limit. Windows run one at a
+   time with unhurried polling — the free tier also limits requests per minute.
+   Finished windows are kept for the session, so pressing Look up again after
+   a failure carries on where it stopped instead of starting over. */
+const _geminiDone = new Map();   /* `${videoId}:${start}-${end}` → lines */
+
+/* Length from YouTube's own player in this browser. The server can't get it
+   reliably (YouTube blocks the page for servers), and without it the windows
+   have to be found by walking until the video runs out. */
+async function ytDurationSec(videoId) {
+  try {
+    const YT = await Promise.race([ytApi(), new Promise((_, rej) => setTimeout(() => rej(new Error('slow')), 8000))]);
+    return await new Promise(resolve => {
+      const box = document.createElement('div');
+      box.style.cssText = 'position:fixed;left:-10000px;top:0;width:320px;height:180px;pointer-events:none';
+      const mount = document.createElement('div');
+      box.appendChild(mount); document.body.appendChild(box);
+      let player = null, settled = false;
+      const done = d => {
+        if (settled) return; settled = true; clearTimeout(timer);
+        try { player?.destroy(); } catch {} box.remove(); resolve(d);
+      };
+      const timer = setTimeout(() => done(0), 12000);
+      player = new YT.Player(mount, {
+        host: 'https://www.youtube-nocookie.com', videoId, width: '320', height: '180',
+        playerVars: { origin: location.origin },
+        events: {
+          onReady: async e => {
+            for (let i = 0; i < 10; i++) {
+              const d = Math.round(e.target.getDuration?.() || 0);
+              if (d > 0) return done(d);
+              await new Promise(r => setTimeout(r, 300));
+            }
+            done(0);
+          },
+          onError: () => done(0),
+        },
+      });
+    });
+  } catch { return 0; }
+}
+
+async function geminiTranscribeVideo({ videoId, duration = 0, windowSec = 900, onProgress, isCancelled }) {
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  const check = () => { if (isCancelled?.()) { const e = new Error('Stopped'); e.code = 'cancelled'; throw e; } };
+  /* Wait-and-retry only for "busy"/"rate limited" and for transport glitches
+     (a gateway error page with no error code of ours, or the network). A
+     failure our server reports explicitly is real and is shown at once. */
+  const retryable = e => ['busy', 'rate_limited'].includes(e.code)
+    || (!e.code && ([502, 503, 504, 524].includes(e.status) || /^HTTP_5\d\d$/.test(e.message) || /fetch|network|load failed/i.test(e.message || '')));
+
+  /* One window: start a background job, then poll until it finishes. */
+  const runWindow = async (a, b, label, depth = 0) => {
+    const key = `${videoId}:${a}-${b}`;
+    if (_geminiDone.has(key)) return _geminiDone.get(key);
+    let job = null;
+    for (let attempt = 0; !job; attempt++) {
+      check();
+      try { job = await StudyAPI.ytStart(videoId, a, b); }
+      catch (e) {
+        if (!retryable(e) || attempt >= 6) throw e;
+        onProgress?.(`${label} · Gemini is busy, retrying in ${10 + attempt * 10}s…`);
+        await sleep((10 + attempt * 10) * 1000);
+      }
+    }
+    const t0 = Date.now();
+    let misses = 0;
+    for (let n = 0; ; n++) {
+      check();
+      await sleep(n === 0 ? 6000 : 8000);
+      const secs = Math.round((Date.now() - t0) / 1000);
+      onProgress?.(`${label} · ${secs}s`);
+      if (Date.now() - t0 > 20 * 60 * 1000) {
+        const e = new Error('Gemini has been working on one part for 20 minutes — try again later'); e.code = 'timeout'; throw e;
+      }
+      let r;
+      try { r = await StudyAPI.ytPoll(job.id, a, b, videoId); misses = 0; }
+      catch (e) {
+        if (retryable(e) && ++misses < 6) continue;   /* a dropped poll isn't a failed job */
+        throw e;
+      }
+      if (r.status === 'done') { _geminiDone.set(key, r.lines); return r.lines; }
+      if (r.status === 'incomplete') {
+        /* Output ran out (very dense speech): do the two halves separately. */
+        if (depth >= 2 || b - a < 120) { const e = new Error('Gemini couldn’t fit this part’s transcript'); e.code = 'gemini_failed'; throw e; }
+        const mid = Math.floor((a + b) / 2);
+        const lines = [...await runWindow(a, mid, label + ' (1st half)', depth + 1), ...await runWindow(mid, b, label + ' (2nd half)', depth + 1)];
+        _geminiDone.set(key, lines);
+        return lines;
+      }
+    }
+  };
+
+  const all = [];
+  const total = duration > 0 ? Math.max(1, Math.ceil(duration / windowSec)) : null;
+  const MAX_WINDOWS = Math.ceil(4 * 3600 / windowSec);   /* stop walking after 4 hours */
+  let empties = 0;
+  for (let i = 0; i < (total || MAX_WINDOWS); i++) {
+    const a = i * windowSec, b = total ? Math.min(duration, (i + 1) * windowSec) : (i + 1) * windowSec;
+    const label = `Transcribing with Gemini · part ${i + 1}${total ? ` of ${total}` : ''}`;
+    onProgress?.(label + '…');
+    let lines;
+    try { lines = await runWindow(a, b, label); }
+    catch (e) {
+      /* Length unknown: only an error that actually says the range is past the
+         end counts as "finished" — any other failure must surface, or a real
+         mid-video error would silently cut the transcript short. */
+      if (!total && i > 0 && /offset|duration|exceed|beyond|out of range|past the end/i.test(e.message || '')) break;
+      throw e;
+    }
+    all.push(...lines);
+    empties = lines.length ? 0 : empties + 1;
+    if (!total && empties >= 2) break;
+  }
+  return all;
+}
+
 /* ── YouTube lookup: link → title/channel (+ captions if YouTube allows) ── */
 const YT_REASONS = {
   blocked:     'YouTube won’t hand captions to Folio’s server. Use the free “Send to Folio” bookmark below, set up a free Gemini key (see SETUP.md) to make this automatic, or paste the transcript: on YouTube, “…more” → “Show transcript”, copy everything.',
@@ -10105,6 +10225,7 @@ function YouTubeSource({ cta, ctaNoTranscript, onCreate, autoFocus, prefill }) {
   const [url, setUrl]       = useState(prefill ? `https://youtu.be/${prefill.videoId}` : '');
   const [busy, setBusy]     = useState(false);
   const [progress, setProgress] = useState(null);
+  const cancelRef = useRef(false);
   const [err, setErr]       = useState(null);
   const [meta, setMeta]     = useState(() => prefill
     ? { videoId: prefill.videoId, title: prefill.title, author: prefill.author, embeddable: true, transcript: prefill.lines, reason: null, source: 'bookmarklet' }
@@ -10127,46 +10248,23 @@ function YouTubeSource({ cta, ctaNoTranscript, onCreate, autoFocus, prefill }) {
       return;
     }
     setMeta(info);
-    /* No captions from YouTube → Gemini, window by window (free tier: 8 h/day). */
+    /* No captions from YouTube → Gemini background jobs (free tier: 8 h/day). */
     if (!info.transcript?.length && info.gemini && info.reason !== 'unavailable') {
-      const W = info.geminiWindow || 600, dur = info.duration || 0;
-      const all = [];
-      /* A window that times out (HTTP 524/504) is split in half and retried, so
-         a slow stretch of video costs time rather than failing the whole run. */
-      const timedOut = e => e.code === 'timeout' || [504, 524].includes(e.status) || /HTTP_5(04|24)/.test(e.message);
-      const fetchRange = async (a, b, depth = 0) => {
-        try { return (await StudyAPI.ytTranscript(id, a, b)).lines; }
-        catch (e) {
-          if (!timedOut(e) || depth >= 2 || b - a < 120) throw e;
-          const mid = Math.floor((a + b) / 2);
-          return [...await fetchRange(a, mid, depth + 1), ...await fetchRange(mid, b, depth + 1)];
-        }
-      };
+      cancelRef.current = false;
       try {
-        /* Always windowed. The length comes from YouTube's page, which it often
-           blocks for servers — then it's unknown, and sending the whole video as
-           one request would time out. So walk 10-minute windows until Gemini runs
-           past the end (an out-of-range error, or two empty windows in a row). */
-        const MAX_WINDOWS = 24;   /* 4 hours */
-        const total = dur ? Math.ceil(dur / W) : null;
-        let empties = 0;
-        for (let i = 0; i < (total || MAX_WINDOWS); i++) {
-          setProgress(`Transcribing with Gemini · part ${i + 1}${total ? ` of ${total}` : ''}…`);
-          let lines;
-          try { lines = await fetchRange(i * W, dur ? Math.min(dur, (i + 1) * W) : (i + 1) * W); }
-          catch (e) {
-            if (!total && i > 0 && (e.code === 'unavailable' || /HTTP[ _]4\d\d/.test(e.message))) break;   /* ran past the end of the video */
-            throw e;
-          }
-          all.push(...lines);
-          empties = lines.length ? 0 : empties + 1;
-          if (!total && empties >= 2) break;
-        }
+        setProgress('Checking the video’s length…');
+        const duration = info.duration || await ytDurationSec(id);
+        const all = await geminiTranscribeVideo({
+          videoId: id, duration, windowSec: info.geminiWindow || 900,
+          onProgress: setProgress, isCancelled: () => cancelRef.current,
+        });
         setMeta(m => ({ ...m, transcript: all.length ? all : null, source:'gemini', reason: all.length ? null : 'no_captions' }));
       } catch (e) {
-        const reason = e.code === 'quota' ? 'quota' : e.code === 'unavailable' ? 'private' : 'gemini_failed';
-        setMeta(m => ({ ...m, reason }));
-        setErr(studyErrorLabel(e));
+        if (e.code !== 'cancelled') {
+          const reason = e.code === 'quota' ? 'quota' : e.code === 'unavailable' ? 'private' : 'gemini_failed';
+          setMeta(m => ({ ...m, reason }));
+          setErr(`${studyErrorLabel(e)}${e.code === 'quota' || e.code === 'unavailable' ? '' : ' — press Look up again to carry on from where it stopped.'}`);
+        } else setMeta(m => ({ ...m, reason:'gemini_failed' }));
       }
       setProgress(null);
     }
@@ -10181,7 +10279,11 @@ function YouTubeSource({ cta, ctaNoTranscript, onCreate, autoFocus, prefill }) {
           onKeyDown={e=>{ if (e.key === 'Enter') { e.preventDefault(); lookup(); } }}/>
         <button className="btn-primary" disabled={busy || !url.trim()} onClick={lookup} style={{flexShrink:0}}>{busy ? 'Looking…' : 'Look up'}</button>
       </div>
-      {progress && <StudyBanner busy>{progress} This takes roughly a minute per 20 minutes of video.</StudyBanner>}
+      {progress && (
+        <StudyBanner busy onClose={()=>{ cancelRef.current = true; }}>
+          {progress} — keep this open; Gemini usually needs one to three minutes per 15-minute part.
+        </StudyBanner>
+      )}
       {err && <div style={{fontSize:12.5,color:'var(--danger)',marginTop:8}}>{err}</div>}
 
       {meta && (
