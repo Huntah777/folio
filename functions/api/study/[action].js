@@ -21,7 +21,7 @@
 
 import Anthropic from '@anthropic-ai/sdk';
 import { json, tokenOk } from '../../_lib/auth.js';
-import { youtubeInfo, geminiSelfTest, geminiStart, geminiPoll, geminiCost, GEMINI_MODEL, GEMINI_WINDOW_SEC } from '../../_lib/youtube.js';
+import { youtubeInfo, GEMINI_CODE_VERSION, geminiSelfTest, geminiStart, geminiPoll, geminiCost, GEMINI_MODEL, GEMINI_WINDOW_SEC } from '../../_lib/youtube.js';
 import {
   MODELS, KINDS, StudyError, WHISPER_MODEL,
   checkModel, checkSize, runLive, submitBatch, retrieveBatch, collectBatch, costOf, transcribe,
@@ -320,6 +320,7 @@ async function ping(env, url) {
       const r = await fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=1', { headers: { 'x-goog-api-key': env.GEMINI_API_KEY }, signal: AbortSignal.timeout(8000) });
       out.geminiCall = r.ok ? 'key ok' : r.status === 400 || r.status === 401 || r.status === 403 ? 'invalid API key' : `error ${r.status}`;
       if (r.ok) out.geminiCall += ' · ' + await geminiSelfTest(env);
+      out.geminiCall += ` · code ${GEMINI_CODE_VERSION}`;
     } catch (e) {
       out.geminiCall = e.message || 'failed';
     }

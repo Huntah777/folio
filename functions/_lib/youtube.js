@@ -281,25 +281,46 @@ async function createInteraction(env, body) {
   throw lastErr || new StudyError('busy', 'Gemini is busy right now', 503);
 }
 
-/* GET a background job. Google may answer with a redirect to a separately
-   signed result URL; following it while still sending our API key gives
-   "Multiple authentication credentials received" (HTTP 400). So redirects are
-   followed by hand WITHOUT the key, and if Google still objects to the header
-   the key is sent as a query parameter instead — one credential either way. */
+/* GET a background job. Two things can trip Google's "Multiple
+   authentication credentials received" (HTTP 400) here, even though the key
+   is only sent once:
+     • a redirect to a separately signed result URL, if followed with our key
+       still attached — so redirects are followed by hand, without the key;
+     • Google's newer "AQ." keys, which on some endpoints count as two
+       credentials in one depending on how they're sent.
+   So each way Google accepts a key is tried in turn (header, query
+   parameter, bearer token) and the one that works is remembered. */
+export const GEMINI_CODE_VERSION = 'gemini-bg-3';
+const AUTH_STYLES = ['header', 'query', 'bearer'];
+let _authStyle = null;   /* per isolate; re-learned after a cold start */
+export let lastAuthNote = '';
+
+function authed(url, env, style) {
+  if (style === 'query') return { url: `${url}${url.includes('?') ? '&' : '?'}key=${encodeURIComponent(env.GEMINI_API_KEY)}`, headers: {} };
+  if (style === 'bearer') return { url, headers: { Authorization: `Bearer ${env.GEMINI_API_KEY}` } };
+  return { url, headers: { 'x-goog-api-key': env.GEMINI_API_KEY } };
+}
+
 async function getInteraction(env, id, timeoutMs = 20000) {
-  const url = `${GEMINI_BASE}/interactions/${id}`;
+  const base = `${GEMINI_BASE}/interactions/${id}`;
   const signal = AbortSignal.timeout(timeoutMs);
-  let r = await fetch(url, { headers: { 'x-goog-api-key': env.GEMINI_API_KEY }, redirect: 'manual', signal });
-  const loc = r.headers.get('location');
-  if (r.status >= 300 && r.status < 400 && loc) {
-    return fetch(new URL(loc, url).toString(), { signal });
-  }
-  if (r.status === 400) {
-    const peek = await r.clone().text().catch(() => '');
-    if (/multiple authentication credentials/i.test(peek)) {
-      r = await fetch(`${url}?key=${encodeURIComponent(env.GEMINI_API_KEY)}`, { signal });
+  const order = _authStyle ? [_authStyle, ...AUTH_STYLES.filter((x) => x !== _authStyle)] : AUTH_STYLES;
+  const tried = [];
+  let r = null;
+  for (const style of order) {
+    const { url, headers: h } = authed(base, env, style);
+    r = await fetch(url, { headers: h, redirect: 'manual', signal });
+    const loc = r.headers.get('location');
+    if (r.status >= 300 && r.status < 400 && loc) r = await fetch(new URL(loc, base).toString(), { signal });
+    if (r.status === 400) {
+      const peek = await r.clone().text().catch(() => '');
+      if (/multiple authentication credentials/i.test(peek)) { tried.push(style); continue; }
     }
+    _authStyle = style;
+    lastAuthNote = tried.length ? `job checks use ${style} auth (${tried.join(', ')} rejected)` : '';
+    return r;
   }
+  lastAuthNote = `all of ${tried.join(', ')} were rejected as "multiple credentials"`;
   return r;
 }
 
@@ -398,10 +419,11 @@ export async function geminiSelfTest(env) {
     const r = await getInteraction(env, started.id).catch(() => null);
     if (!r) continue;
     const { j, msg } = await readJson(r);
-    if (!r.ok) return `HTTP ${r.status} while checking the job: ${msg}`;
+    if (!r.ok) return `HTTP ${r.status} while checking the job: ${msg}${lastAuthNote ? ` (${lastAuthNote})` : ''}`;
     if (j?.status === 'completed') {
       const note = started.model !== GEMINI_MODEL ? ` (using ${started.model}; ${GEMINI_MODEL} was busy)` : '';
-      return geminiText(j).trim() ? `ok — background jobs work${note}` : 'job finished, but no text found in the reply';
+      const how = lastAuthNote ? ` · ${lastAuthNote}` : '';
+      return geminiText(j).trim() ? `ok — background jobs work${note}${how}` : 'job finished, but no text found in the reply';
     }
     if (j?.status === 'failed' || j?.status === 'cancelled') return `job ${j.status}: ${String(j?.error?.message || '').slice(0, 160)}`;
   }
