@@ -10129,14 +10129,26 @@ function YouTubeSource({ cta, ctaNoTranscript, onCreate, autoFocus, prefill }) {
     setMeta(info);
     /* No captions from YouTube → Gemini, window by window (free tier: 8 h/day). */
     if (!info.transcript?.length && info.gemini && info.reason !== 'unavailable') {
-      const W = info.geminiWindow || 1800, dur = info.duration || 0;
+      const W = info.geminiWindow || 600, dur = info.duration || 0;
       const windows = dur > W ? Math.ceil(dur / W) : 1;
       const all = [];
+      /* A window that times out (HTTP 524/504) is split in half and retried, so
+         a slow stretch of video costs time rather than failing the whole run. */
+      const timedOut = e => e.code === 'timeout' || [502, 504, 524].includes(e.status) || /HTTP_5(02|04|24)/.test(e.message);
+      const fetchRange = async (a, b, depth = 0) => {
+        try { return (await StudyAPI.ytTranscript(id, a, b)).lines; }
+        catch (e) {
+          if (!timedOut(e) || depth >= 2 || b - a < 120) throw e;
+          const mid = Math.floor((a + b) / 2);
+          return [...await fetchRange(a, mid, depth + 1), ...await fetchRange(mid, b, depth + 1)];
+        }
+      };
       try {
         for (let i = 0; i < windows; i++) {
           setProgress(`Transcribing with Gemini${windows > 1 ? ` · part ${i + 1} of ${windows}` : ''}…`);
-          const r = await StudyAPI.ytTranscript(id, windows > 1 ? i * W : 0, windows > 1 ? Math.min(dur, (i + 1) * W) : 0);
-          all.push(...r.lines);
+          const a = windows > 1 ? i * W : 0, b = windows > 1 ? Math.min(dur, (i + 1) * W) : 0;
+          if (windows === 1 && !dur) all.push(...(await StudyAPI.ytTranscript(id, 0, 0)).lines);
+          else all.push(...await fetchRange(a, windows > 1 ? b : dur));
         }
         setMeta(m => ({ ...m, transcript: all.length ? all : null, source:'gemini', reason: all.length ? null : 'no_captions' }));
       } catch (e) {
@@ -10157,7 +10169,7 @@ function YouTubeSource({ cta, ctaNoTranscript, onCreate, autoFocus, prefill }) {
           onKeyDown={e=>{ if (e.key === 'Enter') { e.preventDefault(); lookup(); } }}/>
         <button className="btn-primary" disabled={busy || !url.trim()} onClick={lookup} style={{flexShrink:0}}>{busy ? 'Looking…' : 'Look up'}</button>
       </div>
-      {progress && <StudyBanner busy>{progress} This takes about a minute per half hour of video.</StudyBanner>}
+      {progress && <StudyBanner busy>{progress} This takes roughly a minute per 20 minutes of video.</StudyBanner>}
       {err && <div style={{fontSize:12.5,color:'var(--danger)',marginTop:8}}>{err}</div>}
 
       {meta && (

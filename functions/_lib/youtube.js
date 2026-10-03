@@ -156,7 +156,9 @@ export async function youtubeInfo(videoId) {
    one, so no single request runs long and progress can be shown. Timings come
    back relative to the window and are shifted to video time here. */
 export const GEMINI_MODEL = 'gemini-3.8-flash';
-export const GEMINI_WINDOW_SEC = 1800;
+/* Cloudflare cuts a request off at ~100 s (HTTP 524), and Gemini needs
+   roughly 20-40 s per 10 minutes of video — so windows stay small. */
+export const GEMINI_WINDOW_SEC = 600;
 const GEMINI_PRICE = { in: 0.75, out: 3.75 };   /* USD per 1M tokens, paid tier, until 2026-12-31 */
 
 const GEMINI_SCHEMA = {
@@ -217,7 +219,10 @@ export async function geminiTranscript(env, videoId, start = 0, end = 0) {
 Return one entry per sentence or short phrase. "t" is when it starts, in seconds from the start of ${clipped ? 'this clip' : 'the video'}.
 Do not summarise, translate, or describe visuals. If there is no speech, return an empty list.`;
 
-  const r = await fetch('https://generativelanguage.googleapis.com/v1beta/interactions', {
+  let r;
+  try {
+    r = await fetch('https://generativelanguage.googleapis.com/v1beta/interactions', {
+    signal: AbortSignal.timeout(85000),   /* answer cleanly before Cloudflare's own cutoff */
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-goog-api-key': env.GEMINI_API_KEY },
     body: JSON.stringify({
@@ -227,6 +232,10 @@ Do not summarise, translate, or describe visuals. If there is no speech, return 
       generation_config: { max_output_tokens: 32000 },
     }),
   });
+  } catch (e) {
+    if (e?.name === 'TimeoutError' || e?.name === 'AbortError') throw new StudyError('timeout', 'Gemini took too long on this part', 504);
+    throw new StudyError('gemini_failed', `Couldn’t reach Gemini: ${e?.message || 'network error'}`, 502);
+  }
   const raw = await r.text();
   let j = null;
   try { j = JSON.parse(raw); } catch {}
