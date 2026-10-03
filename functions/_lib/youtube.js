@@ -203,6 +203,61 @@ function geminiUsage(j) {
 export const geminiCost = ({ input = 0, output = 0 } = {}) =>
   (input * GEMINI_PRICE.in + output * GEMINI_PRICE.out) / 1e6;
 
+
+/* Gemini's newest models are often "experiencing high demand" (HTTP 503), a
+   temporary condition on Google's side. Retry with a short pause, and after a
+   couple of failures switch to the newest other plain Flash model the account
+   can see. Everything runs inside one 85 s budget — Cloudflare cuts requests
+   off at ~100 s. Returns { r, model } where r is the final Response. */
+const GEMINI_URL = 'https://generativelanguage.googleapis.com/v1beta/interactions';
+const GEMINI_BUDGET_MS = 85000;
+const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+
+async function pickFallbackModel(env, current) {
+  try {
+    const r = await fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=200', {
+      headers: { 'x-goog-api-key': env.GEMINI_API_KEY }, signal: AbortSignal.timeout(6000),
+    });
+    if (!r.ok) return null;
+    const names = ((await r.json()).models || []).map((m) => String(m.name || '').replace(/^models\//, ''));
+    /* Plain "gemini-<version>-flash" only: no lite/image/tts/live/preview variants. */
+    return names
+      .map((n) => ({ n, v: (n.match(/^gemini-(\d+(?:\.\d+)?)-flash$/) || [])[1] }))
+      .filter((x) => x.v && x.n !== current)
+      .sort((a, b) => Number(b.v) - Number(a.v))[0]?.n || null;
+  } catch { return null; }
+}
+
+async function postInteraction(env, body) {
+  const t0 = Date.now();
+  let model = GEMINI_MODEL, switched = false, last = null;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const left = GEMINI_BUDGET_MS - (Date.now() - t0);
+    if (left < 5000) break;
+    let r;
+    try {
+      r = await fetch(GEMINI_URL, {
+        method: 'POST', signal: AbortSignal.timeout(left),
+        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': env.GEMINI_API_KEY },
+        body: JSON.stringify({ ...body, model }),
+      });
+    } catch (e) {
+      if (e?.name === 'TimeoutError' || e?.name === 'AbortError') throw new StudyError('timeout', 'Gemini took too long on this part', 504);
+      throw new StudyError('gemini_failed', `Couldn’t reach Gemini: ${e?.message || 'network error'}`, 502);
+    }
+    if (r.status !== 503 && r.status !== 500) return { r, model };
+    last = { r, model };
+    if (attempt >= 1 && !switched) {
+      switched = true;
+      const alt = await pickFallbackModel(env, model);
+      if (alt) { model = alt; continue; }
+    }
+    await sleep(Math.min(2500 * (attempt + 1), Math.max(0, GEMINI_BUDGET_MS - (Date.now() - t0) - 6000)));
+  }
+  if (last) return last;
+  throw new StudyError('timeout', 'Gemini took too long on this part', 504);
+}
+
 export async function geminiTranscript(env, videoId, start = 0, end = 0) {
   if (!env.GEMINI_API_KEY) throw new StudyError('not_configured', 'GEMINI_API_KEY is not set', 501);
   if (!YT_ID_RE.test(videoId || '')) throw new StudyError('bad_video', 'Not a YouTube video id');
@@ -219,23 +274,11 @@ export async function geminiTranscript(env, videoId, start = 0, end = 0) {
 Return one entry per sentence or short phrase. "t" is when it starts, in seconds from the start of ${clipped ? 'this clip' : 'the video'}.
 Do not summarise, translate, or describe visuals. If there is no speech, return an empty list.`;
 
-  let r;
-  try {
-    r = await fetch('https://generativelanguage.googleapis.com/v1beta/interactions', {
-    signal: AbortSignal.timeout(85000),   /* answer cleanly before Cloudflare's own cutoff */
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'x-goog-api-key': env.GEMINI_API_KEY },
-    body: JSON.stringify({
-      model: GEMINI_MODEL,
-      input: [{ type: 'text', text: prompt }, video],
-      response_format: { type: 'text', mime_type: 'application/json', schema: GEMINI_SCHEMA },
-      generation_config: { max_output_tokens: 32000 },
-    }),
+  const { r, model: usedModel } = await postInteraction(env, {
+    input: [{ type: 'text', text: prompt }, video],
+    response_format: { type: 'text', mime_type: 'application/json', schema: GEMINI_SCHEMA },
+    generation_config: { max_output_tokens: 32000 },
   });
-  } catch (e) {
-    if (e?.name === 'TimeoutError' || e?.name === 'AbortError') throw new StudyError('timeout', 'Gemini took too long on this part', 504);
-    throw new StudyError('gemini_failed', `Couldn’t reach Gemini: ${e?.message || 'network error'}`, 502);
-  }
   const raw = await r.text();
   let j = null;
   try { j = JSON.parse(raw); } catch {}
@@ -257,20 +300,17 @@ Do not summarise, translate, or describe visuals. If there is no speech, return 
     .filter((l) => l.text && (!clipped || l.t <= end + 5))
     .sort((a, b) => a.t - b.t)
     .slice(0, MAX_LINES);
-  return { lines, usage: { ...geminiUsage(j), model: GEMINI_MODEL } };
+  return { lines, usage: { ...geminiUsage(j), model: usedModel } };
 }
 
 /* Real round trip with no video: proves the endpoint, model name, auth and
    response parsing all line up, without spending any video allowance. */
 export async function geminiSelfTest(env) {
-  const r = await fetch('https://generativelanguage.googleapis.com/v1beta/interactions', {
-    method: 'POST', signal: AbortSignal.timeout(20000),
-    headers: { 'Content-Type': 'application/json', 'x-goog-api-key': env.GEMINI_API_KEY },
-    body: JSON.stringify({ model: GEMINI_MODEL, input: [{ type: 'text', text: 'Reply with exactly: OK' }] }),
-  });
+  const { r, model } = await postInteraction(env, { input: [{ type: 'text', text: 'Reply with exactly: OK' }] });
   const raw = await r.text();
   let j = null; try { j = JSON.parse(raw); } catch {}
+  const note = model !== GEMINI_MODEL ? ` (used ${model}; ${GEMINI_MODEL} was busy)` : '';
   if (!r.ok) return `HTTP ${r.status}: ${(j?.error?.message || raw).slice(0, 200)}`;
   const text = geminiText(j).trim();
-  return text ? 'ok' : `answered, but no text found in: ${raw.slice(0, 200)}`;
+  return text ? 'ok' + note : `answered, but no text found in: ${raw.slice(0, 200)}`;
 }
