@@ -281,6 +281,28 @@ async function createInteraction(env, body) {
   throw lastErr || new StudyError('busy', 'Gemini is busy right now', 503);
 }
 
+/* GET a background job. Google may answer with a redirect to a separately
+   signed result URL; following it while still sending our API key gives
+   "Multiple authentication credentials received" (HTTP 400). So redirects are
+   followed by hand WITHOUT the key, and if Google still objects to the header
+   the key is sent as a query parameter instead — one credential either way. */
+async function getInteraction(env, id, timeoutMs = 20000) {
+  const url = `${GEMINI_BASE}/interactions/${id}`;
+  const signal = AbortSignal.timeout(timeoutMs);
+  let r = await fetch(url, { headers: { 'x-goog-api-key': env.GEMINI_API_KEY }, redirect: 'manual', signal });
+  const loc = r.headers.get('location');
+  if (r.status >= 300 && r.status < 400 && loc) {
+    return fetch(new URL(loc, url).toString(), { signal });
+  }
+  if (r.status === 400) {
+    const peek = await r.clone().text().catch(() => '');
+    if (/multiple authentication credentials/i.test(peek)) {
+      r = await fetch(`${url}?key=${encodeURIComponent(env.GEMINI_API_KEY)}`, { signal });
+    }
+  }
+  return r;
+}
+
 const idOf = (j) => String(j?.id || j?.name || '').replace(/^interactions\//, '');
 const ID_RE = /^[A-Za-z0-9_-]{1,200}$/;
 
@@ -337,7 +359,7 @@ export async function geminiPoll(env, id, start = 0, end = 0) {
   end = Math.max(0, Number(end) || 0);
   let r;
   try {
-    r = await fetch(`${GEMINI_BASE}/interactions/${id}`, { headers: headers(env), signal: AbortSignal.timeout(20000) });
+    r = await getInteraction(env, id);
   } catch {
     return { status: 'running' };   /* transient — try again on the next poll */
   }
@@ -373,7 +395,7 @@ export async function geminiSelfTest(env) {
   if (!ID_RE.test(started.id)) return 'started, but no job id came back';
   for (let i = 0; i < 12; i++) {
     await sleep(1500);
-    const r = await fetch(`${GEMINI_BASE}/interactions/${started.id}`, { headers: headers(env) }).catch(() => null);
+    const r = await getInteraction(env, started.id).catch(() => null);
     if (!r) continue;
     const { j, msg } = await readJson(r);
     if (!r.ok) return `HTTP ${r.status} while checking the job: ${msg}`;
