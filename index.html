@@ -10187,11 +10187,20 @@ async function geminiTranscribeVideo({ videoId, duration = 0, windowSec = 900, o
         return r.lines;
       } catch (e) {
         if (e.code === 'cancelled') throw e;
-        if (e.code === 'timeout' && depth < 2 && b - a >= 120) {
+        /* Too slow, or tripped Google's content filter (which misfires on
+           technical talks): smaller pieces usually get through. */
+        if ((e.code === 'timeout' || e.code === 'filtered') && depth < 2 && b - a >= 120) {
           const mid = Math.floor((a + b) / 2);
           const lines = [...await runWindow(a, mid, label + ' (1st half)', depth + 1), ...await runWindow(mid, b, label + ' (2nd half)', depth + 1)];
-          _geminiDone.set(key, lines);
+          if (!lines.some(l => l.skipped)) _geminiDone.set(key, lines);
           return lines;
+        }
+        /* A piece the filter still refuses is marked in the transcript and
+           skipped, so one stretch doesn't cost the whole video. Not cached, so
+           Look up tries it again. */
+        if (e.code === 'filtered') {
+          const span = b > a ? `${fmtClock(a)}–${fmtClock(b)}` : 'this video';
+          return [{ t:a, text:`[Not transcribed: Gemini’s content filter blocked ${span}]`, skipped:true }];
         }
         if (!retryable(e) || attempt >= 4) throw e;
         const wait = 15 + attempt * 15;
@@ -10324,6 +10333,11 @@ function YouTubeSource({ cta, ctaNoTranscript, onCreate, autoFocus, prefill }) {
           {apiLines
             ? <div style={{fontSize:12.5,color:'var(--success)',marginBottom:8}}>
                 ✓ {meta.source === 'gemini' ? 'Transcribed by Gemini (AI — may not be word-for-word)' : meta.source === 'bookmarklet' ? 'Transcript from YouTube' : 'Captions found'}{meta.language ? ` (${meta.language})` : ''} · {apiLines.length} lines
+                {apiLines.some(l => l.skipped) && (
+                  <div style={{color:'var(--warning, #d97706)',marginTop:4}}>
+                    Gemini’s filter refused {apiLines.filter(l => l.skipped).length} stretch(es), marked “[Not transcribed…]” in the transcript. Press Look up to retry those, or paste them in yourself.
+                  </div>
+                )}
               </div>
             : (<>
                 <div style={{...studyMuted,marginBottom:8}}>{YT_REASONS[meta.reason] || YT_REASONS.failed}</div>

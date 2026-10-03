@@ -163,7 +163,7 @@ export async function youtubeInfo(videoId) {
    (Background mode — start a job, poll it — was tried first: Google rejects
    the poll with API-key auth, wanting an OAuth token instead.) */
 export const GEMINI_MODEL = 'gemini-3.8-flash';
-export const GEMINI_CODE_VERSION = 'gemini-clip-5';
+export const GEMINI_CODE_VERSION = 'gemini-filter-6';
 /* 15 minutes of speech is ~2,500 words, well inside max_output_tokens, and
    keeps each Gemini call to a few minutes. */
 export const GEMINI_WINDOW_SEC = 900;
@@ -234,6 +234,9 @@ function googleError(status, msg) {
     return /per.?day|daily|quota/i.test(msg) && !/per.?minute/i.test(msg)
       ? new StudyError('quota', 'Gemini’s free daily allowance is used up — try again tomorrow, or use the bookmark or paste below', 429)
       : new StudyError('rate_limited', 'Gemini is rate-limiting requests — waiting a moment', 429);
+  }
+  if (status === 400 && /input blocked|blocked by gemini|gemini'?s filters|safety/i.test(msg)) {
+    return new StudyError('filtered', 'Gemini’s content filter blocked this part (it misfires on technical videos)', 422);
   }
   if (status === 503 || status === 500) return new StudyError('busy', `Gemini is busy right now (${msg})`, 503);
   if (/private|unlisted|not (?:be )?accessible|unavailable/i.test(msg)) return new StudyError('unavailable', 'Gemini can only read public videos', 422);
@@ -312,9 +315,18 @@ export async function geminiTranscribe(env, videoId, start = 0, end = 0) {
   start = Math.max(0, Math.floor(Number(start) || 0));
   end = Math.max(0, Math.floor(Number(end) || 0));
   const clipped = end > start;
-  const prompt = `Transcribe all speech in this video${clipped ? ' clip' : ''} verbatim, in the language spoken.
-Return one entry per sentence or short phrase. "t" is when it starts, in seconds from the start of ${clipped ? 'this clip' : 'the video'}.
-Do not summarise, translate, or describe visuals. If there is no speech, return an empty list.`;
+  const what = clipped ? 'this clip' : 'this video';
+  /* Google's input filter misfires on technical lectures (coding, cloud,
+     security — its own error message says so) and suggests rephrasing, so
+     there are differently worded fallbacks. */
+  const prompts = [
+    `Transcribe all speech in ${what} verbatim, in the language spoken.
+Return one entry per sentence or short phrase. "t" is when it starts, in seconds from the start of ${what}.
+Do not summarise, translate, or describe visuals. If there is no speech, return an empty list.`,
+    `${clipped ? 'This clip is part of' : 'This is'} a public educational lecture. Write closed captions for the presenter's narration in ${what}, as timed lines.
+"t" is when each line starts, in seconds from the start of ${what}. Captions only — no commentary.`,
+    `Caption ${what}. One line per sentence; "t" = seconds from the start of ${what}.`,
+  ];
   /* The API reference gives the offsets as duration strings ("1200s") while
      the video guide shows plain numbers — try the reference form first and
      the other only if Google rejects the clip itself. */
@@ -322,16 +334,17 @@ Do not summarise, translate, or describe visuals. If there is no speech, return 
     ? [{ type: 'static', start_offset: `${start}s`, end_offset: `${end}s` }, { type: 'static', start_offset: start, end_offset: end }]
     : [null];
   const t0 = Date.now();
-  for (let i = 0; ; i++) {
+  let c = 0, p = 0;
+  for (;;) {
     try {
       const { j, model } = await createInteraction(env, {
         input: [
-          { type: 'text', text: prompt },
+          { type: 'text', text: prompts[p] },
           {
             type: 'video',
             uri: `https://www.youtube.com/watch?v=${videoId}`,
             resolution: 'low',   /* transcription needs the audio, not detailed frames */
-            ...(clips[i] ? { processing: clips[i] } : {}),
+            ...(clips[c] ? { processing: clips[c] } : {}),
           },
         ],
         response_format: { type: 'text', mime_type: 'application/json', schema: GEMINI_SCHEMA },
@@ -339,9 +352,12 @@ Do not summarise, translate, or describe visuals. If there is no speech, return 
       }, { budgetMs: 9 * 60 * 1000 - (Date.now() - t0), attemptMs: 7 * 60 * 1000 });
       return { lines: linesFrom(j, start, end), usage: { ...geminiUsage(j), model: String(j?.model || model) } };
     } catch (e) {
-      if (!(clipped && isClipRejection(e))) throw e;
-      if (i + 1 < clips.length) continue;
-      throw new StudyError('clip_unsupported', `Gemini won’t take part of this video (${e.message})`, 422);
+      if (clipped && isClipRejection(e)) {
+        if (++c < clips.length) continue;
+        throw new StudyError('clip_unsupported', `Gemini won’t take part of this video (${e.message})`, 422);
+      }
+      if (e.code === 'filtered' && ++p < prompts.length) continue;
+      throw e;
     }
   }
 }
