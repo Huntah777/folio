@@ -200,7 +200,18 @@ You can change the model for each study type in **Admin → Study & AI**.
 6. **Microphone:** `_headers` now allows `microphone=(self)`. Recording only
    works after that deploy is live.
 
-7. **Check it:** go to *Admin → Study & AI → Test connection*. It makes one tiny
+7. **Gemini key for automatic YouTube transcripts (optional, free):** create a key
+   at aistudio.google.com (no card needed; the free tier allows 8 hours of
+   YouTube video a day), then:
+
+   ```powershell
+   npx wrangler pages secret put GEMINI_API_KEY --project-name folio
+   ```
+
+   Only if you later enable billing on that key, also set `GEMINI_BILLING=paid`
+   so Admin → Costs counts it — about $0.30 per hour of video at Oct 2026 prices.
+
+8. **Check it:** go to *Admin → Study & AI → Test connection*. It makes one tiny
    Haiku call and one tiny Llama call.
 
 ### How it works, briefly
@@ -229,12 +240,18 @@ You can change the model for each study type in **Admin → Study & AI**.
   `_headers` allows `youtube-nocookie.com` frames and `www.youtube.com` scripts
   (and `blob:` audio). Some videos — often music — can't be embedded; Folio
   remembers that and offers *Open ↗* instead.
-- **YouTube transcripts are paste-based in practice.** As of 2026-10-02 YouTube
-  returns empty caption downloads to servers (even from a home connection), so
-  Folio shows the video's title and channel and asks you to paste the transcript
-  (YouTube → …more → Show transcript → copy all). Timestamps in the paste are
-  kept. `functions/_lib/youtube.js` still tries first and starts working again
-  automatically if YouTube loosens this.
+- **YouTube transcripts.** YouTube no longer hands captions to servers (tested
+  2026-10-02), so Folio has three routes, tried in this order:
+  1. **Gemini (automatic, phone or desktop):** paste a link and Gemini transcribes
+     the video — needs `GEMINI_API_KEY` (step 7). Public videos only; the text is
+     AI-generated, so it's close but not guaranteed word-for-word. Videos longer
+     than 30 minutes are done in 30-minute parts.
+  2. **"Send to Folio" bookmark (free, desktop):** shown under the paste box. Drag
+     it to the bookmarks bar once; on any YouTube video, click it and Folio opens
+     with YouTube's own captions filled in. It works because YouTube still serves
+     captions to its own page — it briefly asks the player to load captions, then
+     puts them back as they were. Nothing passes through a server.
+  3. **Paste** (YouTube → …more → Show transcript → copy all) for anything else.
 - **Spend:** *Admin → Study & AI → Show last 30 days* reports an estimate from
   logged token usage.
 
@@ -246,8 +263,10 @@ You can change the model for each study type in **Admin → Study & AI**.
 |---|---|
 | `SYNC_TOKEN` | Secret. Same value on every device you sync. Guards `/api/state`, `/api/push` and `/api/files`, and the push Worker's `/run`, `/test` and `/status`. |
 | `ANTHROPIC_API_KEY` | Secret. Claude calls for Study (see section 4). Also set on the push Worker if you want batch-ready notifications. |
+| `GEMINI_API_KEY` | Secret, optional. Automatic YouTube transcripts via Gemini's free tier (section 4, step 7). |
+| `GEMINI_BILLING` | Optional. Set to `paid` only if the Gemini key has billing on, so Costs counts it. |
 
 ## After deploying
 
 Bump `CACHE` in `sw.js` whenever static assets change, or clients keep serving
-the old cached copy. Currently `folio-v36`.
+the old cached copy. Currently `folio-v38`.

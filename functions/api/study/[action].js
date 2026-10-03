@@ -21,7 +21,7 @@
 
 import Anthropic from '@anthropic-ai/sdk';
 import { json, tokenOk } from '../../_lib/auth.js';
-import { youtubeInfo } from '../../_lib/youtube.js';
+import { youtubeInfo, geminiTranscript, geminiCost, GEMINI_MODEL, GEMINI_WINDOW_SEC } from '../../_lib/youtube.js';
 import {
   MODELS, KINDS, StudyError, WHISPER_MODEL,
   checkModel, checkSize, runLive, submitBatch, retrieveBatch, collectBatch, costOf, transcribe,
@@ -277,9 +277,23 @@ async function doTranscribe(env, request) {
   return transcribe(env, buffer, { prompt, language });
 }
 
+/* One Gemini window of a YouTube transcript (see _lib/youtube.js). Logged
+   like every other model call so the Costs tab can show it; cost is only
+   counted when GEMINI_BILLING=paid, because the free tier costs nothing. */
+async function ytTranscript(env, url) {
+  const v = url.searchParams.get('v');
+  const { lines, usage } = await geminiTranscript(env, v, url.searchParams.get('start'), url.searchParams.get('end'));
+  const cost = env.GEMINI_BILLING === 'paid' ? geminiCost(usage) : 0;
+  await logCall(env, {
+    id: crypto.randomUUID(), kinds: 'ytTranscript', model: GEMINI_MODEL, mode: 'live', status: 'done',
+    usage: { ...usage, cacheRead: 0, cacheWrite: 0, byModel: { [GEMINI_MODEL]: cost } }, meta: { videoId: v },
+  });
+  return { lines, usage, cost };
+}
+
 /* ── diagnostics ── */
 async function ping(env, url) {
-  const out = { anthropic: !!env.ANTHROPIC_API_KEY, workersAi: !!env.AI, db: !!env.DB, models: Object.keys(MODELS), whisper: WHISPER_MODEL };
+  const out = { anthropic: !!env.ANTHROPIC_API_KEY, gemini: !!env.GEMINI_API_KEY, workersAi: !!env.AI, db: !!env.DB, models: Object.keys(MODELS), whisper: WHISPER_MODEL };
   if (url.searchParams.get('deep') !== '1') return out;
   if (env.ANTHROPIC_API_KEY) {
     try {
@@ -289,6 +303,15 @@ async function ping(env, url) {
     } catch (e) {
       out.anthropicCall = e instanceof Anthropic.AuthenticationError ? 'invalid API key'
         : e instanceof Anthropic.APIError ? `error ${e.status}` : (e.message || 'failed');
+    }
+  }
+  if (env.GEMINI_API_KEY) {
+    /* Listing models validates the key without spending any of the daily video allowance. */
+    try {
+      const r = await fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=1', { headers: { 'x-goog-api-key': env.GEMINI_API_KEY }, signal: AbortSignal.timeout(8000) });
+      out.geminiCall = r.ok ? 'ok' : r.status === 400 || r.status === 401 || r.status === 403 ? 'invalid API key' : `error ${r.status}`;
+    } catch (e) {
+      out.geminiCall = e.message || 'failed';
     }
   }
   if (env.AI) {
@@ -362,7 +385,11 @@ const ROUTES = {
   recall:     { method: 'POST', run: (env, req) => readJson(req).then((b) => recall(env, b)) },
   mark:       { method: 'POST', run: (env, req) => readJson(req).then((b) => mark(env, b)) },
   transcribe: { method: 'POST', run: (env, req) => doTranscribe(env, req) },
-  youtube:    { method: 'GET',  run: (env, req) => youtubeInfo(new URL(req.url).searchParams.get('v')) },
+  youtube:    { method: 'GET',  run: async (env, req) => ({
+    ...(await youtubeInfo(new URL(req.url).searchParams.get('v'))),
+    gemini: !!env.GEMINI_API_KEY, geminiWindow: GEMINI_WINDOW_SEC,
+  }) },
+  ytTranscript: { method: 'GET', run: (env, req) => ytTranscript(env, new URL(req.url)) },
   ping:       { method: 'GET',  run: (env, req) => ping(env, new URL(req.url)) },
   usage:      { method: 'GET',  run: (env, req) => usageSummary(env, new URL(req.url)) },
 };

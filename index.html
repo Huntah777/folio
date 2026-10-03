@@ -1407,6 +1407,7 @@ const StudyAPI = {
   ping(deep)     { return this.call(`ping${deep ? '?deep=1' : ''}`, { method:'GET' }); },
   usage()        { return this.call(`usage?tz=${new Date().getTimezoneOffset()}`, { method:'GET' }); },
   youtube(id)    { return this.call(`youtube?v=${encodeURIComponent(id)}`, { method:'GET' }); },
+  ytTranscript(id, start, end) { return this.call(`ytTranscript?v=${encodeURIComponent(id)}&start=${start}&end=${end}`, { method:'GET' }); },
   transcribe(blob, prompt) {
     return this.call('transcribe', {
       raw: true, body: blob,
@@ -8301,6 +8302,20 @@ function StudyView({ state, update, isMobile, flushSave }) {
   const pendingJobs = jobs.filter(j => ['submitted','ended','collecting'].includes(j.status));
   const failedJobs  = jobs.filter(j => j.status === 'error');
 
+  /* A transcript sent by the "Send to Folio" bookmarklet (see App). */
+  useEffect(() => {
+    const take = () => {
+      const p = window.__folioYtImport;
+      if (!p) return;
+      window.__folioYtImport = null;
+      setScreen({ type:'home' });
+      setModal({ type:'source', mode:'youtube', prefill:p });
+    };
+    take();
+    window.addEventListener('folio-yt-import', take);
+    return () => window.removeEventListener('folio-yt-import', take);
+  }, []);
+
   /* "Study this note/folder" from elsewhere arrives as ui.studyIntent and is
      consumed here (same hand-off pattern as ui.filterTag). */
   useEffect(() => {
@@ -8447,7 +8462,7 @@ function StudyView({ state, update, isMobile, flushSave }) {
         }}/>
     )}
     {modal?.type === 'source' && (
-      <StudySourceModal state={state} update={update} initialMode={modal.mode} onClose={()=>setModal(null)}
+      <StudySourceModal state={state} update={update} initialMode={modal.mode} prefill={modal.prefill} onClose={()=>setModal(null)}
         onCreated={({ note, kinds }) => {
           const folderCtx = screen.type === 'folder' ? screen.folderId : null;
           const backCtx   = screen.type === 'folder' ? screen : null;
@@ -9504,7 +9519,7 @@ function ExamRunner({ state, update, set, exam, isMobile, onExit }) {
 }
 
 /* ── add material: record / PDF / paste ── */
-function StudySourceModal({ state, update, initialMode = 'pdf', onClose, onCreated }) {
+function StudySourceModal({ state, update, initialMode = 'pdf', prefill = null, onClose, onCreated }) {
   const [mode, setMode]   = useState(initialMode);
   const [title, setTitle] = useState('');
   const [folderId, setFolderId] = useState(state.ui.folderId || '');
@@ -9619,7 +9634,7 @@ function StudySourceModal({ state, update, initialMode = 'pdf', onClose, onCreat
         <Recorder onRecordingChange={setRecording} onFinish={fromRecording}/>
       )}
       {mode === 'youtube' && (
-        <YouTubeSource cta="Create note & continue" ctaNoTranscript="Add video without a transcript" onCreate={fromYouTube} autoFocus/>
+        <YouTubeSource cta="Create note & continue" ctaNoTranscript="Add video without a transcript" onCreate={fromYouTube} autoFocus prefill={prefill}/>
       )}
       {mode === 'pdf' && (<>
         <input ref={pdfRef} type="file" accept="application/pdf,.pdf" style={{display:'none'}} onChange={e=>fromPdf(e.target.files?.[0])}/>
@@ -10077,17 +10092,23 @@ function MediaPanel({ req, state, update, isMobile, onClose }) {
 
 /* ── YouTube lookup: link → title/channel (+ captions if YouTube allows) ── */
 const YT_REASONS = {
-  blocked:     'YouTube wouldn’t hand over the captions automatically — it blocks that for most apps. You can paste them instead: open the video on YouTube, click “…more” → “Show transcript”, copy everything, and paste it below.',
+  blocked:     'YouTube won’t hand captions to Folio’s server. Use the free “Send to Folio” bookmark below, set up a free Gemini key (see SETUP.md) to make this automatic, or paste the transcript: on YouTube, “…more” → “Show transcript”, copy everything.',
+  quota:       'Gemini’s free daily allowance is used up. Use the “Send to Folio” bookmark below, or paste the transcript.',
+  private:     'Gemini can only transcribe public videos. Use the “Send to Folio” bookmark below, or paste the transcript.',
+  gemini_failed: 'Gemini couldn’t transcribe this video. Use the “Send to Folio” bookmark below, or paste the transcript.',
   no_captions: 'This video has no captions, so there’s no transcript to pick up. You can still watch it here, or paste your own notes below.',
   unavailable: 'This video is unavailable (private or removed).',
   failed:      'Couldn’t read the captions. You can paste the transcript below instead (…more → Show transcript on YouTube).',
   offline:     'Couldn’t reach Folio’s server, so no details were fetched. You can still add the video and paste a transcript.',
 };
-function YouTubeSource({ cta, ctaNoTranscript, onCreate, autoFocus }) {
-  const [url, setUrl]       = useState('');
+function YouTubeSource({ cta, ctaNoTranscript, onCreate, autoFocus, prefill }) {
+  const [url, setUrl]       = useState(prefill ? `https://youtu.be/${prefill.videoId}` : '');
   const [busy, setBusy]     = useState(false);
+  const [progress, setProgress] = useState(null);
   const [err, setErr]       = useState(null);
-  const [meta, setMeta]     = useState(null);
+  const [meta, setMeta]     = useState(() => prefill
+    ? { videoId: prefill.videoId, title: prefill.title, author: prefill.author, embeddable: true, transcript: prefill.lines, reason: null, source: 'bookmarklet' }
+    : null);
   const [pasted, setPasted] = useState('');
   const apiLines    = meta?.transcript?.length ? meta.transcript : null;
   const pastedLines = useMemo(() => pasted.trim() ? parsePastedTranscript(pasted) : [], [pasted]);
@@ -10098,10 +10119,32 @@ function YouTubeSource({ cta, ctaNoTranscript, onCreate, autoFocus }) {
     const id = parseYouTubeId(url);
     if (!id) { setErr('Paste a YouTube link — youtube.com/watch?v=…, youtu.be/…'); return; }
     setBusy(true); setErr(null); setMeta(null);
-    try { setMeta(await StudyAPI.youtube(id)); }
+    let info;
+    try { info = await StudyAPI.youtube(id); }
     catch (e) {
       setMeta({ videoId:id, title:'', author:'', embeddable:true, transcript:null, reason:'offline' });
-      setErr(studyErrorLabel(e));
+      setErr(studyErrorLabel(e)); setBusy(false);
+      return;
+    }
+    setMeta(info);
+    /* No captions from YouTube → Gemini, window by window (free tier: 8 h/day). */
+    if (!info.transcript?.length && info.gemini && info.reason !== 'unavailable') {
+      const W = info.geminiWindow || 1800, dur = info.duration || 0;
+      const windows = dur > W ? Math.ceil(dur / W) : 1;
+      const all = [];
+      try {
+        for (let i = 0; i < windows; i++) {
+          setProgress(`Transcribing with Gemini${windows > 1 ? ` · part ${i + 1} of ${windows}` : ''}…`);
+          const r = await StudyAPI.ytTranscript(id, windows > 1 ? i * W : 0, windows > 1 ? Math.min(dur, (i + 1) * W) : 0);
+          all.push(...r.lines);
+        }
+        setMeta(m => ({ ...m, transcript: all.length ? all : null, source:'gemini', reason: all.length ? null : 'no_captions' }));
+      } catch (e) {
+        const reason = e.code === 'quota' ? 'quota' : e.code === 'unavailable' ? 'private' : 'gemini_failed';
+        setMeta(m => ({ ...m, reason }));
+        setErr(studyErrorLabel(e));
+      }
+      setProgress(null);
     }
     setBusy(false);
   };
@@ -10114,6 +10157,7 @@ function YouTubeSource({ cta, ctaNoTranscript, onCreate, autoFocus }) {
           onKeyDown={e=>{ if (e.key === 'Enter') { e.preventDefault(); lookup(); } }}/>
         <button className="btn-primary" disabled={busy || !url.trim()} onClick={lookup} style={{flexShrink:0}}>{busy ? 'Looking…' : 'Look up'}</button>
       </div>
+      {progress && <StudyBanner busy>{progress} This takes about a minute per half hour of video.</StudyBanner>}
       {err && <div style={{fontSize:12.5,color:'var(--danger)',marginTop:8}}>{err}</div>}
 
       {meta && (
@@ -10131,7 +10175,9 @@ function YouTubeSource({ cta, ctaNoTranscript, onCreate, autoFocus }) {
             </div>
           )}
           {apiLines
-            ? <div style={{fontSize:12.5,color:'var(--success)',marginBottom:8}}>✓ Captions found{meta.language ? ` (${meta.language})` : ''} · {apiLines.length} lines</div>
+            ? <div style={{fontSize:12.5,color:'var(--success)',marginBottom:8}}>
+                ✓ {meta.source === 'gemini' ? 'Transcribed by Gemini (AI — may not be word-for-word)' : meta.source === 'bookmarklet' ? 'Transcript from YouTube' : 'Captions found'}{meta.language ? ` (${meta.language})` : ''} · {apiLines.length} lines
+              </div>
             : (<>
                 <div style={{...studyMuted,marginBottom:8}}>{YT_REASONS[meta.reason] || YT_REASONS.failed}</div>
                 {meta.reason !== 'unavailable' && (<>
@@ -10141,6 +10187,7 @@ function YouTubeSource({ cta, ctaNoTranscript, onCreate, autoFocus }) {
                     <a href={`https://www.youtube.com/watch?v=${meta.videoId}`} target="_blank" rel="noopener noreferrer" style={{fontSize:12,color:'var(--accent)'}}>Open on YouTube ↗</a>
                     {pastedLines.length > 0 && <span style={{fontSize:12,color:'var(--text-muted)'}}>{pastedLines.length} lines{stamped ? ' · timestamps found' : ' · no timestamps'}</span>}
                   </div>
+                  <BookmarkletLink/>
                 </>)}
               </>)}
           {meta.reason !== 'unavailable' && (
@@ -10151,6 +10198,145 @@ function YouTubeSource({ cta, ctaNoTranscript, onCreate, autoFocus }) {
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+/* ── "Send to Folio" bookmarklet ──
+   YouTube now refuses captions to servers (and rejects direct transcript
+   requests without its player's token), but its own page still gets them.
+   This runs on youtube.com when you click the bookmark: it asks the page's
+   player to load captions (as the CC button does), catches the caption request
+   the player makes (token included) and re-reads it as timed captions — or
+   reads the "Show transcript" panel as a backup — then restores captions as
+   they were and opens Folio with the result in the URL hash: compressed, and
+   never sent through a server. Self-contained on
+   purpose: it is serialised with toString() and can't see anything in here. */
+function folioYtBookmarklet(FOLIO) {
+  (async () => {
+    const restore = [];
+    try {
+      const v = new URLSearchParams(location.search).get('v') || (location.pathname.match(/\/(?:shorts|live)\/([\w-]{11})/) || [])[1];
+      if (!/(^|\.)youtube\.com$/.test(location.hostname) || !v) { alert('Open a YouTube video first, then click “Send to Folio”.'); return; }
+      const sleep = ms => new Promise(r => setTimeout(r, ms));
+      const isCap = u => typeof u === 'string' && u.indexOf('/api/timedtext') >= 0 && u.indexOf('v=' + v) >= 0;
+      /* 1. Watch for the caption request YouTube's own player makes — it
+            carries the token YouTube now requires, which a server can't get. */
+      let caught = performance.getEntriesByType('resource').map(e => e.name).filter(isCap).pop() || null;
+      const of = window.fetch, oo = XMLHttpRequest.prototype.open;
+      window.fetch = function (input) { const u = typeof input === 'string' ? input : input && input.url; if (isCap(u)) caught = u; return of.apply(this, arguments); };
+      XMLHttpRequest.prototype.open = function (m, u) { if (isCap(String(u))) caught = String(u); return oo.apply(this, arguments); };
+      restore.push(() => { window.fetch = of; XMLHttpRequest.prototype.open = oo; });
+      /* 2. If it hasn't happened yet, ask the player to load captions (what
+            pressing CC does), then put captions back the way they were. */
+      const player = document.getElementById('movie_player');
+      if (!caught && player && player.setOption) {
+        const tracks = (player.getOption && player.getOption('captions', 'tracklist', { includeAsr: true })) || [];
+        const wasOn = tracks.length > 0;
+        try { player.loadModule && player.loadModule('captions'); } catch (err) {}
+        const list = (player.getOption && player.getOption('captions', 'tracklist', { includeAsr: true })) || [];
+        const pick = list.find(t => /^en/.test(t.languageCode) && !t.kind) || list.find(t => /^en/.test(t.languageCode)) || list[0];
+        if (pick) { try { player.setOption('captions', 'track', pick); } catch (err) {} }
+        for (let i = 0; i < 24 && !caught; i++) await sleep(250);
+        if (!wasOn) restore.push(() => { try { player.unloadModule('captions'); } catch (err) {} });
+      }
+      /* 3. Still nothing: press the CC button itself. */
+      const cc = document.querySelector('.ytp-subtitles-button');
+      if (!caught && cc && cc.getAttribute('aria-pressed') === 'false') {
+        cc.click(); restore.push(() => { if (cc.getAttribute('aria-pressed') === 'true') cc.click(); });
+        for (let i = 0; i < 24 && !caught; i++) await sleep(250);
+      }
+      let lines = [];
+      if (caught) {
+        try {
+          const u = new URL(caught, location.origin);
+          u.searchParams.set('fmt', 'json3');
+          const j = await (await of.call(window, u.toString(), { credentials: 'include' })).json();
+          for (const ev of j.events || []) {
+            if (!ev.segs) continue;
+            const text = ev.segs.map(s => s.utf8 || '').join('').replace(/\s+/g, ' ').trim();
+            if (!text || (lines.length && lines[lines.length - 1].text === text)) continue;
+            lines.push({ t: Math.round((ev.tStartMs || 0) / 100) / 10, text });
+          }
+        } catch (err) { lines = []; }
+      }
+      /* 4. Backup: the "Show transcript" panel. Rows read "0:01 / 1 second /
+            words" — the middle line is a screen-reader label. */
+      if (!lines.length) {
+        const segs = () => document.querySelectorAll('transcript-segment-view-model, ytd-transcript-segment-renderer');
+        if (!segs().length) {
+          const btn = [...document.querySelectorAll('button')].find(b => /^show transcript$/i.test((b.getAttribute('aria-label') || b.textContent || '').trim()));
+          if (btn) { btn.click(); for (let i = 0; i < 24 && !segs().length; i++) await sleep(250); await sleep(300); }
+        }
+        for (const el of segs()) {
+          const parts = el.innerText.split('\n').map(s => s.trim()).filter(Boolean);
+          const n = (parts.shift() || '').split(':').map(Number);
+          const words = parts.filter(p => !/^(\d+ (hours?|minutes?|seconds?),? ?)+$/i.test(p)).join(' ');
+          if (words) lines.push({ t: n.length > 1 && n.every(x => !isNaN(x)) ? n.reduce((a, p) => a * 60 + p, 0) : null, text: words });
+        }
+      }
+      restore.forEach(f => f()); restore.length = 0;
+      if (!lines.length) { alert('YouTube didn’t provide a transcript for this video (it may have no captions). Try again once the video has started playing.'); return; }
+      const title = document.title.replace(/^\(\d+\)\s*/, '').replace(/ - YouTube$/, '');
+      const author = ((document.querySelector('ytd-video-owner-renderer #channel-name a, #owner #channel-name a') || {}).textContent || '').trim();
+      const bytes = new TextEncoder().encode(JSON.stringify({ v, title, author, lines }));
+      const packed = new Uint8Array(await new Response(new Blob([bytes]).stream().pipeThrough(new CompressionStream('deflate-raw'))).arrayBuffer());
+      let bin = '';
+      for (let i = 0; i < packed.length; i += 0x8000) bin += String.fromCharCode.apply(null, packed.subarray(i, i + 0x8000));
+      const dest = FOLIO + '/#yt-transcript=' + btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+      const w = window.open(dest, '_blank');
+      if (!w) location.href = dest;   /* popup blocked: go there in this tab */
+    } catch (e) {
+      restore.forEach(f => { try { f(); } catch (err) {} });
+      alert('Send to Folio failed: ' + (e && e.message));
+    }
+  })();
+}
+
+/* Auto-captions arrive as ~1.5-second fragments with no punctuation — fine
+   for a player, unreadable as a transcript. Join them into lines of up to
+   ~10 seconds / 160 characters, breaking early at a sentence end. Lines
+   that are already sentence-sized pass through unchanged. */
+function mergeTranscriptLines(lines) {
+  const out = [];
+  for (const l of lines) {
+    const cur = out[out.length - 1];
+    const fits = cur && cur.t != null && l.t != null && l.t - cur.t < 10 && cur.text.length + l.text.length < 160 && !/[.!?…]["”’)]?$/.test(cur.text);
+    if (fits) cur.text += ' ' + l.text;
+    else out.push({ ...l });
+  }
+  return out;
+}
+
+/* Folio side: decode what the bookmarklet put in the URL hash. Treated
+   strictly as data — validated, trimmed, rendered as text. */
+async function decodeYtImport(b64) {
+  const bin = atob(String(b64).replace(/-/g, '+').replace(/_/g, '/'));
+  const bytes = Uint8Array.from(bin, c => c.charCodeAt(0));
+  const txt = await new Response(new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate-raw'))).text();
+  const j = JSON.parse(txt);
+  if (!YT_ID_RE.test(j?.v || '') || !Array.isArray(j.lines)) throw new Error('Not a Folio transcript link');
+  return {
+    videoId: j.v, title: String(j.title || '').slice(0, 300), author: String(j.author || '').slice(0, 200),
+    lines: mergeTranscriptLines(j.lines.filter(l => l && typeof l.text === 'string' && l.text.trim())
+      .map(l => ({ t: Number.isFinite(Number(l.t)) && l.t !== null ? Number(l.t) : null, text: l.text.slice(0, 2000) }))
+      .slice(0, 20000)),
+  };
+}
+
+function BookmarkletLink() {
+  const ref = useRef(null);
+  /* Set imperatively: React warns about javascript: URLs in JSX. */
+  useEffect(() => {
+    ref.current?.setAttribute('href', 'javascript:' + encodeURIComponent(`(${folioYtBookmarklet.toString()})(${JSON.stringify(location.origin)})`));
+  }, []);
+  return (
+    <div className="row-soft" style={{marginTop:10,flexWrap:'wrap'}}>
+      <a ref={ref} className="pill on" draggable="true" onClick={e => e.preventDefault()} title="Drag me to your bookmarks bar"
+        style={{textDecoration:'none',cursor:'grab'}}>⇢ Send to Folio</a>
+      <span style={{flex:'1 1 220px',fontSize:12,color:'var(--text-secondary)',lineHeight:1.5}}>
+        Free, automatic: drag this to your bookmarks bar once. Then on any YouTube video, click it — Folio opens with the transcript filled in. (Desktop browsers.)
+      </span>
     </div>
   );
 }
@@ -10574,6 +10760,7 @@ function StudySettings({ state, update }) {
       const p = await StudyAPI.ping(true);
       setDiag({ ok:true, lines: [
         `Anthropic key: ${p.anthropic ? (p.anthropicCall || 'set') : 'missing'}`,
+        `Gemini key (YouTube transcripts): ${p.gemini ? (p.geminiCall || 'set') : 'not set (optional — see SETUP.md)'}`,
         `Workers AI (Whisper, Llama): ${p.workersAi ? (p.workersAiCall || 'bound') : 'not bound'}`,
         `Database: ${p.db ? 'ok' : 'missing'}${h.study ? '' : ' · /api/health is from an older deploy'}`,
       ]});
@@ -10767,13 +10954,13 @@ function CostsSettings({ state }) {
                 <table style={{width:'100%',borderCollapse:'collapse'}}>
                   <thead><tr><th style={th}>By study type</th><th style={{...th,textAlign:'right'}}>30 days</th></tr></thead>
                   <tbody>{sortedEntries(usage.byKind).map(([k, c]) => (
-                    <tr key={k}><td style={td}>{studyKind(k)?.label || k}</td><td style={num}>{fmtUsd(c)}</td></tr>
+                    <tr key={k}><td style={td}>{studyKind(k)?.label || (k === 'ytTranscript' ? 'YouTube transcripts (Gemini)' : k)}</td><td style={num}>{fmtUsd(c)}</td></tr>
                   ))}</tbody>
                 </table>
                 <table style={{width:'100%',borderCollapse:'collapse'}}>
                   <thead><tr><th style={th}>By model</th><th style={{...th,textAlign:'right'}}>30 days</th></tr></thead>
                   <tbody>{sortedEntries(usage.byModel).map(([m, c]) => (
-                    <tr key={m}><td style={td}>{studyModel(m).label}{studyModel(m).free ? ' *' : ''}</td><td style={num}>{fmtUsd(c)}</td></tr>
+                    <tr key={m}><td style={td}>{STUDY_MODEL_OPTIONS.find(o => o.id === m)?.label || (/^gemini/.test(m) ? 'Gemini Flash (YouTube, free tier)' : m)}{studyModel(m).free && STUDY_MODEL_OPTIONS.some(o => o.id === m) ? ' *' : ''}</td><td style={num}>{fmtUsd(c)}</td></tr>
                   ))}</tbody>
                 </table>
               </div>}
@@ -11211,6 +11398,26 @@ function App() {
   /* Floating media player: any view can ask for it with openMedia(). Device-
      local and never synced; lives here so it survives view changes. */
   const [mediaReq, setMediaReq] = useState(null);
+  /* "Send to Folio" bookmarklet lands here with #yt-transcript=… */
+  const [ytImportError, setYtImportError] = useState(null);
+  useEffect(() => {
+    if (!state) return;
+    /* On load (the bookmarklet opens a new tab) and on a hash change (it fell
+       back to navigating a tab Folio was already open in). */
+    const take = () => {
+      if (!location.hash.startsWith('#yt-transcript=')) return;
+      const raw = location.hash.slice('#yt-transcript='.length);
+      history.replaceState(null, '', location.pathname + location.search);
+      decodeYtImport(raw).then(p => {
+        window.__folioYtImport = p;
+        update('ui', ui => ({ ...ui, view:'study' }));
+        window.dispatchEvent(new Event('folio-yt-import'));
+      }).catch(e => setYtImportError(e.message || 'Couldn’t read that transcript link'));
+    };
+    take();
+    window.addEventListener('hashchange', take);
+    return () => window.removeEventListener('hashchange', take);
+  }, [!!state]);
   useEffect(() => {
     const h = e => { if (e.detail?.noteId && e.detail?.itemId) setMediaReq({ ...e.detail, nonce: Date.now() }); };
     window.addEventListener('folio-media', h);
@@ -11616,6 +11823,11 @@ function App() {
       )}
       {background?.source==='unsplash' && background?.attribution && <UnsplashCredit attribution={background.attribution}/>}
       {installBanner && <InstallBanner/>}
+      {ytImportError && (
+        <div className="card" style={{position:'fixed',top:16,left:'50%',transform:'translateX(-50%)',zIndex:60,padding:'10px 14px',display:'flex',gap:10,alignItems:'center',fontSize:13,color:'var(--danger)'}}>
+          {ytImportError}<button className="icon-btn" aria-label="Dismiss" onClick={()=>setYtImportError(null)}>{Ic.x}</button>
+        </div>
+      )}
       {mediaReq && <MediaPanel req={mediaReq} state={state} update={update} isMobile={isMobile} onClose={()=>setMediaReq(null)}/>}
       <PomodoroWidget pom={pom} setPom={setPom} tasks={state.tasks} update={update} isMobile={isMobile}/>
     </div>

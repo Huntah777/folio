@@ -89,7 +89,7 @@ const hostOk = (u) => {
 
 export async function youtubeInfo(videoId) {
   if (!YT_ID_RE.test(videoId || '')) throw new StudyError('bad_video', 'That doesn’t look like a YouTube video link');
-  const out = { videoId, title: '', author: '', embeddable: true, transcript: null, language: null, reason: null };
+  const out = { videoId, title: '', author: '', embeddable: true, transcript: null, language: null, reason: null, duration: 0 };
 
   /* 1. oEmbed: metadata + embeddability. */
   try {
@@ -118,6 +118,7 @@ export async function youtubeInfo(videoId) {
     if (!player) { out.reason = 'blocked'; return out; }
     if (!out.title) out.title = String(player.videoDetails?.title || '');
     if (!out.author) out.author = String(player.videoDetails?.author || '');
+    out.duration = Number(player.videoDetails?.lengthSeconds) || 0;   /* sizes the Gemini windows */
     const status = player.playabilityStatus?.status;
     if (status && status !== 'OK') {
       out.reason = status === 'LOGIN_REQUIRED' ? 'blocked' : 'unavailable';
@@ -143,4 +144,109 @@ export async function youtubeInfo(videoId) {
     out.reason = 'failed';
   }
   return out;
+}
+
+/* ── Gemini: the sanctioned way to get a transcript from a YouTube link ──
+   Google's Gemini API accepts a public YouTube URL directly (Interactions
+   API, /v1beta/interactions). The free tier allows 8 hours of YouTube video a
+   day; paid is $0.75 per million input tokens and a second of video at low
+   resolution is ~100 tokens (≈ $0.27 per hour, plus output) — figures from
+   Google's docs and pricing page, 2026-10-03.
+   One request covers one time window; the client asks for the windows one by
+   one, so no single request runs long and progress can be shown. Timings come
+   back relative to the window and are shifted to video time here. */
+export const GEMINI_MODEL = 'gemini-3.8-flash';
+export const GEMINI_WINDOW_SEC = 1800;
+const GEMINI_PRICE = { in: 0.75, out: 3.75 };   /* USD per 1M tokens, paid tier, until 2026-12-31 */
+
+const GEMINI_SCHEMA = {
+  type: 'object',
+  properties: {
+    lines: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: { t: { type: 'number' }, text: { type: 'string' } },
+        required: ['t', 'text'],
+      },
+    },
+  },
+  required: ['lines'],
+};
+
+/* The response format has varied between API revisions; look everywhere the
+   text has been documented to live rather than trusting one path. */
+export function geminiText(j) {
+  if (typeof j?.output_text === 'string') return j.output_text;
+  const texts = [];
+  const walk = (v) => {
+    if (!v || typeof v !== 'object') return;
+    if (Array.isArray(v)) { v.forEach(walk); return; }
+    if (v.type === 'text' && typeof v.text === 'string') texts.push(v.text);
+    else if (typeof v.text === 'string' && !v.type) texts.push(v.text);
+    for (const k of ['steps', 'outputs', 'output', 'content', 'candidates', 'parts']) if (k in v) walk(v[k]);
+  };
+  walk(j);
+  return texts.join('');
+}
+
+function geminiUsage(j) {
+  const u = j?.usage || j?.usage_metadata || j?.usageMetadata || {};
+  return {
+    input: Number(u.total_input_tokens ?? u.input_tokens ?? u.promptTokenCount ?? u.prompt_token_count) || 0,
+    output: Number(u.total_output_tokens ?? u.output_tokens ?? u.candidatesTokenCount ?? u.candidates_token_count) || 0,
+  };
+}
+
+export const geminiCost = ({ input = 0, output = 0 } = {}) =>
+  (input * GEMINI_PRICE.in + output * GEMINI_PRICE.out) / 1e6;
+
+export async function geminiTranscript(env, videoId, start = 0, end = 0) {
+  if (!env.GEMINI_API_KEY) throw new StudyError('not_configured', 'GEMINI_API_KEY is not set', 501);
+  if (!YT_ID_RE.test(videoId || '')) throw new StudyError('bad_video', 'Not a YouTube video id');
+  start = Math.max(0, Math.floor(Number(start) || 0));
+  end = Math.max(0, Math.floor(Number(end) || 0));
+  const clipped = end > start;
+  const video = {
+    type: 'video',
+    uri: `https://www.youtube.com/watch?v=${videoId}`,
+    resolution: 'low',   /* transcription needs the audio, not detailed frames */
+    ...(clipped ? { processing: { type: 'static', start_offset: start, end_offset: end } } : {}),
+  };
+  const prompt = `Transcribe all speech in this video${clipped ? ' clip' : ''} verbatim, in the language spoken.
+Return one entry per sentence or short phrase. "t" is when it starts, in seconds from the start of ${clipped ? 'this clip' : 'the video'}.
+Do not summarise, translate, or describe visuals. If there is no speech, return an empty list.`;
+
+  const r = await fetch('https://generativelanguage.googleapis.com/v1beta/interactions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-goog-api-key': env.GEMINI_API_KEY },
+    body: JSON.stringify({
+      model: GEMINI_MODEL,
+      input: [{ type: 'text', text: prompt }, video],
+      response_format: { type: 'text', mime_type: 'application/json', schema: GEMINI_SCHEMA },
+      generation_config: { max_output_tokens: 32000 },
+    }),
+  });
+  const raw = await r.text();
+  let j = null;
+  try { j = JSON.parse(raw); } catch {}
+  if (!r.ok) {
+    const msg = j?.error?.message || raw.slice(0, 200) || `HTTP ${r.status}`;
+    if (r.status === 429) throw new StudyError('quota', 'Gemini’s free daily allowance is used up — try again tomorrow, or use the bookmark or paste below', 429);
+    if (r.status === 401 || r.status === 403) throw new StudyError('bad_api_key', 'Google rejected the Gemini API key', 502);
+    if (/private|unlisted|not (?:be )?accessible|unavailable/i.test(msg)) {
+      throw new StudyError('unavailable', 'Gemini can only read public videos', 422);
+    }
+    throw new StudyError('gemini_failed', `Gemini couldn’t transcribe this: ${msg}`, 502);
+  }
+
+  const text = geminiText(j).trim().replace(/^```(?:json)?\s*|\s*```$/g, '');
+  let data;
+  try { data = JSON.parse(text); } catch { throw new StudyError('gemini_failed', 'Gemini returned an unreadable transcript', 502); }
+  const lines = (Array.isArray(data?.lines) ? data.lines : [])
+    .map((l) => ({ t: Math.round((start + Math.max(0, Number(l?.t) || 0)) * 10) / 10, text: String(l?.text || '').replace(/\s+/g, ' ').trim() }))
+    .filter((l) => l.text && (!clipped || l.t <= end + 5))
+    .sort((a, b) => a.t - b.t)
+    .slice(0, MAX_LINES);
+  return { lines, usage: { ...geminiUsage(j), model: GEMINI_MODEL } };
 }

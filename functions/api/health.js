@@ -5,7 +5,7 @@ export async function onRequest({ env }) {
       ok: true,
       sync_configured: !!(env.SYNC_TOKEN || '').trim(),
       /* presence only — never the values */
-      study: { anthropic: !!(env.ANTHROPIC_API_KEY || '').trim(), workers_ai: !!env.AI },
+      study: { anthropic: !!(env.ANTHROPIC_API_KEY || '').trim(), gemini: !!(env.GEMINI_API_KEY || '').trim(), workers_ai: !!env.AI },
     }),
     {
       headers: {
