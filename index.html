@@ -4633,6 +4633,15 @@ function NotesView({ state, update, isMobile, fullView, setFullView }) {
 }
 
 /* ── TasksView ── */
+const getMondayOfWeek = ts => {
+  const d = new Date(ts);
+  const day = d.getDay();
+  d.setDate(d.getDate() + (day === 0 ? -6 : 1 - day));
+  d.setHours(0,0,0,0);
+  return d;
+};
+const archiveWeekLabel = m => 'Week of ' + m.toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'});
+
 function TasksView({ state, update, isMobile, pom, setPom }) {
   const [newTitle, setNewTitle] = useState('');
   const [newPrio, setNewPrio] = useState('medium');
@@ -4649,6 +4658,7 @@ function TasksView({ state, update, isMobile, pom, setPom }) {
   const [editingSub, setEditingSub] = useState(null);
   const [selectedTaskIds, setSelectedTaskIds] = useState(new Set());
   const [ctxMenu, setCtxMenu] = useState(null);
+  const [archiveOpen, setArchiveOpen] = useState(false);
   const [tagFilter, setTagFilter] = useState(() => state.ui.filterTag || '');
   /* The Tags view navigates here with ui.filterTag set. Consume it into this
      view's own filter and clear it, so it applies once rather than pinning the
@@ -4665,6 +4675,12 @@ function TasksView({ state, update, isMobile, pom, setPom }) {
     update('tasks', state.tasks.filter(t=>t.id!==id));
     update('tasksDeleted', [...(state.tasksDeleted||[]), { id, deletedAt: Date.now() }]);
     setSelectedTaskIds(p=>{const s=new Set(p);s.delete(id);return s;});
+  };
+  const archiveTask = id => update('tasks', state.tasks.map(t=>t.id===id?{...t,archived:true,updated:Date.now()}:t));
+  const unarchiveTask = id => update('tasks', state.tasks.map(t=>t.id===id?{...t,archived:false,updated:Date.now()}:t));
+  const archiveSelectedTasks = () => {
+    update('tasks', state.tasks.map(t=>selectedTaskIds.has(t.id)?{...t,archived:true,updated:Date.now()}:t));
+    setSelectedTaskIds(new Set());
   };
   const toggleTaskSel = (e,id) => { e.stopPropagation(); setSelectedTaskIds(p=>{const s=new Set(p);s.has(id)?s.delete(id):s.add(id);return s;}); };
   const deleteSelectedTasks = () => {
@@ -4747,11 +4763,23 @@ function TasksView({ state, update, isMobile, pom, setPom }) {
   const allTaskTags   = useMemo(()=>taskTagRanked.map(([t])=>t), [taskTagRanked]);
 
   const groups = [
-    { label:'Today',    items: byPrio(state.tasks.filter(t=>!t.done&&t.due===todayKey()&&taskFilter(t))) },
-    { label:'Upcoming', items: byPrio(state.tasks.filter(t=>!t.done&&t.due&&t.due!==todayKey()&&taskFilter(t))) },
-    { label:'No date',  items: byPrio(state.tasks.filter(t=>!t.done&&!t.due&&taskFilter(t))) },
-    { label:'Done',     items: state.tasks.filter(t=>t.done&&taskFilter(t)) },
+    { label:'Today',    items: byPrio(state.tasks.filter(t=>!t.archived&&!t.done&&t.due===todayKey()&&taskFilter(t))) },
+    { label:'Upcoming', items: byPrio(state.tasks.filter(t=>!t.archived&&!t.done&&t.due&&t.due!==todayKey()&&taskFilter(t))) },
+    { label:'No date',  items: byPrio(state.tasks.filter(t=>!t.archived&&!t.done&&!t.due&&taskFilter(t))) },
+    { label:'Done',     items: state.tasks.filter(t=>!t.archived&&t.done&&taskFilter(t)) },
   ];
+  const archivedGroups = useMemo(() => {
+    const archived = state.tasks.filter(t => t.archived && (!tagFilter || (t.tags||[]).includes(tagFilter)));
+    const map = new Map();
+    archived.forEach(t => {
+      const monday = getMondayOfWeek(t.created || Date.now());
+      const key = monday.toISOString().slice(0,10);
+      const label = archiveWeekLabel(monday);
+      if (!map.has(key)) map.set(key, { label, key, items:[] });
+      map.get(key).items.push(t);
+    });
+    return [...map.values()].sort((a,b) => b.key.localeCompare(a.key));
+  }, [state.tasks, tagFilter]);
   const visibleIds = groups.flatMap(g=>g.items.map(t=>t.id));
   const allVisibleSelected = visibleIds.length>0 && visibleIds.every(id=>selectedTaskIds.has(id));
   const toggleSelectAll = () => setSelectedTaskIds(allVisibleSelected ? new Set() : new Set(visibleIds));
@@ -4969,6 +4997,9 @@ function TasksView({ state, update, isMobile, pom, setPom }) {
                       <svg style={{width:13,height:13}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
                     </button>
                   )}
+                  <button onClick={()=>archiveTask(t.id)} className="icon-btn" title="Archive task">
+                    <svg style={{width:13,height:13}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="2" y="3" width="20" height="4" rx="1"/><path d="M4 7v13a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7"/><line x1="10" y1="12" x2="14" y2="12"/></svg>
+                  </button>
                   <button onClick={()=>delTask(t.id)} className="icon-btn danger" title="Delete task">
                     <svg style={{width:13,height:13}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
                   </button>
@@ -5056,11 +5087,62 @@ function TasksView({ state, update, isMobile, pom, setPom }) {
         </div>
       ))}
 
+      {/* archive section */}
+      {archivedGroups.length > 0 && (
+        <div style={{marginTop:8,marginBottom:8}}>
+          <button onClick={()=>setArchiveOpen(v=>!v)}
+            style={{display:'flex',alignItems:'center',gap:6,background:'none',border:'none',cursor:'pointer',
+                    fontSize:11,fontWeight:700,letterSpacing:'.08em',color:'var(--text-muted)',
+                    textTransform:'uppercase',padding:'6px 0',marginBottom:archiveOpen?12:0,fontFamily:'Manrope,sans-serif'}}>
+            <svg style={{width:12,height:12,transform:archiveOpen?'rotate(90deg)':'none',transition:'transform 150ms',flexShrink:0}}
+              viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="9 18 15 12 9 6"/></svg>
+            <svg style={{width:11,height:11,flexShrink:0}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <rect x="2" y="3" width="20" height="4" rx="1"/><path d="M4 7v13a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7"/><line x1="10" y1="12" x2="14" y2="12"/>
+            </svg>
+            Archive
+            <span style={{color:'var(--accent)'}}>({archivedGroups.reduce((n,g)=>n+g.items.length,0)})</span>
+          </button>
+          {archiveOpen && archivedGroups.map(wg => (
+            <div key={wg.key} style={{marginBottom:22}}>
+              <div style={{fontSize:10,fontWeight:700,letterSpacing:'.08em',color:'var(--text-muted)',textTransform:'uppercase',marginBottom:8}}>
+                {wg.label} <span style={{color:'var(--accent)'}}>({wg.items.length})</span>
+              </div>
+              {wg.items.map(t=>(
+                <div key={t.id} style={{marginBottom:5}}
+                  onContextMenu={e=>{e.preventDefault();setCtxMenu({x:e.clientX,y:e.clientY,id:t.id});}}>
+                  <div style={{display:'flex',alignItems:'center',gap:9,padding:'9px 13px',borderRadius:'var(--r-md)',
+                               background:'var(--bg-surface-2)',border:'1px solid var(--border)',opacity:.72,
+                               transition:'opacity var(--dur) var(--ease)'}}>
+                    <svg style={{width:11,height:11,color:'var(--text-muted)',flexShrink:0}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <rect x="2" y="3" width="20" height="4" rx="1"/><path d="M4 7v13a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7"/><line x1="10" y1="12" x2="14" y2="12"/>
+                    </svg>
+                    <span style={{fontSize:13,color:'var(--text-muted)',wordBreak:'break-word',flex:1,minWidth:0}}>{t.title}</span>
+                    <TagChips tags={t.tags||[]} max={2} size={10}/>
+                    <div style={{flex:1}}/>
+                    {t.due&&<span style={{fontSize:11,color:'var(--text-muted)',flexShrink:0,whiteSpace:'nowrap'}}>{friendlyDate(t.due)}</span>}
+                    <button onClick={()=>unarchiveTask(t.id)} className="icon-btn" title="Restore from archive" style={{color:'var(--text-secondary)'}}>
+                      <svg style={{width:13,height:13}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-3"/></svg>
+                    </button>
+                    <button onClick={()=>delTask(t.id)} className="icon-btn danger" title="Delete permanently">
+                      <svg style={{width:13,height:13}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* bulk action bar */}
       {selectedTaskIds.size>0&&(
         <div className="bulk-bar" style={{margin:'0 0 16px'}}>
           <span style={{fontSize:12,color:'var(--text-secondary)',flex:1}}>{selectedTaskIds.size} selected</span>
           <button onClick={()=>setSelectedTaskIds(new Set())} style={{background:'none',border:'1px solid var(--border-strong)',borderRadius:6,color:'var(--text-secondary)',fontSize:12,padding:'4px 10px',cursor:'pointer',fontFamily:'Manrope,sans-serif'}}>Clear</button>
+          <button onClick={archiveSelectedTasks} style={{background:'none',border:'1px solid var(--border-strong)',borderRadius:6,color:'var(--text-secondary)',fontSize:12,padding:'4px 10px',cursor:'pointer',fontFamily:'Manrope,sans-serif',display:'flex',alignItems:'center',gap:4}}>
+            <svg style={{width:12,height:12}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="2" y="3" width="20" height="4" rx="1"/><path d="M4 7v13a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7"/><line x1="10" y1="12" x2="14" y2="12"/></svg>
+            Archive
+          </button>
           <button onClick={deleteSelectedTasks} className="del-btn" style={{border:'1px solid rgba(244,63,94,.3)',borderRadius:6,padding:'4px 12px',fontSize:12,gap:5,fontFamily:'Manrope,sans-serif',fontWeight:600,color:'var(--danger)',background:'rgba(244,63,94,.08)'}}>
             <svg style={{width:13,height:13}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
             Delete {selectedTaskIds.size}
@@ -5073,6 +5155,10 @@ function TasksView({ state, update, isMobile, pom, setPom }) {
         <ContextMenu x={ctxMenu.x} y={ctxMenu.y} onClose={()=>setCtxMenu(null)} items={[
           {label:'Select', icon:<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{width:13,height:13}}><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>,
             fn:()=>setSelectedTaskIds(p=>{const s=new Set(p);s.add(ctxMenu.id);return s;})},
+          'sep',
+          state.tasks.find(t=>t.id===ctxMenu.id)?.archived
+            ? {label:'Restore', icon:<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{width:13,height:13}}><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-3"/></svg>, fn:()=>unarchiveTask(ctxMenu.id)}
+            : {label:'Archive', icon:<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{width:13,height:13}}><rect x="2" y="3" width="20" height="4" rx="1"/><path d="M4 7v13a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7"/><line x1="10" y1="12" x2="14" y2="12"/></svg>, fn:()=>archiveTask(ctxMenu.id)},
           'sep',
           {label:'Delete task', danger:true, icon:<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{width:13,height:13}}><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>,
             fn:()=>delTask(ctxMenu.id)},
@@ -6215,12 +6301,14 @@ function TagsView({ state, update, isMobile }) {
   const [query, setQuery]   = useState('');
   const [sort, setSort]     = useState('used'); /* 'used' | 'az' */
   const [source, setSource] = useState('all');  /* see TAG_SOURCES */
+  const [confirmDeleteTag, setConfirmDeleteTag] = useState(null);
 
-  /* Tags live on notes, tasks and journal entries. Counting all three is the
-     difference between "1 note" on almost every card — the old view's problem
-     — and a number that reflects how much a tag is actually carrying. */
+  /* Tags live on notes, tasks and journal entries. All tags in state.tags are
+     always shown (with 0 counts when unused) so deleting all items that use a
+     tag does not silently remove it from the list. */
   const ranked = useMemo(() => {
     const counts = new Map();
+    (state.tags||[]).forEach(t => counts.set(t, { tag:t, notes:0, tasks:0, journal:0, total:0 }));
     const bump = (t, kind) => {
       const c = counts.get(t) || { tag:t, notes:0, tasks:0, journal:0, total:0 };
       c[kind]++; c.total++; counts.set(t, c);
@@ -6229,7 +6317,15 @@ function TagsView({ state, update, isMobile }) {
     state.tasks.forEach(t2 => (t2.tags||[]).forEach(t => bump(t,'tasks')));
     (state.journal||[]).forEach(j => (j.tags||[]).forEach(t => bump(t,'journal')));
     return [...counts.values()];
-  }, [state.notes, state.tasks, state.journal]);
+  }, [state.notes, state.tasks, state.journal, state.tags]);
+
+  const deleteGlobalTag = tag => {
+    update('tags', (state.tags||[]).filter(t => t !== tag));
+    update('notes', state.notes.map(n => ({...n, tags:(n.tags||[]).filter(t=>t!==tag)})));
+    update('tasks', state.tasks.map(t => ({...t, tags:(t.tags||[]).filter(tg=>tg!==tag), updated:Date.now()})));
+    update('journal', (state.journal||[]).map(j => ({...j, tags:(j.tags||[]).filter(t=>t!==tag)})));
+    setConfirmDeleteTag(null);
+  };
 
   /* Which count the screen is ranking and showing. Filtering by source is not
      the same as filtering the list: a tag used on ten notes and one task is a
@@ -6329,31 +6425,38 @@ function TagsView({ state, update, isMobile }) {
             <div style={{fontSize:10,fontWeight:700,letterSpacing:'.09em',color:'var(--text-muted)',textTransform:'uppercase',marginBottom:10}}>Most used</div>
             <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr 1fr':'repeat(auto-fill,minmax(190px,1fr))',gap:10}}>
               {featured.map(c => (
-                <button key={c.tag} onClick={()=>openTagIn(c.tag)} className="card"
-                  style={{padding:'14px 15px',cursor:'pointer',textAlign:'left',border:'1px solid var(--border)',
-                          fontFamily:'Manrope,sans-serif',transition:'transform var(--dur) var(--ease),border-color var(--dur) var(--ease),box-shadow var(--dur) var(--ease)'}}
-                  onMouseEnter={e=>{e.currentTarget.style.borderColor=`${tagColor(c.tag)}66`;e.currentTarget.style.transform='translateY(-2px)';e.currentTarget.style.boxShadow='var(--shadow-2)';}}
-                  onMouseLeave={e=>{e.currentTarget.style.borderColor='var(--border)';e.currentTarget.style.transform='none';e.currentTarget.style.boxShadow='var(--shadow-1)';}}>
-                  <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:9}}>
-                    <span style={{width:26,height:26,borderRadius:'var(--r-sm)',background:`${tagColor(c.tag)}24`,color:tagColor(c.tag),
-                                  display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,fontSize:13,fontWeight:700}}>#</span>
-                    <span style={{fontSize:13.5,fontWeight:600,color:'var(--text-primary)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',minWidth:0,flex:1}}>
-                      {c.tag.replace(/^#/,'')}
-                    </span>
-                    <span style={{fontSize:15,fontWeight:700,color:tagColor(c.tag),fontFamily:'"JetBrains Mono",monospace'}}>{countOf(c)}</span>
-                  </div>
-                  {/* Under All, the breakdown is the interesting part; under a
-                      single source there is nothing to break down. */}
-                  <div style={{display:'flex',gap:8,fontSize:11,color:'var(--text-secondary)',flexWrap:'wrap'}}>
-                    {src.key
-                      ? <span>{countOf(c)} {plural(countOf(c), src.noun)}</span>
-                      : <>
-                          {c.notes>0   && <span>{c.notes} {plural(c.notes,'note')}</span>}
-                          {c.tasks>0   && <span>{c.tasks} {plural(c.tasks,'task')}</span>}
-                          {c.journal>0 && <span>{c.journal} {plural(c.journal,'entry')}</span>}
-                        </>}
-                  </div>
-                </button>
+                <div key={c.tag} style={{position:'relative'}}>
+                  <button onClick={()=>openTagIn(c.tag)} className="card"
+                    style={{padding:'14px 15px',cursor:'pointer',textAlign:'left',border:'1px solid var(--border)',
+                            fontFamily:'Manrope,sans-serif',width:'100%',transition:'transform var(--dur) var(--ease),border-color var(--dur) var(--ease),box-shadow var(--dur) var(--ease)'}}
+                    onMouseEnter={e=>{e.currentTarget.style.borderColor=`${tagColor(c.tag)}66`;e.currentTarget.style.transform='translateY(-2px)';e.currentTarget.style.boxShadow='var(--shadow-2)';}}
+                    onMouseLeave={e=>{e.currentTarget.style.borderColor='var(--border)';e.currentTarget.style.transform='none';e.currentTarget.style.boxShadow='var(--shadow-1)';}}>
+                    <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:9,paddingRight:16}}>
+                      <span style={{width:26,height:26,borderRadius:'var(--r-sm)',background:`${tagColor(c.tag)}24`,color:tagColor(c.tag),
+                                    display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,fontSize:13,fontWeight:700}}>#</span>
+                      <span style={{fontSize:13.5,fontWeight:600,color:'var(--text-primary)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',minWidth:0,flex:1}}>
+                        {c.tag.replace(/^#/,'')}
+                      </span>
+                      <span style={{fontSize:15,fontWeight:700,color:tagColor(c.tag),fontFamily:'"JetBrains Mono",monospace'}}>{countOf(c)}</span>
+                    </div>
+                    {/* Under All, the breakdown is the interesting part; under a
+                        single source there is nothing to break down. */}
+                    <div style={{display:'flex',gap:8,fontSize:11,color:'var(--text-secondary)',flexWrap:'wrap'}}>
+                      {src.key
+                        ? <span>{countOf(c)} {plural(countOf(c), src.noun)}</span>
+                        : <>
+                            {c.notes>0   && <span>{c.notes} {plural(c.notes,'note')}</span>}
+                            {c.tasks>0   && <span>{c.tasks} {plural(c.tasks,'task')}</span>}
+                            {c.journal>0 && <span>{c.journal} {plural(c.journal,'entry')}</span>}
+                          </>}
+                    </div>
+                  </button>
+                  <button onClick={()=>setConfirmDeleteTag(c.tag)} className="icon-btn danger"
+                    title="Delete tag"
+                    style={{position:'absolute',top:7,right:7,padding:'3px 4px',zIndex:1}}>
+                    <svg style={{width:11,height:11}} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
+                  </button>
+                </div>
               ))}
             </div>
           </div>
@@ -6370,13 +6473,18 @@ function TagsView({ state, update, isMobile }) {
                 read as one block you can scan rather than thirty objects. */}
             <div style={{display:'flex',flexWrap:'wrap',gap:7}}>
               {rest.map(c => (
-                <button key={c.tag} onClick={()=>openTagIn(c.tag)} className="pill"
-                  style={{color:tagColor(c.tag),background:`${tagColor(c.tag)}14`}}
-                  title={`${c.notes} notes · ${c.tasks} tasks · ${c.journal} journal`}
-                  onMouseEnter={e=>e.currentTarget.style.background=`${tagColor(c.tag)}26`}
-                  onMouseLeave={e=>e.currentTarget.style.background=`${tagColor(c.tag)}14`}>
-                  {c.tag}<span className="pill-count">{countOf(c)}</span>
-                </button>
+                <span key={c.tag} className="pill"
+                  style={{display:'inline-flex',alignItems:'center',gap:0,color:tagColor(c.tag),background:`${tagColor(c.tag)}14`,padding:0}}>
+                  <span onClick={()=>openTagIn(c.tag)} style={{cursor:'pointer',padding:'5px 4px 5px 10px'}}
+                    title={`${c.notes} notes · ${c.tasks} tasks · ${c.journal} journal`}>
+                    {c.tag}<span className="pill-count" style={{marginLeft:4}}>{countOf(c)}</span>
+                  </span>
+                  <span onClick={()=>setConfirmDeleteTag(c.tag)}
+                    style={{cursor:'pointer',padding:'5px 8px 5px 4px',opacity:.55,fontSize:13,lineHeight:1,transition:'opacity 120ms'}}
+                    title="Delete tag"
+                    onMouseEnter={e=>e.currentTarget.style.opacity=1}
+                    onMouseLeave={e=>e.currentTarget.style.opacity=.55}>×</span>
+                </span>
               ))}
             </div>
           </div>
@@ -6384,10 +6492,33 @@ function TagsView({ state, update, isMobile }) {
 
         {visible.length === 0 && (
           <div style={{color:'var(--text-muted)',fontSize:13}}>
-            {query.trim() ? `No tags match "${query}".` : `No tags used on ${src.label.toLowerCase()} yet.`}
+            {query.trim() ? `No tags match "${query}".` : (state.tags||[]).length === 0 ? 'No tags yet. Add tags to your notes or tasks.' : `No tags used on ${src.label.toLowerCase()} yet.`}
           </div>
         )}
       </>)}
+
+      {confirmDeleteTag && (
+        <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,.45)',zIndex:90,display:'flex',alignItems:'center',justifyContent:'center'}}
+          onClick={()=>setConfirmDeleteTag(null)}>
+          <div style={{background:'var(--modal-bg)',border:'1px solid var(--glass-border)',borderRadius:14,padding:'22px 26px',maxWidth:340,width:'90%',boxShadow:'var(--shadow-3)'}}
+            onClick={e=>e.stopPropagation()}>
+            <div style={{fontSize:15,fontWeight:700,marginBottom:8}}>Delete tag?</div>
+            <div style={{fontSize:13,color:'var(--text-secondary)',marginBottom:18,lineHeight:1.5}}>
+              Remove <span style={{color:tagColor(confirmDeleteTag),fontWeight:600}}>{confirmDeleteTag}</span> from all notes, tasks, and journal entries? This cannot be undone.
+            </div>
+            <div style={{display:'flex',gap:8,justifyContent:'flex-end'}}>
+              <button onClick={()=>setConfirmDeleteTag(null)}
+                style={{background:'none',border:'1px solid var(--border-strong)',borderRadius:7,color:'var(--text-secondary)',padding:'7px 16px',cursor:'pointer',fontSize:13,fontFamily:'Manrope,sans-serif'}}>
+                Cancel
+              </button>
+              <button onClick={()=>deleteGlobalTag(confirmDeleteTag)}
+                style={{background:'rgba(244,63,94,.1)',border:'1px solid rgba(244,63,94,.3)',borderRadius:7,color:'var(--danger)',padding:'7px 16px',cursor:'pointer',fontSize:13,fontWeight:600,fontFamily:'Manrope,sans-serif'}}>
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
