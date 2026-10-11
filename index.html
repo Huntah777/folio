@@ -671,7 +671,8 @@ async function buildSchedule(meetings, salah) {
     }
   }
 
-  if (salah?.enabled && salah.lat != null) {
+  /* salah.notify === false mutes prayer alerts while the times stay on screen. */
+  if (salah?.enabled && salah.lat != null && salah.notify !== false) {
     /* The 14-day window spans at most two months, so this is one or two
        requests — and normally zero, since the month is already cached. It used
        to be 14 separate per-day calls every time the schedule was rebuilt. */
@@ -7265,6 +7266,7 @@ function MobileNav({ state, update, syncStatus }) {
 function PrayerSettings({ state, update }) {
   const s = state.salah || {};
   const [enabled,  setEnabled]  = useState(!!s.enabled);
+  const [notify,   setNotify]   = useState(s.notify !== false);
   const [lat,      setLat]      = useState(s.lat !== null && s.lat !== undefined ? String(s.lat) : '');
   const [lng,      setLng]      = useState(s.lng !== null && s.lng !== undefined ? String(s.lng) : '');
   const [method,   setMethod]   = useState(s.method || 'mwl');
@@ -7331,7 +7333,7 @@ function PrayerSettings({ state, update }) {
       if (previewState==='error') { setLocMsg('✗ No prayer times for those coordinates — check them and retry'); return; }
       if (previewState==='loading') { setLocMsg('Still checking those coordinates…'); return; }
     }
-    update('salah',{enabled, lat:isNaN(la)?null:la, lng:isNaN(lo)?null:lo, method, asr, prayers, offsets});
+    update('salah',{enabled, notify, lat:isNaN(la)?null:la, lng:isNaN(lo)?null:lo, method, asr, prayers, offsets});
     setSaveMsg('✓ Saved');
     setTimeout(()=>setSaveMsg(''), 2000);
   };
@@ -7361,6 +7363,18 @@ function PrayerSettings({ state, update }) {
           </div>
 
           {enabled && (<>
+            {/* prayer-time notifications — saves at once, independent of the Save button */}
+            <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:12}}>
+              <div>
+                <div style={{fontSize:14,fontWeight:600,color:'var(--text-primary)'}}>Prayer-time notifications</div>
+                <div style={{fontSize:11,color:'var(--text-secondary)',marginTop:2}}>{notify ? 'Alerts at each prayer time, and 15 and 5 minutes before' : 'Off — times still show in the calendar and Today view'}</div>
+              </div>
+              <button type="button" data-testid="salah-notify" aria-pressed={notify} onClick={()=>{ const v=!notify; setNotify(v); update('salah',{...(state.salah||{}), notify:v}); }}
+                style={{width:42,height:24,borderRadius:12,border:'none',cursor:'pointer',transition:'background 150ms',background:notify?'var(--success)':'var(--border-strong)',position:'relative',flexShrink:0}}>
+                <span style={{position:'absolute',top:3,left:notify?21:3,width:18,height:18,borderRadius:9,background:'#fff',transition:'left 150ms'}}/>
+              </button>
+            </div>
+
             {/* location */}
             <div>
               <label style={{fontSize:12,color:'var(--text-secondary)',display:'block',marginBottom:8}}>Location</label>

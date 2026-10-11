@@ -326,7 +326,8 @@ export async function buildSchedule(state, tz, days) {
      than deliver from a plan that is silently missing every prayer. */
   const salah = state.salah;
   let salahOk = true;
-  if (salah?.enabled && salah.lat != null && salah.lng != null) {
+  /* salah.notify === false mutes prayer alerts (times stay on screen in the app). */
+  if (salah?.enabled && salah.lat != null && salah.lng != null && salah.notify !== false) {
     const offsets = salahOffsets(salah);
     for (const parts of days) {
       try {
