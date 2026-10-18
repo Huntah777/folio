@@ -1,4 +1,4 @@
-const CACHE = 'folio-v49';
+const CACHE = 'folio-v50';
 
 /* Caches used as cross-context storage rather than HTTP caching — a SW has no
    localStorage, so the sync token (needed to re-register a subscription with
@@ -59,8 +59,6 @@ const SHELL = [
   '/vendor/react.min.js',
   '/vendor/react-dom.min.js',
   '/vendor/babel.min.js',
-  /* ~72 KB — precached so flashcard reviews (FSRS scheduling) work offline. */
-  '/vendor/ts-fsrs.umd.js',
   '/vendor/tailwind.min.js',
   '/vendor/prism-tomorrow.min.css',
   '/vendor/prism.min.js',
@@ -276,7 +274,7 @@ self.addEventListener('notificationclick', (event) => {
   event.waitUntil(
     clients.matchAll({ type: 'window' }).then(async (list) => {
       if (!list.length) return clients.openWindow(url);
-      /* A deep link (e.g. /?view=study) has to move the open window there;
+      /* A deep link (e.g. /?view=notes) has to move the open window there;
          plain reminders just bring the app forward as before. */
       if (url !== '/' && list[0].navigate) {
         try { await list[0].navigate(url); } catch {}

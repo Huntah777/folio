@@ -146,120 +146,51 @@ sync/setup modal.
 
 Live logs: `npx wrangler tail` from `push-worker/`.
 
-## 4. Study & AI (flashcards, recall, quizzes, exams, lecture recording)
+## 4. Videos and recordings in notes
 
-The Study view turns notes, PDFs, pasted captions and recorded lectures into
-FSRS-scheduled flashcards, blank-page recall, quizzes and timed mock exams.
-Model calls go through `functions/api/study/[action].js`:
+Nothing to set up — this works with the D1 and R2 steps above.
 
-- **Claude** (Anthropic API): Haiku 4.5 / Sonnet 5.5 / Opus 5.5.
-- **Workers AI**: Whisper transcription, plus Llama 3.3 70B as a free option.
-
-You can change the model for each study type in **Admin → Study & AI**.
-
-### One-time setup
-
-1. **Tables:** re-run the schema. It's safe to re-run; it adds `study_jobs` and `study_attempts`.
-
-   ```
-   npx wrangler d1 execute folio-db --remote --file=./schema.sql
-   ```
-
-2. **Workers AI binding:** nothing to do. It's declared in `wrangler.toml`
-   (`[ai] binding = "AI"`), which manages this project's bindings, so it can't
-   be added in the dashboard and is applied on the next deploy.
-
-3. **Anthropic API key:** create one at console.anthropic.com and set a monthly
-   spend limit there.
-
-   ```powershell
-   npx wrangler pages secret put ANTHROPIC_API_KEY --project-name folio
-   ```
-
-4. **Build command (required):** `@anthropic-ai/sdk` is a real dependency now, and
-   Pages only installs dependencies as part of a build step. With no build
-   command it logs *No build command specified. Skipping build step.*, installs
-   nothing, and the deploy fails with `Could not resolve "@anthropic-ai/sdk"`.
-   In *Dashboard → Workers & Pages → folio → Settings → Build configuration*, set
-   **Build command** to `npm ci`, and leave the output directory as `.`. The next
-   build log should show *Installing project dependencies*.
-
-5. **Push notifications for finished batches (optional):**
-
-   ```powershell
-   npm install                      # at the repo root — the worker imports the SDK from ../node_modules
-   cd push-worker
-   npx wrangler secret put ANTHROPIC_API_KEY
-   npx wrangler deploy
-   cd ..
-   ```
-
-   Without this, batch results still arrive. They're imported the next time you
-   open the Study view; you just don't get a notification.
-
-6. **Microphone:** `_headers` now allows `microphone=(self)`. Recording only
-   works after that deploy is live.
-
-7. **Gemini key for automatic YouTube transcripts (optional, free):** create a key
-   at aistudio.google.com (no card needed; the free tier allows 8 hours of
-   YouTube video a day), then:
-
-   ```powershell
-   npx wrangler pages secret put GEMINI_API_KEY --project-name folio
-   ```
-
-   Only if you later enable billing on that key, also set `GEMINI_BILLING=paid`
-   so Admin → Costs counts it — about $0.30 per hour of video at Oct 2026 prices.
-
-8. **Check it:** go to *Admin → Study & AI → Test connection*. It makes one tiny
-   Haiku call and one tiny Llama call.
-
-### How it works, briefly
-
-- **Batch vs live.** Batch (half price) suits flashcards, quizzes and smart notes,
-  because they can wait a few minutes. Live suits exams and anything interactive.
-  The defaults are Haiku in batch for everyday material, Sonnet live for exams
-  and marking, and Llama for checking typed answers.
-- **Results stay out of the state blob.** AI results never go into the `state`
-  blob from the server. They sit in `study_jobs` until a device imports them,
-  using deterministic ids so two devices can't duplicate cards. The import is
-  then acked and the stored result dropped.
-- **Recordings** are cut into ~4.5-minute segments. Each one is saved in
-  IndexedDB until Whisper has transcribed it. The transcript goes to R2 as a
-  `text/plain` attachment, because an hour is about 50 KB, too much for the blob.
-- **Floating player.** Notes can carry media: a kept recording or a YouTube video.
-  *Play* opens a draggable, resizable window (size and position are remembered per
-  device) that keeps playing while you move around Folio. Its transcript follows
-  along, and clicking a timestamp jumps to that moment.
-- **Kept recordings.** With "Keep the audio" ticked (the default) each ~4.5-minute
-  segment is also uploaded to R2 — about 15 MB per hour, well inside R2's free 10 GB.
-  Playback stitches the segments into one timeline using each segment's *measured*
-  audio length, so it stays accurate even if the phone paused capture mid-lecture.
-  Deleting the note (or the recording) deletes the audio.
+- **Floating player.** Notes can carry media: a YouTube video or a lecture
+  recording kept earlier. *Play* opens a draggable, resizable window (size and
+  position are remembered per device) that keeps playing while you move around
+  Folio. Its transcript follows along, and clicking a timestamp jumps to that
+  moment.
+- **Kept recordings.** Recordings made before the recorder was removed are
+  stored in R2 as ~4.5-minute segments and played back as one timeline, using
+  each segment's *measured* audio length. Deleting the note (or the recording)
+  deletes the audio. There is no way to record new ones any more.
 - **YouTube.** Videos play through YouTube's official embedded player, so
   `_headers` allows `youtube-nocookie.com` frames and `www.youtube.com` scripts
   (and `blob:` audio). Some videos — often music — can't be embedded; Folio
   remembers that and offers *Open ↗* instead.
 - **YouTube transcripts.** YouTube no longer hands captions to servers (tested
-  2026-10-02), so Folio has three routes, tried in this order:
-  1. **Gemini (automatic, phone or desktop):** paste a link and Gemini transcribes
-     the video — needs `GEMINI_API_KEY` (step 7). Public videos only; the text is
-     AI-generated, so it's close but not guaranteed word-for-word. It works in 15-minute
-     parts, one request each. Gemini can take minutes per part, so the server
-     answers immediately and streams a heartbeat every 10 s until the transcript
-     is ready — Cloudflare only cuts off requests that go silent for ~100 s.
-     Keep the page open while it works (roughly one to three minutes per part);
-     if a part fails, pressing Look up again carries on from where it stopped.
-     (Gemini's "background job" mode can't be used: Google refuses to let an API
-     key check on a job.)
-  2. **"Send to Folio" bookmark (free, desktop):** shown under the paste box. Drag
+  2026-10-02). Pasting a link still looks up the title, channel and whether the
+  owner allows embedding (`/api/youtube`), and picks up captions if YouTube ever
+  hands them over. For the transcript itself there are two routes:
+  1. **"Send to Folio" bookmark (free, desktop):** shown under the paste box. Drag
      it to the bookmarks bar once; on any YouTube video, click it and Folio opens
-     with YouTube's own captions filled in. It works because YouTube still serves
-     captions to its own page — it briefly asks the player to load captions, then
-     puts them back as they were. Nothing passes through a server.
-  3. **Paste** (YouTube → …more → Show transcript → copy all) for anything else.
-- **Spend:** *Admin → Study & AI → Show last 30 days* reports an estimate from
-  logged token usage.
+     with YouTube's own captions filled in — as a new note with the video ready to
+     play. It works because YouTube still serves captions to its own page: it
+     briefly asks the player to load captions, then puts them back as they were.
+     Nothing passes through a server.
+  2. **Paste** (YouTube → …more → Show transcript → copy all) for anything else.
+
+### If this Folio used to have the AI features
+
+They were removed (flashcards, quizzes, exams, lecture recording and the
+Claude / Gemini / Workers AI calls behind them). Nothing breaks if you leave the
+old setup in place, but you can tidy it up:
+
+```
+# the two tables the old Study feature used (optional; they're empty weight now)
+npx wrangler d1 execute folio-db --remote --command "DROP TABLE IF EXISTS study_jobs; DROP TABLE IF EXISTS study_attempts;"
+```
+
+- Delete the `ANTHROPIC_API_KEY`, `GEMINI_API_KEY` and `GEMINI_BILLING` secrets
+  from the Pages project, and `ANTHROPIC_API_KEY` from the push Worker.
+- The Pages **Build command** (`npm ci`) was only there to install the Anthropic
+  SDK. It can go back to empty, with the output directory still `.`.
+- Cards and study sets already saved in your synced data are ignored, not deleted.
 
 ---
 
@@ -267,12 +198,9 @@ You can change the model for each study type in **Admin → Study & AI**.
 
 | Name | Notes |
 |---|---|
-| `SYNC_TOKEN` | Secret. Same value on every device you sync. Guards `/api/state`, `/api/push` and `/api/files`, and the push Worker's `/run`, `/test` and `/status`. |
-| `ANTHROPIC_API_KEY` | Secret. Claude calls for Study (see section 4). Also set on the push Worker if you want batch-ready notifications. |
-| `GEMINI_API_KEY` | Secret, optional. Automatic YouTube transcripts via Gemini's free tier (section 4, step 7). |
-| `GEMINI_BILLING` | Optional. Set to `paid` only if the Gemini key has billing on, so Costs counts it. |
+| `SYNC_TOKEN` | Secret. Same value on every device you sync. Guards `/api/state`, `/api/push`, `/api/files` and `/api/youtube`, and the push Worker's `/run`, `/test` and `/status`. |
 
 ## After deploying
 
 Bump `CACHE` in `sw.js` whenever static assets change, or clients keep serving
-the old cached copy. Currently `folio-v46`.
+the old cached copy. Currently `folio-v50`.
