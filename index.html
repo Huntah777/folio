@@ -1823,6 +1823,12 @@ const PROMPTS_EVENING = [
   'What do you need tomorrow that you didn\'t give yourself today?',
   'What are you taking to bed with you — in your mind — and can it wait until morning?',
   'On a scale of 0–10, how intentional were you today? What would move the needle?',
+  /* CBT: catching and testing thoughts */
+  'When did your mood dip today? What was going through your mind right before it did?',
+  'What thought upset you most today? What is the evidence for it — and against it?',
+  'Did you mind-read, catastrophise or fortune-tell today? What would a more balanced thought be?',
+  'Which "should" or "must" did you put on yourself today? How would it sound as a preference instead?',
+  'What did you avoid today because of anxiety? What did you predict would happen if you hadn\'t?',
 ];
 const PROMPTS_DEEP = [
   /* meaning & purpose */
@@ -1842,6 +1848,101 @@ const PROMPTS_DEEP = [
   'If your actions over the past month were your only autobiography, what would it say about you?',
   'What version of yourself are you grieving? What are you becoming?',
   'What do you believe now that you didn\'t believe five years ago? What changed?',
+  /* CBT: core beliefs and rules for living */
+  'Finish this sentence honestly: "If I fail, it means I am…" Where did that belief come from, and is it fair?',
+  'What rule for living ("I must always…", "I can never…") is costing you the most? What would a kinder rule be?',
+  'What evidence from the last year does NOT fit the harshest thing you believe about yourself?',
+];
+
+/* ── CBT journaling templates — a fill-in structure plus a short worked
+   example for each, inserted into the composer from the "CBT" picker. ── */
+const CBT_TEMPLATES = [
+  {
+    id:'thought-record', label:'Thought record',
+    blurb:'Catch an upsetting thought, test it, and find a more balanced one.',
+    template:
+`**Situation:** (where, when, who — just the facts)
+**Feelings:** (name them, rate 0–100%)
+**Automatic thought:** (what went through my mind?)
+**Evidence for:**
+**Evidence against:**
+**Balanced thought:**
+**Feelings now:** (re-rate 0–100%)`,
+    example:
+`**Situation:** Sent my manager the report at 4pm. No reply by 6.
+**Feelings:** Anxious 80%, embarrassed 50%
+**Automatic thought:** "She hates it. She thinks I'm not good enough for this job."
+**Evidence for:** She usually replies quickly. I rushed the last section.
+**Evidence against:** She was in back-to-back meetings all afternoon. She praised my last two reports. Silence isn't feedback.
+**Balanced thought:** She probably hasn't read it yet. If the last section needs work, she'll say so and I can fix it.
+**Feelings now:** Anxious 30%, embarrassed 10%`,
+  },
+  {
+    id:'distortions', label:'Thinking traps',
+    blurb:'Spot the cognitive distortion behind a thought and reframe it.',
+    template:
+`**The thought:**
+**Thinking trap(s):** (all-or-nothing · catastrophising · mind-reading · fortune-telling · overgeneralising · "should" statements · labelling · discounting the positive · emotional reasoning · personalising)
+**What I'd tell a friend who thought this:**
+**Reframe:**`,
+    example:
+`**The thought:** "I stumbled over one slide, so the whole presentation was a disaster."
+**Thinking trap(s):** All-or-nothing, discounting the positive
+**What I'd tell a friend who thought this:** One stumble in twenty minutes is normal — people remember the ideas, not the pause.
+**Reframe:** Most of it went well and two people asked follow-up questions. Next time I'll rehearse the opening slide once more.`,
+  },
+  {
+    id:'experiment', label:'Behavioural experiment',
+    blurb:'Test a fearful prediction with a small real-world experiment.',
+    template:
+`**Prediction:** (what I fear will happen — how strongly I believe it, 0–100%)
+**Experiment:** (what I'll do to test it, and when)
+**What actually happened:**
+**What I learned:**
+**Belief in the prediction now:** (0–100%)`,
+    example:
+`**Prediction:** If I speak up in tomorrow's lecture, people will think my question is stupid. (75%)
+**Experiment:** Ask one question in the first 20 minutes.
+**What actually happened:** The lecturer said "good question" and two others nodded. Nobody looked at me afterwards.
+**What I learned:** Other people are mostly focused on themselves. My question helped someone else too.
+**Belief in the prediction now:** 20%`,
+  },
+  {
+    id:'decatastrophise', label:'Decatastrophise',
+    blurb:'Walk a worry through worst, best and most likely outcomes.',
+    template:
+`**What I'm worried about:**
+**Worst case:**
+**How I'd cope if it happened:**
+**Best case:**
+**Most likely:**
+**One step I can take now:**`,
+    example:
+`**What I'm worried about:** Failing my exam on Friday.
+**Worst case:** I fail and have to resit in summer.
+**How I'd cope if it happened:** Use the summer to revise properly; a resit isn't the end of the degree.
+**Best case:** I pass comfortably.
+**Most likely:** I pass, maybe not with the grade I want.
+**One step I can take now:** Do two past-paper questions tonight instead of re-reading notes.`,
+  },
+  {
+    id:'positive-log', label:'Positive data log',
+    blurb:'Collect evidence against a negative belief about yourself.',
+    template:
+`**Belief I'm challenging:** (e.g. "I'm useless")
+**Today's evidence that doesn't fit it:**
+1.
+2.
+3.
+**What this says instead:**`,
+    example:
+`**Belief I'm challenging:** "I always let people down."
+**Today's evidence that doesn't fit it:**
+1. Covered Sam's shift at short notice.
+2. Finished the group-project section a day early.
+3. Called Mum back like I said I would.
+**What this says instead:** I'm someone who keeps most of my commitments, even when I'm tired.`,
+  },
 ];
 function dayOfYear(date) {
   const start = new Date(date.getFullYear(), 0, 0);
@@ -5973,6 +6074,16 @@ function JournalView({ state, update, isMobile }) {
   const [composerMood, setComposerMood]   = useState(null);
   const [composerTags, setComposerTags]   = useState([]);
   const [usePrompt, setUsePrompt]         = useState(false);
+  const [cbtId, setCbtId]                 = useState(null);
+  const [showCbtExample, setShowCbtExample] = useState(false);
+  const cbtTemplate = CBT_TEMPLATES.find(t => t.id === cbtId) || null;
+  /* Drops the template into the composer (after anything already written)
+     and tags the entry #cbt so these are easy to find again later. */
+  const insertCbt = t => {
+    setCbtId(t.id); setShowCbtExample(false);
+    setComposerText(txt => txt.trim() ? `${txt.trimEnd()}\n\n${t.template}` : t.template);
+    setComposerTags(tags => tags.includes('#cbt') ? tags : [...tags, '#cbt']);
+  };
   const [editingId, setEditingId]         = useState(null);
   const [editText, setEditText]           = useState('');
   const [editMood, setEditMood]           = useState(null);
@@ -6052,7 +6163,7 @@ function JournalView({ state, update, isMobile }) {
     if (!composerText.trim()) return;
     const entry = { id:uid(), date:todayKey(), created:Date.now(), updated:Date.now(), body:composerText.trim(), prompt:usePrompt?prompt:null, mood:composerMood, tags:composerTags };
     update('journal', [entry, ...entries]);
-    setComposerText(''); setComposerMood(null); setUsePrompt(false);
+    setComposerText(''); setComposerMood(null); setUsePrompt(false); setCbtId(null); setShowCbtExample(false);
     /* A new entry is always dated today — jump the view back to this week so
        it's actually visible, rather than landing silently in a week you're
        not looking at because you were browsing old entries when you wrote it. */
@@ -6108,8 +6219,35 @@ function JournalView({ state, update, isMobile }) {
             </span>
           )}
         </div>
+        {/* CBT templates — insert a structure, optionally peek at a worked example */}
+        <div style={{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap'}}>
+          <span style={{fontSize:11,fontWeight:700,letterSpacing:'.06em',color:'var(--text-muted)',textTransform:'uppercase',marginRight:2}}>CBT</span>
+          {CBT_TEMPLATES.map(t=>(
+            <button type="button" key={t.id} onClick={()=>insertCbt(t)} title={t.blurb}
+              style={{fontSize:11.5,padding:'4px 10px',borderRadius:999,cursor:'pointer',fontFamily:'Manrope,sans-serif',
+                border:`1px solid ${cbtId===t.id?'var(--accent)':'var(--border)'}`,
+                background:cbtId===t.id?'rgba(129,140,248,.12)':'transparent',
+                color:cbtId===t.id?'var(--accent)':'var(--text-secondary)'}}>
+              {t.label}
+            </button>
+          ))}
+        </div>
+        {cbtTemplate && (
+          <div style={{fontSize:12,color:'var(--text-secondary)',lineHeight:1.5}}>
+            {cbtTemplate.blurb}{' '}
+            <span onClick={()=>setShowCbtExample(v=>!v)} style={{color:'var(--accent)',cursor:'pointer',userSelect:'none'}}>
+              {showCbtExample ? 'Hide example' : 'See an example'}
+            </span>
+            {showCbtExample && (
+              <div style={{marginTop:8,padding:'10px 12px',borderRadius:8,background:'var(--bg-surface)',border:'1px solid var(--border)'}}>
+                <div style={{fontSize:10.5,fontWeight:700,letterSpacing:'.06em',color:'var(--text-muted)',textTransform:'uppercase',marginBottom:6}}>Worked example</div>
+                <MarkdownView content={cbtTemplate.example}/>
+              </div>
+            )}
+          </div>
+        )}
         <textarea value={composerText} onChange={e=>setComposerText(e.target.value)}
-          placeholder={usePrompt ? prompt : "Write whatever's on your mind…"} rows={3}
+          placeholder={usePrompt ? prompt : "Write whatever's on your mind…"} rows={Math.min(14, Math.max(3, composerText.split('\n').length + 1))}
           style={{background:'transparent',border:'none',outline:'none',resize:'vertical',fontFamily:'Manrope,sans-serif',fontSize:14,color:'var(--text-primary)',lineHeight:1.6,width:'100%'}}/>
         <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:10}}>
           <div style={{display:'flex',alignItems:'center',gap:14,flexWrap:'wrap'}}>
