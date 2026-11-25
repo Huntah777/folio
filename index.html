@@ -1217,7 +1217,7 @@ function mergeById(localItems, remoteItems, localTombstones, remoteTombstones) {
 }
 
 /* Collections that carry soft-delete tombstones — see mergeById above. */
-const TOMBSTONE_COLLECTIONS = ['notes','tasks','meetings','journal'];
+const TOMBSTONE_COLLECTIONS = ['notes','tasks','meetings','journal','courses'];
 
 /* Restoring a full-state backup (Admin → Data → Import) is a deliberate
    "make the app look like this snapshot" action, unlike a routine sync merge
@@ -1334,7 +1334,7 @@ const BANNERS_KEY = 'folio_banners';
 const LegacyBannerPrefs = {
   get() { try { return JSON.parse(localStorage.getItem(BANNERS_KEY)) || {}; } catch { return {}; } },
 };
-const SECTION_LABELS = { today:'Today', notes:'Notes', journal:'Journal', tasks:'Tasks', calendar:'Calendar', tags:'Tags', folders:'Folders', admin:'Admin' };
+const SECTION_LABELS = { today:'Today', notes:'Notes', journal:'Journal', tasks:'Tasks', calendar:'Calendar', tags:'Tags', folders:'Folders', student:'Student', admin:'Admin' };
 const BANNER_GRADIENTS = [
   'linear-gradient(135deg,#667eea,#764ba2)',
   'linear-gradient(135deg,#f093fb,#f5576c)',
@@ -1370,6 +1370,8 @@ const SEED = () => ({
            /* per-prayer minute adjustments — see salahOffsets() */
            offsets:{fajr:0,sunrise:0,dhuhr:0,asr:0,maghrib:0,isha:0} },
   banners: {},
+  courses: [],
+  coursesDeleted: [],
   /* `timezone` is the IANA zone the cron Worker builds notification times in —
      a Worker has no implicit local timezone, so without this every reminder
      would land at the UTC-equivalent time. Set automatically from the browser
@@ -1586,6 +1588,7 @@ const Ic = {
   shrink:  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/></svg>,
   admin:   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2"/></svg>,
   folders: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/><line x1="2" y1="10" x2="22" y2="10"/></svg>,
+  student: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M22 10v6M2 10l10-5 10 5-10 5z"/><path d="M6 12v5c3 3 9 3 12 0v-5"/></svg>,
 };
 
 /* `mermaid` is a real fenced language here — a ```mermaid block renders as a
@@ -6517,6 +6520,7 @@ function Sidebar({ state, update, syncStatus, onSync, collapsed, onToggle }) {
     {id:'calendar', label:'Calendar', icon:Ic.cal},
     {id:'tags',     label:'Tags',     icon:Ic.tags},
     {id:'folders',  label:'Folders',  icon:Ic.folders},
+    {id:'student',  label:'Student',  icon:Ic.student},
     {id:'admin',    label:'Admin',    icon:Ic.admin},
   ];
 
@@ -6887,6 +6891,7 @@ function MobileNav({ state, update, syncStatus }) {
         {id:'calendar',label:'Cal',    icon:Ic.cal},
         {id:'tags',    label:'Tags',   icon:Ic.tags},
         {id:'folders', label:'Folder', icon:Ic.folders},
+        {id:'student', label:'Student',icon:Ic.student},
       ].map(({id,label,icon})=>(
         <button key={id} onClick={()=>nav(id)} style={navBtnStyle(view===id)}>
           <span style={{width:20,height:20,display:'flex',alignItems:'center',justifyContent:'center'}}>{icon}</span>
@@ -9017,6 +9022,547 @@ function PomodoroWidget({ pom, setPom, tasks, update, isMobile }) {
   );
 }
 
+/* ── StudentView ── */
+function StudentView({ state, update, isMobile }) {
+  const courses = state.courses || [];
+  const [selectedId, setSelectedId] = useState(null);
+  const [showForm, setShowForm] = useState(false);
+  const [editingId, setEditingId] = useState(null);
+  const [form, setForm] = useState({});
+  const [expandedMods, setExpandedMods] = useState(new Set());
+  const [addingModule, setAddingModule] = useState(false);
+  const [moduleInput, setModuleInput] = useState('');
+  const [addingLesson, setAddingLesson] = useState(null);
+  const [lessonInput, setLessonInput] = useState('');
+  const [showAddAssign, setShowAddAssign] = useState(false);
+  const [assignForm, setAssignForm] = useState({});
+
+  const selected = courses.find(c => c.id === selectedId) || null;
+
+  const COURSE_COLORS = [
+    { id:'purple', hex:'#a78bfa' },
+    { id:'blue',   hex:'#60a5fa' },
+    { id:'green',  hex:'#34d399' },
+    { id:'orange', hex:'#fb923c' },
+    { id:'pink',   hex:'#f472b6' },
+    { id:'teal',   hex:'#2dd4bf' },
+  ];
+  const colorHex = id => COURSE_COLORS.find(c => c.id === id)?.hex || '#a78bfa';
+
+  const courseProgress = c => {
+    const lessons = (c.modules || []).flatMap(m => m.lessons || []);
+    if (!lessons.length) {
+      const mods = c.modules || [];
+      return mods.length ? Math.round(mods.filter(m => m.completed).length / mods.length * 100) : 0;
+    }
+    return Math.round(lessons.filter(l => l.done).length / lessons.length * 100);
+  };
+
+  const daysLeft = endDate => {
+    if (!endDate) return null;
+    return Math.ceil((new Date(endDate) - new Date()) / 86400000);
+  };
+
+  const totalLessons = c => (c.modules || []).flatMap(m => m.lessons || []).length;
+  const doneLessons  = c => (c.modules || []).flatMap(m => m.lessons || []).filter(l => l.done).length;
+
+  const updateCourse = (id, patch) =>
+    update('courses', prev => (prev || []).map(c => c.id === id ? { ...c, ...patch, updated: Date.now() } : c));
+
+  const openAdd = () => {
+    setForm({ emoji:'📚', title:'', description:'', instructor:'', platform:'', url:'', startDate:'', endDate:'', status:'active', color:'purple' });
+    setEditingId(null); setShowForm(true);
+  };
+  const openEdit = c => { setForm({ ...c }); setEditingId(c.id); setShowForm(true); };
+  const closeForm = () => { setShowForm(false); setEditingId(null); };
+
+  const saveForm = () => {
+    if (!form.title?.trim()) return;
+    if (editingId) {
+      updateCourse(editingId, { ...form, title: form.title.trim() });
+    } else {
+      const c = { ...form, id: uid(), title: form.title.trim(), modules: [], assignments: [], notes: '', created: Date.now(), updated: Date.now() };
+      update('courses', prev => [c, ...(prev || [])]);
+    }
+    closeForm();
+  };
+
+  const deleteCourse = id => {
+    if (!confirm('Delete this course and all its data?')) return;
+    update('courses', prev => (prev || []).filter(c => c.id !== id));
+    update('coursesDeleted', prev => [...(prev || []), { id, deletedAt: Date.now() }]);
+    if (selectedId === id) setSelectedId(null);
+  };
+
+  const toggleLesson = (cid, mid, lid) =>
+    update('courses', prev => (prev || []).map(c => c.id !== cid ? c : {
+      ...c, updated: Date.now(),
+      modules: (c.modules || []).map(m => m.id !== mid ? m : {
+        ...m, lessons: (m.lessons || []).map(l => l.id === lid ? { ...l, done: !l.done } : l),
+      }),
+    }));
+
+  const addModule = cid => {
+    if (!moduleInput.trim()) return;
+    const m = { id: uid(), title: moduleInput.trim(), completed: false, lessons: [] };
+    update('courses', prev => (prev || []).map(c => c.id !== cid ? c : { ...c, modules: [...(c.modules || []), m], updated: Date.now() }));
+    setModuleInput(''); setAddingModule(false);
+  };
+
+  const addLesson = (cid, mid) => {
+    if (!lessonInput.trim()) return;
+    const l = { id: uid(), title: lessonInput.trim(), done: false };
+    update('courses', prev => (prev || []).map(c => c.id !== cid ? c : {
+      ...c, updated: Date.now(),
+      modules: (c.modules || []).map(m => m.id !== mid ? m : { ...m, lessons: [...(m.lessons || []), l] }),
+    }));
+    setLessonInput(''); setAddingLesson(null);
+  };
+
+  const toggleAssign = (cid, aid) =>
+    update('courses', prev => (prev || []).map(c => c.id !== cid ? c : {
+      ...c, updated: Date.now(),
+      assignments: (c.assignments || []).map(a => a.id === aid ? { ...a, done: !a.done } : a),
+    }));
+
+  const addAssignment = cid => {
+    if (!assignForm.title?.trim()) return;
+    const a = { id: uid(), title: assignForm.title.trim(), due: assignForm.due || '', weight: assignForm.weight || '', grade: '', done: false };
+    update('courses', prev => (prev || []).map(c => c.id !== cid ? c : { ...c, assignments: [...(c.assignments || []), a], updated: Date.now() }));
+    setAssignForm({}); setShowAddAssign(false);
+  };
+
+  const setGrade = (cid, aid, grade) =>
+    update('courses', prev => (prev || []).map(c => c.id !== cid ? c : {
+      ...c, updated: Date.now(),
+      assignments: (c.assignments || []).map(a => a.id === aid ? { ...a, grade } : a),
+    }));
+
+  const STATUS_INFO = {
+    active:    { label:'Active',    color:'var(--success)',  bg:'rgba(52,211,153,.12)'   },
+    paused:    { label:'Paused',    color:'var(--warning)',  bg:'rgba(251,191,36,.12)'   },
+    completed: { label:'Completed', color:'var(--accent)',   bg:'rgba(167,139,250,.15)'  },
+  };
+
+  const inp = { background:'var(--bg-surface-2)', border:'1px solid var(--border)', borderRadius:7, color:'var(--text-primary)', fontSize:13, padding:'7px 11px', outline:'none', fontFamily:'Manrope,sans-serif', width:'100%', boxSizing:'border-box' };
+  const pad = isMobile ? '20px 16px' : '32px 36px';
+
+  const CourseModal = () => !showForm ? null : (
+    <div className="modal-bg" onClick={e => { if (e.target === e.currentTarget) closeForm(); }}>
+      <div className="modal fadeUp" style={{ width:460, maxWidth:'95vw', maxHeight:'90vh', overflowY:'auto' }}>
+        <div style={{ padding:'18px 22px', borderBottom:'1px solid var(--border)', display:'flex', justifyContent:'space-between', alignItems:'center', position:'sticky', top:0, background:'var(--modal-bg)', zIndex:1 }}>
+          <div style={{ fontFamily:'Fraunces,serif', fontSize:16, fontWeight:600 }}>{editingId ? 'Edit Course' : 'New Course'}</div>
+          <button onClick={closeForm} style={{ background:'none', border:'none', color:'var(--text-secondary)', cursor:'pointer', fontSize:20, lineHeight:1 }}>×</button>
+        </div>
+        <div style={{ padding:'18px 22px', display:'flex', flexDirection:'column', gap:12 }}>
+          <div style={{ display:'flex', gap:8 }}>
+            <input value={form.emoji||'📚'} onChange={e => setForm(f => ({ ...f, emoji:e.target.value }))}
+              style={{ width:48, textAlign:'center', fontSize:20, background:'var(--bg-surface-2)', border:'1px solid var(--border)', borderRadius:7, color:'var(--text-primary)', padding:'5px 4px', outline:'none', fontFamily:'Manrope,sans-serif' }}/>
+            <input value={form.title||''} onChange={e => setForm(f => ({ ...f, title:e.target.value }))}
+              placeholder="Course title *" onKeyDown={e => e.key==='Enter' && saveForm()}
+              style={{ ...inp, flex:1, width:'auto' }}/>
+          </div>
+          <input value={form.description||''} onChange={e => setForm(f => ({ ...f, description:e.target.value }))} placeholder="Description (optional)" style={inp}/>
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8 }}>
+            <input value={form.instructor||''} onChange={e => setForm(f => ({ ...f, instructor:e.target.value }))} placeholder="Instructor" style={inp}/>
+            <input value={form.platform||''} onChange={e => setForm(f => ({ ...f, platform:e.target.value }))} placeholder="Platform (e.g. Udemy)" style={inp}/>
+          </div>
+          <input value={form.url||''} onChange={e => setForm(f => ({ ...f, url:e.target.value }))} placeholder="Course URL (optional)" style={inp}/>
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8 }}>
+            <div>
+              <div style={{ fontSize:10.5, color:'var(--text-secondary)', marginBottom:4 }}>Start date</div>
+              <input type="date" value={form.startDate||''} onChange={e => setForm(f => ({ ...f, startDate:e.target.value }))} style={inp}/>
+            </div>
+            <div>
+              <div style={{ fontSize:10.5, color:'var(--text-secondary)', marginBottom:4 }}>Expected end date</div>
+              <input type="date" value={form.endDate||''} onChange={e => setForm(f => ({ ...f, endDate:e.target.value }))} style={inp}/>
+            </div>
+          </div>
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8 }}>
+            <div>
+              <div style={{ fontSize:10.5, color:'var(--text-secondary)', marginBottom:4 }}>Status</div>
+              <select value={form.status||'active'} onChange={e => setForm(f => ({ ...f, status:e.target.value }))} style={{ ...inp, padding:'7px 11px' }}>
+                <option value="active">Active</option>
+                <option value="paused">Paused</option>
+                <option value="completed">Completed</option>
+              </select>
+            </div>
+            <div>
+              <div style={{ fontSize:10.5, color:'var(--text-secondary)', marginBottom:4 }}>Colour</div>
+              <div style={{ display:'flex', gap:7, paddingTop:6, flexWrap:'wrap' }}>
+                {COURSE_COLORS.map(col => (
+                  <div key={col.id} onClick={() => setForm(f => ({ ...f, color:col.id }))}
+                    style={{ width:22, height:22, borderRadius:99, background:col.hex, cursor:'pointer', border:form.color===col.id?'2.5px solid var(--text-primary)':'2.5px solid transparent', boxSizing:'border-box' }}/>
+                ))}
+              </div>
+            </div>
+          </div>
+          <div style={{ display:'flex', gap:8, justifyContent:'flex-end', paddingTop:4 }}>
+            <button onClick={closeForm}
+              style={{ background:'var(--fill)', border:'1px solid var(--border)', borderRadius:7, color:'var(--text-secondary)', cursor:'pointer', fontSize:12.5, padding:'7px 16px', fontFamily:'Manrope,sans-serif' }}>Cancel</button>
+            <button onClick={saveForm} disabled={!form.title?.trim()}
+              style={{ background:form.title?.trim()?'var(--accent)':'var(--fill)', border:'none', borderRadius:7, color:form.title?.trim()?'#fff':'var(--text-muted)', cursor:form.title?.trim()?'pointer':'not-allowed', fontSize:12.5, fontWeight:600, padding:'7px 20px', fontFamily:'Manrope,sans-serif' }}>
+              {editingId ? 'Save changes' : 'Add course'}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
+  /* ── Detail view ── */
+  if (selected) {
+    const pct    = courseProgress(selected);
+    const days   = daysLeft(selected.endDate);
+    const accent = colorHex(selected.color);
+    const si     = STATUS_INFO[selected.status] || STATUS_INFO.active;
+    const doneC  = doneLessons(selected);
+    const totalC = totalLessons(selected);
+    const upcoming   = (selected.assignments || []).filter(a => !a.done).sort((a, b) => (a.due||'').localeCompare(b.due||''));
+    const doneAssigns = (selected.assignments || []).filter(a => a.done);
+
+    return (
+      <div style={{ flex:1, overflowY:'auto', overflowX:'hidden', padding:pad }} className="scrollbar">
+        {/* Back row */}
+        <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:isMobile?16:24 }}>
+          <button onClick={() => setSelectedId(null)}
+            style={{ background:'var(--fill)', border:'1px solid var(--border)', borderRadius:7, color:'var(--text-secondary)', cursor:'pointer', padding:'5px 12px', fontSize:12, display:'flex', alignItems:'center', gap:5, fontFamily:'Manrope,sans-serif' }}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ width:12, height:12 }}><polyline points="15 18 9 12 15 6"/></svg>
+            Courses
+          </button>
+          <div style={{ flex:1 }}/>
+          <button onClick={() => openEdit(selected)}
+            style={{ background:'var(--fill)', border:'1px solid var(--border)', borderRadius:7, color:'var(--text-secondary)', cursor:'pointer', padding:'5px 12px', fontSize:12, fontFamily:'Manrope,sans-serif' }}>Edit</button>
+          <button onClick={() => deleteCourse(selected.id)}
+            style={{ background:'none', border:'1px solid var(--danger)', borderRadius:7, color:'var(--danger)', cursor:'pointer', padding:'5px 12px', fontSize:12, fontFamily:'Manrope,sans-serif' }}>Delete</button>
+        </div>
+
+        {/* Header */}
+        <div style={{ display:'flex', alignItems:'flex-start', gap:16, marginBottom:24 }}>
+          <span style={{ fontSize:36, lineHeight:1, flexShrink:0 }}>{selected.emoji||'📚'}</span>
+          <div style={{ flex:1, minWidth:0 }}>
+            <div style={{ fontFamily:'Fraunces,serif', fontSize:isMobile?20:26, fontWeight:600, wordBreak:'break-word', lineHeight:1.15 }}>{selected.title}</div>
+            {(selected.instructor||selected.platform) && (
+              <div style={{ color:'var(--text-secondary)', fontSize:13, marginTop:4 }}>{[selected.instructor,selected.platform].filter(Boolean).join(' · ')}</div>
+            )}
+            {selected.description && (
+              <div style={{ color:'var(--text-tertiary)', fontSize:13, marginTop:6, lineHeight:1.55, maxWidth:600 }}>{selected.description}</div>
+            )}
+          </div>
+        </div>
+
+        {/* Stats cards */}
+        <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(4,1fr)', gap:12, marginBottom:20 }}>
+          {[
+            { label:'Status',       val:<span style={{ color:si.color, background:si.bg, borderRadius:5, padding:'2px 8px', fontSize:12, fontWeight:600 }}>{si.label}</span> },
+            { label:'Started',      val:selected.startDate ? new Date(selected.startDate).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'}) : '—' },
+            { label:'Target date',  val:selected.endDate   ? new Date(selected.endDate).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'}) : '—' },
+            { label:days===null?'Progress':days<0?'Overdue':days===0?'Deadline':'Days left',
+              val:days===null ? `${pct}%`
+                : days<0  ? <span style={{ color:'var(--danger)',   fontWeight:600 }}>{Math.abs(days)}d overdue</span>
+                : days===0? <span style={{ color:'var(--warning)',  fontWeight:600 }}>Today!</span>
+                :           <span style={{ color:days<7?'var(--warning)':'var(--text-primary)', fontWeight:600 }}>{days}d</span> },
+          ].map(({ label, val }) => (
+            <div key={label} className="card" style={{ padding:'12px 16px' }}>
+              <div style={{ fontSize:10, fontWeight:700, letterSpacing:'.07em', color:'var(--text-secondary)', textTransform:'uppercase', marginBottom:5 }}>{label}</div>
+              <div style={{ fontSize:14, color:'var(--text-primary)' }}>{val}</div>
+            </div>
+          ))}
+        </div>
+
+        {/* Progress bar */}
+        <div className="card" style={{ padding:'14px 18px', marginBottom:24 }}>
+          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:8 }}>
+            <div style={{ fontSize:11, fontWeight:700, letterSpacing:'.06em', color:'var(--text-secondary)', textTransform:'uppercase' }}>Overall progress</div>
+            <div style={{ fontSize:13, fontWeight:600, color:accent }}>{pct}% · {doneC}/{totalC} lessons</div>
+          </div>
+          <div style={{ height:8, background:'var(--fill)', borderRadius:99, overflow:'hidden' }}>
+            <div style={{ height:'100%', width:`${pct}%`, background:`linear-gradient(90deg,${accent}99,${accent})`, borderRadius:99, transition:'width .4s var(--ease)' }}/>
+          </div>
+        </div>
+
+        <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:20, alignItems:'start' }}>
+          {/* Modules */}
+          <div>
+            <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:12 }}>
+              <div style={{ fontSize:11, fontWeight:700, letterSpacing:'.08em', color:'var(--accent)', textTransform:'uppercase' }}>Modules & Lessons</div>
+              <button onClick={() => setAddingModule(v => !v)}
+                style={{ background:'none', border:'none', color:'var(--accent)', cursor:'pointer', fontSize:12, fontFamily:'Manrope,sans-serif', padding:0 }}>+ Module</button>
+            </div>
+
+            {addingModule && (
+              <div style={{ display:'flex', gap:6, marginBottom:10 }}>
+                <input autoFocus value={moduleInput} onChange={e => setModuleInput(e.target.value)}
+                  onKeyDown={e => { if(e.key==='Enter') addModule(selected.id); if(e.key==='Escape'){setAddingModule(false);setModuleInput('');} }}
+                  placeholder="Module name…"
+                  style={{ flex:1, background:'var(--bg-surface-2)', border:'1px solid var(--accent-ring)', borderRadius:6, color:'var(--text-primary)', fontSize:12, padding:'5px 9px', outline:'none', fontFamily:'Manrope,sans-serif' }}/>
+                <button onClick={() => addModule(selected.id)} style={{ background:'var(--accent)', border:'none', borderRadius:6, color:'#fff', fontSize:11, padding:'5px 10px', cursor:'pointer', fontFamily:'Manrope,sans-serif' }}>Add</button>
+                <button onClick={() => { setAddingModule(false); setModuleInput(''); }} style={{ background:'var(--fill)', border:'1px solid var(--border)', borderRadius:6, color:'var(--text-secondary)', fontSize:11, padding:'5px 10px', cursor:'pointer', fontFamily:'Manrope,sans-serif' }}>✕</button>
+              </div>
+            )}
+
+            {(selected.modules||[]).length===0 && !addingModule && (
+              <div style={{ color:'var(--text-muted)', fontSize:13, padding:'12px 0' }}>No modules yet. Add one to track lessons.</div>
+            )}
+
+            {(selected.modules||[]).map(mod => {
+              const isExpanded   = expandedMods.has(mod.id);
+              const modLessons   = mod.lessons || [];
+              const modDone      = modLessons.filter(l => l.done).length;
+              const isAddingHere = addingLesson === mod.id;
+              return (
+                <div key={mod.id} className="card" style={{ marginBottom:8, overflow:'hidden' }}>
+                  <div onClick={() => setExpandedMods(prev => { const s=new Set(prev); s.has(mod.id)?s.delete(mod.id):s.add(mod.id); return s; })}
+                    style={{ display:'flex', alignItems:'center', gap:8, padding:'10px 14px', cursor:'pointer' }}>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ width:11, height:11, color:'var(--text-secondary)', flexShrink:0, transform:isExpanded?'rotate(90deg)':'none', transition:'transform .15s' }}><polyline points="9 18 15 12 9 6"/></svg>
+                    <span style={{ flex:1, fontSize:13, fontWeight:600, color:'var(--text-primary)', wordBreak:'break-word' }}>{mod.title}</span>
+                    <span style={{ fontSize:11, color:'var(--text-secondary)', flexShrink:0 }}>{modDone}/{modLessons.length}</span>
+                    {modLessons.length>0 && (
+                      <div style={{ width:36, height:4, background:'var(--fill)', borderRadius:99, overflow:'hidden', flexShrink:0 }}>
+                        <div style={{ height:'100%', width:`${Math.round(modDone/modLessons.length*100)}%`, background:accent, borderRadius:99 }}/>
+                      </div>
+                    )}
+                  </div>
+                  {isExpanded && (
+                    <div style={{ borderTop:'1px solid var(--border)', paddingBottom:6 }}>
+                      {modLessons.map(lesson => (
+                        <div key={lesson.id} onClick={() => toggleLesson(selected.id, mod.id, lesson.id)}
+                          style={{ display:'flex', alignItems:'center', gap:8, padding:'5px 14px', cursor:'pointer' }}>
+                          <span className={`tick${lesson.done?' on':''}`} style={{ width:14, height:14, borderRadius:3, flexShrink:0 }}>
+                            {lesson.done && <svg style={{ width:7, height:7 }} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><polyline points="20 6 9 17 4 12"/></svg>}
+                          </span>
+                          <span style={{ flex:1, fontSize:12.5, color:lesson.done?'var(--text-muted)':'var(--text-primary)', textDecoration:lesson.done?'line-through':'none', wordBreak:'break-word' }}>{lesson.title}</span>
+                        </div>
+                      ))}
+                      {isAddingHere ? (
+                        <div style={{ display:'flex', gap:6, padding:'4px 10px 0' }}>
+                          <input autoFocus value={lessonInput} onChange={e => setLessonInput(e.target.value)}
+                            onKeyDown={e => { if(e.key==='Enter') addLesson(selected.id,mod.id); if(e.key==='Escape'){setAddingLesson(null);setLessonInput('');} }}
+                            placeholder="Lesson name…"
+                            style={{ flex:1, background:'var(--bg-surface-2)', border:'1px solid var(--accent-ring)', borderRadius:5, color:'var(--text-primary)', fontSize:12, padding:'4px 8px', outline:'none', fontFamily:'Manrope,sans-serif' }}/>
+                          <button onClick={() => addLesson(selected.id,mod.id)} style={{ background:'var(--accent)', border:'none', borderRadius:5, color:'#fff', fontSize:11, padding:'4px 8px', cursor:'pointer', fontFamily:'Manrope,sans-serif' }}>Add</button>
+                          <button onClick={() => { setAddingLesson(null); setLessonInput(''); }} style={{ background:'var(--fill)', border:'1px solid var(--border)', borderRadius:5, color:'var(--text-secondary)', fontSize:11, padding:'4px 8px', cursor:'pointer', fontFamily:'Manrope,sans-serif' }}>✕</button>
+                        </div>
+                      ) : (
+                        <button onClick={e => { e.stopPropagation(); setAddingLesson(mod.id); setLessonInput(''); }}
+                          style={{ background:'none', border:'none', color:'var(--text-secondary)', cursor:'pointer', fontSize:11.5, padding:'4px 14px', fontFamily:'Manrope,sans-serif' }}>+ Add lesson</button>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Assignments */}
+          <div>
+            <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:12 }}>
+              <div style={{ fontSize:11, fontWeight:700, letterSpacing:'.08em', color:'var(--warning)', textTransform:'uppercase' }}>Assignments</div>
+              <button onClick={() => { setShowAddAssign(v => !v); setAssignForm({}); }}
+                style={{ background:'none', border:'none', color:'var(--warning)', cursor:'pointer', fontSize:12, fontFamily:'Manrope,sans-serif', padding:0 }}>+ Add</button>
+            </div>
+
+            {showAddAssign && (
+              <div className="card" style={{ padding:'12px 14px', marginBottom:10 }}>
+                <input autoFocus value={assignForm.title||''} onChange={e => setAssignForm(f => ({ ...f, title:e.target.value }))}
+                  placeholder="Assignment title *"
+                  style={{ ...inp, marginBottom:8, fontSize:12 }}/>
+                <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8, marginBottom:10 }}>
+                  <div>
+                    <div style={{ fontSize:10, color:'var(--text-secondary)', marginBottom:3 }}>Due date</div>
+                    <input type="date" value={assignForm.due||''} onChange={e => setAssignForm(f => ({ ...f, due:e.target.value }))} style={{ ...inp, fontSize:12 }}/>
+                  </div>
+                  <div>
+                    <div style={{ fontSize:10, color:'var(--text-secondary)', marginBottom:3 }}>Weight (%)</div>
+                    <input type="number" value={assignForm.weight||''} onChange={e => setAssignForm(f => ({ ...f, weight:e.target.value }))} placeholder="e.g. 20" style={{ ...inp, fontSize:12 }}/>
+                  </div>
+                </div>
+                <div style={{ display:'flex', gap:6 }}>
+                  <button onClick={() => addAssignment(selected.id)} style={{ background:'var(--accent)', border:'none', borderRadius:6, color:'#fff', fontSize:11, padding:'5px 12px', cursor:'pointer', fontFamily:'Manrope,sans-serif' }}>Save</button>
+                  <button onClick={() => { setShowAddAssign(false); setAssignForm({}); }} style={{ background:'var(--fill)', border:'1px solid var(--border)', borderRadius:6, color:'var(--text-secondary)', fontSize:11, padding:'5px 12px', cursor:'pointer', fontFamily:'Manrope,sans-serif' }}>Cancel</button>
+                </div>
+              </div>
+            )}
+
+            {upcoming.length===0 && !showAddAssign && (
+              <div style={{ color:'var(--text-muted)', fontSize:13, padding:'12px 0' }}>No upcoming assignments.</div>
+            )}
+
+            {upcoming.map(a => {
+              const isOver = a.due && a.due < todayKey();
+              return (
+                <div key={a.id} className="card" style={{ padding:'10px 14px', marginBottom:8, display:'flex', alignItems:'flex-start', gap:10 }}>
+                  <span className="tick" onClick={() => toggleAssign(selected.id,a.id)} style={{ width:15, height:15, borderRadius:4, flexShrink:0, cursor:'pointer', marginTop:2 }}/>
+                  <div style={{ flex:1, minWidth:0 }}>
+                    <div style={{ fontSize:13, color:'var(--text-primary)', fontWeight:500, wordBreak:'break-word' }}>{a.title}</div>
+                    <div style={{ display:'flex', gap:8, marginTop:3, flexWrap:'wrap' }}>
+                      {a.due && <span style={{ fontSize:11, color:isOver?'var(--danger)':'var(--text-secondary)' }}>{isOver?'⚠ ':''}{new Date(a.due+'T00:00:00').toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'})}</span>}
+                      {a.weight && <span style={{ fontSize:11, color:'var(--text-muted)' }}>{a.weight}% weight</span>}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+
+            {doneAssigns.length>0 && (
+              <div style={{ marginTop:16 }}>
+                <div style={{ fontSize:10, fontWeight:700, letterSpacing:'.07em', color:'var(--text-secondary)', textTransform:'uppercase', marginBottom:8 }}>Completed</div>
+                {doneAssigns.map(a => (
+                  <div key={a.id} className="card" style={{ padding:'8px 14px', marginBottom:6, display:'flex', alignItems:'center', gap:10 }}>
+                    <span className="tick on" onClick={() => toggleAssign(selected.id,a.id)} style={{ width:15, height:15, borderRadius:4, flexShrink:0, cursor:'pointer' }}>
+                      <svg style={{ width:8, height:8 }} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><polyline points="20 6 9 17 4 12"/></svg>
+                    </span>
+                    <span style={{ flex:1, fontSize:12.5, color:'var(--text-muted)', textDecoration:'line-through', wordBreak:'break-word' }}>{a.title}</span>
+                    <input value={a.grade||''} onChange={e => setGrade(selected.id,a.id,e.target.value)}
+                      placeholder="Grade"
+                      style={{ width:58, background:'var(--bg-surface-2)', border:'1px solid var(--border)', borderRadius:5, color:'var(--success)', fontSize:11, padding:'3px 7px', outline:'none', fontFamily:'Manrope,sans-serif', fontWeight:600, textAlign:'center' }}/>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Course notes */}
+        <div style={{ marginTop:24 }}>
+          <div style={{ fontSize:11, fontWeight:700, letterSpacing:'.08em', color:'var(--text-secondary)', textTransform:'uppercase', marginBottom:10 }}>Course Notes</div>
+          <div className="card" style={{ padding:2 }}>
+            <textarea value={selected.notes||''} onChange={e => updateCourse(selected.id,{notes:e.target.value})}
+              placeholder="Notes, resources, links…"
+              style={{ width:'100%', boxSizing:'border-box', minHeight:90, background:'transparent', border:'none', color:'var(--text-primary)', fontSize:13, padding:'12px 15px', outline:'none', fontFamily:'Manrope,sans-serif', lineHeight:1.6, resize:'vertical' }}/>
+          </div>
+        </div>
+
+        {selected.url && (
+          <div style={{ marginTop:14 }}>
+            <a href={selected.url} target="_blank" rel="noopener noreferrer"
+              style={{ color:'var(--accent)', fontSize:13, textDecoration:'none', display:'inline-flex', alignItems:'center', gap:5 }}
+              onMouseEnter={e => e.currentTarget.style.textDecoration='underline'}
+              onMouseLeave={e => e.currentTarget.style.textDecoration='none'}>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" style={{ width:13, height:13 }}><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+              Open course link ↗
+            </a>
+          </div>
+        )}
+
+        <CourseModal/>
+      </div>
+    );
+  }
+
+  /* ── Home: course grid ── */
+  const active    = courses.filter(c => c.status !== 'completed');
+  const completed = courses.filter(c => c.status === 'completed');
+
+  return (
+    <div style={{ flex:1, overflowY:'auto', overflowX:'hidden', padding:pad }} className="scrollbar">
+      {/* Header */}
+      <div style={{ display:'flex', alignItems:isMobile?'flex-start':'center', flexDirection:isMobile?'column':'row', gap:isMobile?12:0, justifyContent:'space-between', marginBottom:isMobile?20:28 }}>
+        <div>
+          <div style={{ fontFamily:'Fraunces,serif', fontSize:isMobile?20:26, fontWeight:600, marginBottom:2 }}>Student Hub</div>
+          <div style={{ color:'var(--text-secondary)', fontSize:13 }}>Track your courses, lessons and assignments</div>
+        </div>
+        <button onClick={openAdd}
+          style={{ display:'flex', alignItems:'center', gap:6, background:'var(--accent)', border:'none', borderRadius:8, color:'#fff', fontSize:12.5, fontWeight:600, padding:'8px 14px', cursor:'pointer', fontFamily:'Manrope,sans-serif', flexShrink:0 }}>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ width:13, height:13 }}><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          Add Course
+        </button>
+      </div>
+
+      {courses.length===0 && (
+        <div style={{ textAlign:'center', padding:'60px 20px', color:'var(--text-muted)' }}>
+          <div style={{ fontSize:48, marginBottom:12 }}>🎓</div>
+          <div style={{ fontSize:16, fontWeight:600, color:'var(--text-secondary)', marginBottom:6 }}>No courses yet</div>
+          <div style={{ fontSize:13, marginBottom:20 }}>Add a course to start tracking your learning journey</div>
+          <button onClick={openAdd}
+            style={{ background:'var(--accent)', border:'none', borderRadius:8, color:'#fff', fontSize:13, fontWeight:600, padding:'9px 22px', cursor:'pointer', fontFamily:'Manrope,sans-serif' }}>
+            Add first course
+          </button>
+        </div>
+      )}
+
+      {active.length>0 && (
+        <>
+          <div style={{ fontSize:10.5, fontWeight:700, letterSpacing:'.07em', color:'var(--text-secondary)', textTransform:'uppercase', marginBottom:12 }}>Active</div>
+          <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(auto-fill,minmax(270px,1fr))', gap:14, marginBottom:28 }}>
+            {active.map(c => {
+              const pct  = courseProgress(c);
+              const days = daysLeft(c.endDate);
+              const acc  = colorHex(c.color);
+              const si   = STATUS_INFO[c.status] || STATUS_INFO.active;
+              return (
+                <div key={c.id} className="card" onClick={() => setSelectedId(c.id)}
+                  style={{ padding:'16px 18px', cursor:'pointer', borderTop:`3px solid ${acc}`, transition:'transform .15s var(--ease),box-shadow .15s var(--ease)' }}
+                  onMouseEnter={e => { e.currentTarget.style.transform='translateY(-2px)'; e.currentTarget.style.boxShadow='var(--shadow-2),0 0 0 1px var(--accent-ring)'; }}
+                  onMouseLeave={e => { e.currentTarget.style.transform=''; e.currentTarget.style.boxShadow=''; }}>
+                  <div style={{ display:'flex', alignItems:'flex-start', gap:10, marginBottom:12 }}>
+                    <span style={{ fontSize:24, lineHeight:1, flexShrink:0 }}>{c.emoji||'📚'}</span>
+                    <div style={{ flex:1, minWidth:0 }}>
+                      <div style={{ fontWeight:600, fontSize:14, color:'var(--text-primary)', wordBreak:'break-word', lineHeight:1.3 }}>{c.title}</div>
+                      {(c.instructor||c.platform) && (
+                        <div style={{ fontSize:11.5, color:'var(--text-secondary)', marginTop:2 }}>{[c.instructor,c.platform].filter(Boolean).join(' · ')}</div>
+                      )}
+                    </div>
+                    <span style={{ fontSize:10.5, color:si.color, background:si.bg, borderRadius:4, padding:'2px 7px', fontWeight:600, flexShrink:0 }}>{si.label}</span>
+                  </div>
+                  <div style={{ height:5, background:'var(--fill)', borderRadius:99, overflow:'hidden', marginBottom:8 }}>
+                    <div style={{ height:'100%', width:`${pct}%`, background:`linear-gradient(90deg,${acc}99,${acc})`, borderRadius:99, transition:'width .4s var(--ease)' }}/>
+                  </div>
+                  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                    <span style={{ fontSize:11.5, color:'var(--text-secondary)' }}>{pct}% complete</span>
+                    {days!==null && (
+                      <span style={{ fontSize:11.5, color:days<0?'var(--danger)':days<7?'var(--warning)':'var(--text-muted)' }}>
+                        {days<0?`${Math.abs(days)}d overdue`:days===0?'Due today':`${days}d left`}
+                      </span>
+                    )}
+                  </div>
+                  {totalLessons(c)>0 && (
+                    <div style={{ marginTop:5, fontSize:11, color:'var(--text-muted)' }}>
+                      {doneLessons(c)}/{totalLessons(c)} lessons · {(c.modules||[]).length} module{(c.modules||[]).length!==1?'s':''}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </>
+      )}
+
+      {completed.length>0 && (
+        <>
+          <div style={{ fontSize:10.5, fontWeight:700, letterSpacing:'.07em', color:'var(--text-secondary)', textTransform:'uppercase', marginBottom:12 }}>Completed</div>
+          <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(auto-fill,minmax(270px,1fr))', gap:12 }}>
+            {completed.map(c => {
+              const pct = courseProgress(c);
+              const acc = colorHex(c.color);
+              return (
+                <div key={c.id} className="card" onClick={() => setSelectedId(c.id)}
+                  style={{ padding:'14px 16px', cursor:'pointer', opacity:0.8, borderTop:`3px solid ${acc}44`, transition:'opacity .15s' }}
+                  onMouseEnter={e => e.currentTarget.style.opacity='1'}
+                  onMouseLeave={e => e.currentTarget.style.opacity='0.8'}>
+                  <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+                    <span style={{ fontSize:20 }}>{c.emoji||'📚'}</span>
+                    <div style={{ flex:1, minWidth:0 }}>
+                      <div style={{ fontWeight:600, fontSize:13.5, color:'var(--text-primary)', wordBreak:'break-word' }}>{c.title}</div>
+                      {(c.instructor||c.platform) && <div style={{ fontSize:11, color:'var(--text-secondary)' }}>{[c.instructor,c.platform].filter(Boolean).join(' · ')}</div>}
+                    </div>
+                    <span style={{ fontSize:11, color:'var(--accent)', background:'rgba(167,139,250,.15)', borderRadius:4, padding:'2px 7px', fontWeight:600, flexShrink:0 }}>✓ Done</span>
+                  </div>
+                  <div style={{ height:4, background:'var(--fill)', borderRadius:99, overflow:'hidden', marginTop:10 }}>
+                    <div style={{ height:'100%', width:`${pct}%`, background:acc, borderRadius:99 }}/>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </>
+      )}
+
+      <CourseModal/>
+    </div>
+  );
+}
+
 /* ── App ── */
 function App() {
   const [state, setStateRaw]   = useState(null);
@@ -9445,7 +9991,7 @@ function App() {
     </div>
   );
 
-  const views = { today:TodayView, notes:NotesView, journal:JournalView, tasks:TasksView, calendar:CalendarView, tags:TagsView, folders:FoldersView, admin:AdminView };
+  const views = { today:TodayView, notes:NotesView, journal:JournalView, tasks:TasksView, calendar:CalendarView, tags:TagsView, folders:FoldersView, student:StudentView, admin:AdminView };
   const View  = views[state.ui.view] || TodayView;
 
   const notesFullView = isNotesFullView(fullView, state, isMobile);
