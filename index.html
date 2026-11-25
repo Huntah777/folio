@@ -5386,7 +5386,6 @@ function FoldersView({ state, update, isMobile }) {
   const [addingSubId, setAddingSubId] = useState(null);
   const [newFolderName, setNewFolderName] = useState('');
   const [renamingId, setRenamingId] = useState(null);
-  const [renameVal, setRenameVal] = useState('');
   const [pickerOpenId, setPickerOpenId] = useState(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
   const [notesOpenIds, setNotesOpenIds] = useState(() => new Set());
@@ -5418,8 +5417,9 @@ function FoldersView({ state, update, isMobile }) {
 
   const createFolder = (e, parentId = null) => {
     e.preventDefault();
-    if (!newFolderName.trim()) return;
-    const nf = {id:uid(), name:newFolderName.trim(), parentId};
+    const val = e.target.elements[0].value.trim();
+    if (!val) return;
+    const nf = {id:uid(), name:val, parentId};
     update('folders', [...folders, nf]);
     setNewFolderName(''); setAddingRootFolder(false); setAddingSubId(null);
     if (parentId) setExpandedFolders(prev => new Set([...prev, parentId]));
@@ -5427,8 +5427,9 @@ function FoldersView({ state, update, isMobile }) {
 
   const saveRename = e => {
     e.preventDefault();
-    if (!renameVal.trim()) return;
-    update('folders', folders.map(f => f.id===renamingId ? {...f, name:renameVal.trim()} : f));
+    const val = e.target.elements[0].value.trim();
+    if (!val) return;
+    update('folders', folders.map(f => f.id===renamingId ? {...f, name:val} : f));
     setRenamingId(null);
   };
 
@@ -5510,7 +5511,7 @@ function FoldersView({ state, update, isMobile }) {
           {/* name / rename form */}
           {isRenaming ? (
             <form onSubmit={saveRename} style={{flex:1,display:'flex',gap:6,alignItems:'center',minWidth:160}}>
-              <input autoFocus value={renameVal} onChange={e=>setRenameVal(e.target.value)} style={inputStyle}/>
+              <input autoFocus defaultValue={node.name} style={inputStyle}/>
               <button type="submit" style={btnSm({background:'var(--accent-soft)',border:'1px solid var(--accent-ring)',color:'var(--accent)',fontWeight:600})}>Save</button>
               <button type="button" onClick={()=>setRenamingId(null)} style={btnSm()}>Cancel</button>
             </form>
@@ -5540,7 +5541,7 @@ function FoldersView({ state, update, isMobile }) {
                   <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
                 </svg>
               </button>
-              <button onClick={()=>{setRenamingId(node.id);setRenameVal(node.name);setPickerOpenId(null);}} style={btnSm({fontSize:14,padding:'1px 7px'})}>&#9998;</button>
+              <button onClick={()=>{setRenamingId(node.id);setPickerOpenId(null);}} style={btnSm({fontSize:14,padding:'1px 7px'})}>&#9998;</button>
               <button onClick={()=>setConfirmDeleteId(node.id)} style={btnSm({color:'var(--danger)',opacity:0.8})}>&#10005;</button>
             </div>
           )}
@@ -5687,8 +5688,7 @@ function FoldersView({ state, update, isMobile }) {
           <form onSubmit={e=>createFolder(e,node.id)}
             style={{display:'flex',gap:6,alignItems:'center',marginLeft:12+indent+18+8,marginBottom:6}}>
             <FolderIconSvg color="slate" iconId={null} size={20}/>
-            <input autoFocus value={newFolderName} onChange={e=>setNewFolderName(e.target.value)}
-              placeholder="Subfolder name" style={inputStyle}/>
+            <input autoFocus defaultValue="" placeholder="Subfolder name" style={inputStyle}/>
             <button type="submit" style={btnSm({background:'var(--accent-soft)',border:'1px solid var(--accent-ring)',color:'var(--accent)',fontWeight:600})}>Add</button>
             <button type="button" onClick={()=>setAddingSubId(null)} style={btnSm()}>&#10005;</button>
           </form>
