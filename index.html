@@ -9147,7 +9147,7 @@ function StudentView({ state, update, isMobile }) {
   const inp = { background:'var(--bg-surface-2)', border:'1px solid var(--border)', borderRadius:7, color:'var(--text-primary)', fontSize:13, padding:'7px 11px', outline:'none', fontFamily:'Manrope,sans-serif', width:'100%', boxSizing:'border-box' };
   const pad = isMobile ? '20px 16px' : '32px 36px';
 
-  const CourseModal = () => !showForm ? null : (
+  const courseModalJsx = !showForm ? null : (
     <div className="modal-bg" onClick={e => { if (e.target === e.currentTarget) closeForm(); }}>
       <div className="modal fadeUp" style={{ width:460, maxWidth:'95vw', maxHeight:'90vh', overflowY:'auto' }}>
         <div style={{ padding:'18px 22px', borderBottom:'1px solid var(--border)', display:'flex', justifyContent:'space-between', alignItems:'center', position:'sticky', top:0, background:'var(--modal-bg)', zIndex:1 }}>
@@ -9445,7 +9445,7 @@ function StudentView({ state, update, isMobile }) {
           </div>
         )}
 
-        <CourseModal/>
+        {courseModalJsx}
       </div>
     );
   }
