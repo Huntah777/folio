@@ -304,6 +304,84 @@ input:focus,textarea:focus{outline:none}
 .fadeUp{animation:fadeUp 300ms var(--ease) both}
 @keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
 @keyframes ping{0%{transform:scale(1);opacity:.55}75%,100%{transform:scale(2.1);opacity:0}}
+
+/* ── Student Hub: study café skin ──
+   Token overrides scoped to the hub, so every card, input, tick and modal
+   inside it takes the café palette without each element being restyled.
+   --vibrancy/--glass-border are re-declared because a var() inside a custom
+   property is resolved where it's declared (:root), not where it's used. */
+.study-cafe{--vibrancy:rgb(var(--glass-rgb) / calc(.30 + var(--glass) * .62));--glass-border:rgb(var(--glass-edge-rgb) / calc(.20 - var(--glass) * .08))}
+.study-cafe[data-cafe-style="paper"]{
+  --bg-surface-2:#f5ead7; --bg-surface-3:#fcf6eb; --modal-bg:#fbf4e7;
+  --border:#e2d0b2; --border-strong:#c9ad83;
+  --text-primary:#33241a; --text-secondary:#7a5f46; --text-tertiary:#5a4331; --text-quaternary:#45331f; --text-muted:#b19777;
+  --accent:#a8642f; --accent-strong:#8c4f22; --accent-ring:rgba(168,100,47,.35); --accent-soft:rgba(168,100,47,.14);
+  --success:#4f7d4a; --warning:#b5701c; --danger:#b4432f;
+  --fill:rgba(70,45,25,.06); --fill-hover:rgba(70,45,25,.10); --fill-active:rgba(70,45,25,.15);
+  --hairline:rgba(255,255,255,.75); --glass-rgb:251 244 231; --glass-edge-rgb:92 64 40;
+  --shadow-1:0 1px 2px rgba(60,35,15,.16); --shadow-2:0 12px 28px -12px rgba(40,22,10,.55); --shadow-3:0 10px 30px -10px rgba(40,22,10,.45);
+}
+.study-cafe[data-cafe-style="espresso"]{
+  --bg-surface-2:#231912; --bg-surface-3:#2d2119; --modal-bg:#261b14;
+  --border:#3d2d21; --border-strong:#56412f;
+  --text-primary:#f6ead8; --text-secondary:#c3a688; --text-tertiary:#e3cfb5; --text-quaternary:#eddcc4; --text-muted:#7e6650;
+  --accent:#d4a373; --accent-strong:#bf8b58; --accent-ring:rgba(212,163,115,.38); --accent-soft:rgba(212,163,115,.15);
+  --success:#93c183; --warning:#e3a84e; --danger:#e47c65;
+  --fill:rgba(255,232,205,.06); --fill-hover:rgba(255,232,205,.10); --fill-active:rgba(255,232,205,.14);
+  --hairline:rgba(255,232,205,.07); --glass-rgb:38 28 21; --glass-edge-rgb:255 232 205;
+  --shadow-1:0 1px 2px rgba(0,0,0,.35); --shadow-2:0 12px 28px -12px rgba(0,0,0,.7); --shadow-3:0 10px 30px -10px rgba(0,0,0,.6);
+}
+.study-cafe[data-cafe-style="frosted"]{
+  --bg-surface-2:rgba(28,20,15,.46); --bg-surface-3:rgba(52,39,29,.50); --modal-bg:#211812;
+  --border:rgba(255,240,222,.16); --border-strong:rgba(255,240,222,.30);
+  --text-primary:#fdf6ec; --text-secondary:#dcc8ae; --text-tertiary:#efdfc9; --text-quaternary:#f6ead8; --text-muted:#a08d76;
+  --accent:#e6ad6e; --accent-strong:#d19455; --accent-ring:rgba(230,173,110,.40); --accent-soft:rgba(230,173,110,.16);
+  --success:#9fd08e; --warning:#f0b65c; --danger:#f08a72;
+  --fill:rgba(255,245,230,.09); --fill-hover:rgba(255,245,230,.13); --fill-active:rgba(255,245,230,.18);
+  --hairline:rgba(255,245,230,.10); --glass-rgb:33 25 19; --glass-edge-rgb:255 240 222;
+  --shadow-1:0 1px 2px rgba(0,0,0,.3); --shadow-2:0 12px 28px -12px rgba(0,0,0,.65); --shadow-3:0 10px 30px -10px rgba(0,0,0,.55);
+}
+.study-cafe[data-cafe-style="paper"] .card{background:linear-gradient(180deg,#fdf9f1,#f7eddc)}
+.study-cafe[data-cafe-style="frosted"] .card,
+.study-cafe[data-cafe-style="frosted"] .cafe-sheet{-webkit-backdrop-filter:blur(20px) saturate(1.3);backdrop-filter:blur(20px) saturate(1.3)}
+.cafe-scene{position:absolute;background-size:cover;background-position:center;pointer-events:none}
+.cafe-sheet{background:color-mix(in srgb,var(--bg-surface-3) 94%,transparent);border:1px solid var(--border);border-radius:var(--r-xl);box-shadow:0 30px 70px -30px rgba(0,0,0,.65);max-width:1120px;margin:0 auto}
+.study-cafe[data-cafe-style="frosted"] .cafe-sheet{background:rgba(26,19,14,.52)}
+.cafe-sheet,.study-cafe .modal{color:var(--text-primary)}
+.cafe-on-scene{color:#fff7ec;text-shadow:0 1px 14px rgba(0,0,0,.5)}
+.cafe-on-scene button{text-shadow:none}
+.cafe-glass-btn{display:inline-flex;align-items:center;gap:6px;background:rgba(255,248,238,.14);color:#fff7ec;border:1px solid rgba(255,248,238,.28);border-radius:var(--r-pill);padding:8px 14px;font-family:'Manrope',sans-serif;font-size:12.5px;font-weight:600;cursor:pointer;-webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px);transition:background var(--dur) var(--ease),transform 140ms var(--ease)}
+.cafe-glass-btn:hover{background:rgba(255,248,238,.22)}
+.cafe-glass-btn:active{transform:scale(.96)}
+.cafe-course{position:relative;overflow:hidden;padding:16px 18px 14px 24px;cursor:pointer;transition:transform var(--dur) var(--ease),box-shadow var(--dur) var(--ease),border-color var(--dur) var(--ease),opacity var(--dur) var(--ease)}
+.cafe-course:hover{transform:translateY(-2px);box-shadow:var(--shadow-2);border-color:var(--border-strong)}
+.cafe-course:active{transform:translateY(0) scale(.995)}
+.cafe-course.done{opacity:.78}
+.cafe-course.done:hover{opacity:1}
+.cafe-spine{position:absolute;left:0;top:0;bottom:0;width:7px}
+.cafe-spine::after{content:'';position:absolute;inset:0;background:repeating-linear-gradient(180deg,rgba(255,255,255,.28) 0 1px,transparent 1px 12px)}
+.cafe-emoji{width:42px;height:42px;border-radius:11px;display:flex;align-items:center;justify-content:center;font-size:22px;flex-shrink:0;border:1px solid}
+.cafe-stamp{font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:500;letter-spacing:.08em;text-transform:uppercase;border:1.5px solid currentColor;border-radius:5px;padding:2px 6px;transform:rotate(-3deg);white-space:nowrap}
+.cafe-board{position:relative;border-radius:14px;padding:16px 20px 14px;color:#f3efe6;background:radial-gradient(ellipse at 25% 0%,rgba(255,255,255,.08),transparent 60%),linear-gradient(160deg,#2f3b34,#222a25);border:7px solid #6b4a2e;box-shadow:0 14px 30px -14px rgba(0,0,0,.7),inset 0 0 0 1px rgba(255,255,255,.06)}
+.cafe-board-row{display:flex;align-items:baseline;gap:8px;padding:6px 0;cursor:pointer;font-size:13px}
+.cafe-board-row:hover .cafe-board-title{text-decoration:underline;text-underline-offset:3px}
+.cafe-board-leader{flex:1;min-width:16px;border-bottom:1.5px dotted rgba(243,239,230,.32);transform:translateY(-4px)}
+.cafe-stat{padding:12px 16px;display:flex;flex-direction:column;gap:2px}
+.cafe-tile{position:relative;aspect-ratio:16/10;border-radius:10px;cursor:pointer;overflow:hidden;border:2px solid transparent;background-size:cover;background-position:center;transition:border-color 120ms var(--ease),transform 140ms var(--ease)}
+.cafe-tile:hover{transform:translateY(-1px)}
+.cafe-tile.sel{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-ring)}
+.cafe-tile-label{position:absolute;left:0;right:0;bottom:0;padding:14px 8px 6px;font-size:11px;font-weight:600;color:#fff7ec;background:linear-gradient(transparent,rgba(0,0,0,.6))}
+.cafe-chip{background:var(--fill);border:1px solid var(--border);border-radius:var(--r-pill);padding:4px 10px;font-size:11.5px;color:var(--text-secondary);cursor:pointer;font-family:'Manrope',sans-serif}
+.cafe-chip:hover{background:var(--fill-hover);color:var(--text-primary)}
+.cafe-seg{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.cafe-seg button{display:flex;flex-direction:column;align-items:center;gap:6px;padding:10px 8px;border-radius:var(--r-md);border:1.5px solid var(--border);background:var(--fill);color:var(--text-secondary);font-family:'Manrope',sans-serif;font-size:12px;font-weight:600;cursor:pointer}
+.cafe-seg button.sel{border-color:var(--accent);color:var(--text-primary);box-shadow:0 0 0 3px var(--accent-ring)}
+.cafe-range{width:100%;accent-color:var(--accent)}
+.cafe-cup .steam{opacity:0;transform-box:fill-box;transform-origin:center;animation:cafeSteam 2.8s ease-in-out infinite}
+.cafe-cup .steam.s2{animation-delay:.7s}
+.cafe-cup .steam.s3{animation-delay:1.4s}
+@keyframes cafeSteam{0%{opacity:0;transform:translateY(2px)}40%{opacity:.9}100%{opacity:0;transform:translateY(-3px)}}
+@media (prefers-reduced-motion:reduce){.cafe-cup .steam{animation:none;opacity:.7}}
 .divider{border-top:1px solid var(--hairline)}
 /* resize handle */
 .resize-handle{width:5px;cursor:col-resize;flex-shrink:0;background:transparent;transition:background 150ms}
@@ -9022,6 +9100,50 @@ function PomodoroWidget({ pom, setPom, tasks, update, isMobile }) {
   );
 }
 
+/* ── Study café ambience — synced via state.studyCafe so the setup follows you between devices ──
+   Built-in scenes are pure CSS so they work offline and never depend on a third-party image URL. */
+const STUDY_SCENES = [
+  { id:'espresso', name:'Espresso bar', css:'radial-gradient(ellipse at 20% 12%,rgba(255,196,120,.38),transparent 45%),radial-gradient(ellipse at 85% 85%,rgba(180,90,40,.35),transparent 50%),repeating-linear-gradient(90deg,rgba(255,255,255,.025) 0 2px,transparent 2px 22px),linear-gradient(160deg,#3a2418,#1e130d 60%,#140c08)' },
+  { id:'library',  name:'Old library',  css:'radial-gradient(ellipse at 50% -5%,rgba(255,200,120,.34),transparent 55%),radial-gradient(ellipse at center,transparent 35%,rgba(0,0,0,.6)),repeating-linear-gradient(180deg,rgba(18,9,4,.65) 0 12px,transparent 12px 86px,rgba(18,9,4,.92) 86px 96px),repeating-linear-gradient(90deg,#6b2d24 0 14px,#2f4a3a 14px 26px,#8a6a3b 26px 34px,#3b2a4a 34px 48px,#5a1f1a 48px 58px,#2a3d52 58px 72px,#7a5230 72px 80px)' },
+  { id:'latte',    name:'Morning latte',css:'radial-gradient(circle at 75% 22%,rgba(255,240,215,.55),transparent 40%),radial-gradient(circle at 15% 88%,rgba(120,72,40,.5),transparent 45%),linear-gradient(140deg,#c49a6c,#956541 55%,#6a462c)' },
+  { id:'rain',     name:'Rainy window', css:'radial-gradient(circle at 20% 30%,rgba(255,214,150,.24) 0 6%,transparent 7%),radial-gradient(circle at 70% 18%,rgba(255,190,120,.2) 0 4%,transparent 5%),radial-gradient(circle at 55% 72%,rgba(170,200,255,.16) 0 5%,transparent 6%),radial-gradient(circle at 86% 58%,rgba(255,220,170,.15) 0 8%,transparent 9%),repeating-linear-gradient(100deg,rgba(255,255,255,.04) 0 1px,transparent 1px 9px),linear-gradient(175deg,#2c3a4a,#1c2531 55%,#141a22)' },
+  { id:'matcha',   name:'Matcha corner',css:'radial-gradient(ellipse at 80% 8%,rgba(240,235,200,.38),transparent 45%),radial-gradient(ellipse at 10% 100%,rgba(30,40,25,.5),transparent 55%),linear-gradient(150deg,#7d9268,#55684a 50%,#36432f)' },
+  { id:'night',    name:'Late-night desk', css:'radial-gradient(circle at 18% 10%,rgba(255,184,92,.48),transparent 38%),radial-gradient(ellipse at 50% 120%,rgba(90,60,30,.5),transparent 60%),linear-gradient(170deg,#1b2033,#121524 60%,#0b0d16)' },
+];
+const STUDY_CAFE_DEFAULT = { scene:{ type:'preset', id:'espresso' }, dim:0, blur:0, style:'paper', showUpNext:true };
+const STUDY_PHOTO_IDEAS = ['cozy cafe','library','rainy window','coffee shop','reading nook','bookshop'];
+const STUDY_CARD_STYLES = [
+  { id:'paper',    name:'Paper',    swatch:'linear-gradient(180deg,#fdf9f1,#f0e2c8)' },
+  { id:'frosted',  name:'Frosted',  swatch:'linear-gradient(160deg,rgba(255,245,230,.4),rgba(90,60,35,.35)),linear-gradient(140deg,#c49a6c,#6a462c)' },
+  { id:'espresso', name:'Espresso', swatch:'linear-gradient(160deg,#3a2a1f,#1f160f)' },
+];
+const studyCafePrefs = state => ({ ...STUDY_CAFE_DEFAULT, ...(state?.studyCafe || {}) });
+const studySceneCss = scene => {
+  if (scene?.type === 'preset') return STUDY_SCENES.find(s => s.id === scene.id)?.css || null;
+  if (scene?.type === 'image' && scene.url) return `url("${scene.url.replace(/["\\\n\r]/g, encodeURIComponent)}")`;
+  return null;
+};
+
+async function searchUnsplash(query) {
+  if (!Sync.configured()) return { results:[], msg:'Set up sync first — the Unsplash proxy uses the same token.' };
+  try {
+    const r = await fetch(`/api/unsplash?q=${encodeURIComponent(query)}`, { headers:{ Authorization:`Bearer ${Sync.getToken()}` } });
+    const data = await r.json();
+    if (data.error === 'not_configured') return { results:[], msg:'Add an Unsplash key to enable search — pasting a link still works.' };
+    if (data.error) return { results:[], msg:'Search failed — try again.' };
+    return { results:data.results || [], msg:data.results?.length ? null : 'No results.' };
+  } catch { return { results:[], msg:'Search failed — try again.' }; }
+}
+/* Unsplash API guidelines require pinging download_location when a photo is used. */
+function trackUnsplashDownload(r) {
+  if (!r.downloadLocation || !Sync.configured()) return;
+  fetch('/api/unsplash', {
+    method:'POST',
+    headers:{ Authorization:`Bearer ${Sync.getToken()}`, 'Content-Type':'application/json' },
+    body:JSON.stringify({ downloadLocation:r.downloadLocation }),
+  }).catch(()=>{});
+}
+
 /* ── StudentView ── */
 function StudentView({ state, update, isMobile }) {
   const courses = state.courses || [];
@@ -9036,6 +9158,42 @@ function StudentView({ state, update, isMobile }) {
   const [lessonInput, setLessonInput] = useState('');
   const [showAddAssign, setShowAddAssign] = useState(false);
   const [assignForm, setAssignForm] = useState({});
+  const [ambOpen, setAmbOpen]           = useState(false);
+  const [ambUrl, setAmbUrl]             = useState('');
+  const [ambQuery, setAmbQuery]         = useState('');
+  const [ambResults, setAmbResults]     = useState([]);
+  const [ambSearching, setAmbSearching] = useState(false);
+  const [ambMsg, setAmbMsg]             = useState(null);
+  /* Slider positions while dragging — committed on release so a drag doesn't
+     rewrite the whole cached state blob on every pixel. */
+  const [ambDraft, setAmbDraft]         = useState(null);
+
+  const cafe = studyCafePrefs(state);
+  const dim  = ambDraft?.dim  ?? cafe.dim;
+  const blur = ambDraft?.blur ?? cafe.blur;
+  const sceneCss = studySceneCss(cafe.scene);
+  const onScene  = !!sceneCss;
+  const setCafe  = patch => update('studyCafe', prev => ({ ...STUDY_CAFE_DEFAULT, ...(prev || {}), ...patch }));
+  const commitDraft = () => { if (ambDraft) { setCafe(ambDraft); setAmbDraft(null); } };
+
+  const runAmbSearch = async q => {
+    const query = (q ?? ambQuery).trim();
+    if (!query) return;
+    setAmbQuery(query); setAmbSearching(true); setAmbMsg(null);
+    const { results, msg } = await searchUnsplash(query);
+    setAmbResults(results); setAmbMsg(msg); setAmbSearching(false);
+  };
+  const pickPhoto = scene => setCafe({ scene, dim: Math.max(cafe.dim, 30) });
+  const applyAmbUrl = () => {
+    const url = ambUrl.trim();
+    if (!/^https:\/\//i.test(url)) { setAmbMsg('Use an https:// image link.'); return; }
+    setAmbMsg(null);
+    pickPhoto({ type:'image', url, source:'url', attribution:null });
+  };
+  const pickAmbResult = r => {
+    pickPhoto({ type:'image', url:r.fullUrl, source:'unsplash', attribution:r.photographer });
+    trackUnsplashDownload(r);
+  };
 
   const selected = courses.find(c => c.id === selectedId) || null;
 
@@ -9219,6 +9377,144 @@ function StudentView({ state, update, isMobile }) {
     </div>
   );
 
+  const ambLabel = { fontSize:11, fontWeight:700, letterSpacing:'.06em', color:'var(--text-muted)', textTransform:'uppercase', marginBottom:8 };
+  const closeAmb = () => { commitDraft(); setAmbOpen(false); };
+
+  const ambienceJsx = !ambOpen ? null : (
+    <div className="modal-bg" onClick={e => { if (e.target === e.currentTarget) closeAmb(); }}>
+      <div className="modal fadeUp" style={{ width:540, maxWidth:'95vw', maxHeight:'90vh', overflowY:'auto' }}>
+        <div style={{ padding:'18px 22px', borderBottom:'1px solid var(--border)', display:'flex', justifyContent:'space-between', alignItems:'center', position:'sticky', top:0, background:'var(--modal-bg)', zIndex:1 }}>
+          <div>
+            <div style={{ fontFamily:'Fraunces,serif', fontSize:17, fontWeight:600, color:'var(--text-primary)' }}>Ambience</div>
+            <div style={{ fontSize:12, color:'var(--text-secondary)', marginTop:2 }}>Set the scene for a study session</div>
+          </div>
+          <button onClick={closeAmb} aria-label="Close" style={{ background:'none', border:'none', color:'var(--text-secondary)', cursor:'pointer', fontSize:20, lineHeight:1 }}>×</button>
+        </div>
+
+        <div style={{ padding:'18px 22px', display:'flex', flexDirection:'column', gap:20 }}>
+          <div>
+            <div style={ambLabel}>Scene</div>
+            <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(110px,1fr))', gap:8 }}>
+              {STUDY_SCENES.map(s => (
+                <div key={s.id} onClick={() => setCafe({ scene:{ type:'preset', id:s.id } })}
+                  className={`cafe-tile${cafe.scene?.type==='preset' && cafe.scene.id===s.id ? ' sel' : ''}`}
+                  style={{ backgroundImage:s.css }}>
+                  <span className="cafe-tile-label">{s.name}</span>
+                </div>
+              ))}
+              {cafe.scene?.type==='image' && (
+                <div className="cafe-tile sel" style={{ backgroundImage:sceneCss }}>
+                  <span className="cafe-tile-label">Your photo</span>
+                </div>
+              )}
+              <div onClick={() => setCafe({ scene:null })} className={`cafe-tile${!cafe.scene ? ' sel' : ''}`}
+                style={{ background:'var(--fill)', display:'flex', alignItems:'center', justifyContent:'center', textAlign:'center', padding:6, fontSize:11.5, fontWeight:600, color:'var(--text-secondary)' }}>
+                App background
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <div style={ambLabel}>Your own photo</div>
+            <form onSubmit={e => { e.preventDefault(); runAmbSearch(); }} style={{ display:'flex', gap:8, marginBottom:8 }}>
+              <input value={ambQuery} onChange={e => setAmbQuery(e.target.value)} placeholder="Search Unsplash…" className="input" style={{ flex:1 }}/>
+              <button type="submit" className="btn-ghost" disabled={ambSearching}>{ambSearching ? 'Searching…' : 'Search'}</button>
+            </form>
+            <div style={{ display:'flex', flexWrap:'wrap', gap:6, marginBottom:10 }}>
+              {STUDY_PHOTO_IDEAS.map(q => (
+                <button key={q} type="button" className="cafe-chip" onClick={() => runAmbSearch(q)}>{q}</button>
+              ))}
+            </div>
+            {ambResults.length > 0 && (
+              <div className="scrollbar" style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(96px,1fr))', gap:8, maxHeight:230, overflowY:'auto', marginBottom:10 }}>
+                {ambResults.map(r => (
+                  <div key={r.id} title={r.photographer?.name} onClick={() => pickAmbResult(r)}
+                    className={`cafe-tile${cafe.scene?.url===r.fullUrl ? ' sel' : ''}`}
+                    style={{ backgroundImage:`url(${r.thumbUrl})` }}/>
+                ))}
+              </div>
+            )}
+            <div style={{ display:'flex', gap:8 }}>
+              <input value={ambUrl} onChange={e => setAmbUrl(e.target.value)} onKeyDown={e => { if (e.key==='Enter') applyAmbUrl(); }}
+                placeholder="…or paste an image link (https://)" className="input" style={{ flex:1 }}/>
+              <button type="button" className="btn-primary" onClick={applyAmbUrl}>Apply</button>
+            </div>
+            {ambMsg && <div style={{ fontSize:12, color:'var(--text-secondary)', marginTop:8 }}>{ambMsg}</div>}
+          </div>
+
+          {onScene && (
+            <div>
+              <div style={ambLabel}>Mood</div>
+              <label style={{ display:'block', marginBottom:12 }}>
+                <div style={{ display:'flex', justifyContent:'space-between', fontSize:12.5, color:'var(--text-tertiary)', marginBottom:4 }}><span>Dim the lights</span><span>{dim}%</span></div>
+                <input type="range" min="0" max="85" value={dim} className="cafe-range"
+                  onChange={e => setAmbDraft(d => ({ ...(d || {}), dim:+e.target.value }))}
+                  onPointerUp={commitDraft} onKeyUp={commitDraft} onTouchEnd={commitDraft}/>
+              </label>
+              <label style={{ display:'block' }}>
+                <div style={{ display:'flex', justifyContent:'space-between', fontSize:12.5, color:'var(--text-tertiary)', marginBottom:4 }}><span>Soft focus</span><span>{blur}px</span></div>
+                <input type="range" min="0" max="16" value={blur} className="cafe-range"
+                  onChange={e => setAmbDraft(d => ({ ...(d || {}), blur:+e.target.value }))}
+                  onPointerUp={commitDraft} onKeyUp={commitDraft} onTouchEnd={commitDraft}/>
+              </label>
+            </div>
+          )}
+
+          <div>
+            <div style={ambLabel}>Cards</div>
+            <div className="cafe-seg">
+              {STUDY_CARD_STYLES.map(s => (
+                <button key={s.id} type="button" className={cafe.style===s.id ? 'sel' : ''} onClick={() => setCafe({ style:s.id })}>
+                  <span style={{ width:'100%', height:34, borderRadius:8, background:s.swatch, border:'1px solid var(--border)' }}/>
+                  {s.name}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <label style={{ display:'flex', alignItems:'center', gap:10, fontSize:13, color:'var(--text-primary)', cursor:'pointer' }}>
+            <input type="checkbox" checked={cafe.showUpNext} onChange={e => setCafe({ showUpNext:e.target.checked })}
+              style={{ accentColor:'var(--accent)', width:16, height:16 }}/>
+            Show the “Up next” board
+          </label>
+
+          <div style={{ display:'flex', justifyContent:'space-between', gap:8, paddingTop:4 }}>
+            <button type="button" className="btn-ghost" onClick={() => { setAmbDraft(null); update('studyCafe', { ...STUDY_CAFE_DEFAULT }); }}>Reset to default</button>
+            <button type="button" className="btn-primary" onClick={closeAmb}>Done</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
+  /* Plain function, not a component — a nested component would remount (and
+     drop input focus on iOS) on every keystroke, see CourseModal history. */
+  const shell = content => (
+    <div className="study-cafe" data-cafe-style={cafe.style}
+      style={{ position:'relative', flex:1, minHeight:0, display:'flex', flexDirection:'column', overflow:'hidden' }}>
+      {onScene && (
+        <div aria-hidden="true" className="cafe-scene"
+          style={{ inset: blur ? -blur * 2 : 0, backgroundImage:sceneCss, filter: blur ? `blur(${blur}px)` : 'none' }}/>
+      )}
+      {onScene && dim > 0 && (
+        <div aria-hidden="true" className="cafe-scene" style={{ inset:0, background:`rgba(18,12,8,${dim / 100})` }}/>
+      )}
+      <div className="scrollbar" style={{ position:'relative', flex:1, overflowY:'auto', overflowX:'hidden', padding:pad }}>
+        {content}
+      </div>
+      {cafe.scene?.source==='unsplash' && cafe.scene.attribution?.name && (
+        <div style={{ position:'absolute', right:12, bottom:isMobile ? 84 : 10, fontSize:11, color:'rgba(255,255,255,.8)', textShadow:'0 1px 3px rgba(0,0,0,.6)', fontFamily:'Manrope,sans-serif' }}>
+          Photo by{' '}
+          <a href={`${cafe.scene.attribution.profileUrl}?utm_source=folio&utm_medium=referral`} target="_blank" rel="noopener noreferrer" style={{ color:'inherit', fontWeight:600 }}>{cafe.scene.attribution.name}</a>
+          {' '}on{' '}
+          <a href="https://unsplash.com/?utm_source=folio&utm_medium=referral" target="_blank" rel="noopener noreferrer" style={{ color:'inherit', fontWeight:600 }}>Unsplash</a>
+        </div>
+      )}
+      {courseModalJsx}
+      {ambienceJsx}
+    </div>
+  );
+
   /* ── Detail view ── */
   if (selected) {
     const pct    = courseProgress(selected);
@@ -9230,8 +9526,8 @@ function StudentView({ state, update, isMobile }) {
     const upcoming   = (selected.assignments || []).filter(a => !a.done).sort((a, b) => (a.due||'').localeCompare(b.due||''));
     const doneAssigns = (selected.assignments || []).filter(a => a.done);
 
-    return (
-      <div style={{ flex:1, overflowY:'auto', overflowX:'hidden', padding:pad }} className="scrollbar">
+    return shell(
+      <div className="cafe-sheet" style={{ padding:isMobile ? '18px 16px' : '26px 30px' }}>
         {/* Back row */}
         <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:isMobile?16:24 }}>
           <button onClick={() => setSelectedId(null)}
@@ -9453,8 +9749,6 @@ function StudentView({ state, update, isMobile }) {
             </a>
           </div>
         )}
-
-        {courseModalJsx}
       </div>
     );
   }
@@ -9471,111 +9765,159 @@ function StudentView({ state, update, isMobile }) {
     });
   const completed = courses.filter(c => c.status === 'completed');
 
-  return (
-    <div style={{ flex:1, overflowY:'auto', overflowX:'hidden', padding:pad }} className="scrollbar">
-      {/* Header */}
-      <div style={{ display:'flex', alignItems:isMobile?'flex-start':'center', flexDirection:isMobile?'column':'row', gap:isMobile?12:0, justifyContent:'space-between', marginBottom:isMobile?20:28 }}>
-        <div>
-          <div style={{ fontFamily:'Fraunces,serif', fontSize:isMobile?20:26, fontWeight:600, marginBottom:2 }}>Student Hub</div>
-          <div style={{ color:'var(--text-secondary)', fontSize:13 }}>Track your courses, lessons and assignments</div>
-        </div>
-        <button onClick={openAdd}
-          style={{ display:'flex', alignItems:'center', gap:6, background:'var(--accent)', border:'none', borderRadius:8, color:'#fff', fontSize:12.5, fontWeight:600, padding:'8px 14px', cursor:'pointer', fontFamily:'Manrope,sans-serif', flexShrink:0 }}>
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ width:13, height:13 }}><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-          Add Course
-        </button>
-      </div>
+  const today       = todayKey();
+  const weekAhead   = (() => { const d = new Date(); d.setDate(d.getDate() + 7); return fmtKey(d); })();
+  const openAssigns = active.flatMap(c => (c.assignments || []).filter(a => !a.done && a.due).map(a => ({ a, c })));
+  const upNext      = [...openAssigns].sort((x, y) => x.a.due.localeCompare(y.a.due)).slice(0, 4);
+  const dueSoon     = openAssigns.filter(x => x.a.due <= weekAhead).length;
+  const lessonsDone = courses.reduce((s, c) => s + doneLessons(c), 0);
+  const hour        = new Date().getHours();
+  const greeting    = hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
+  const heroCls     = onScene ? 'cafe-on-scene' : undefined;
+  const showBoard   = cafe.showUpNext && courses.length > 0;
+  const shelfLabel  = { fontSize:10.5, fontWeight:700, letterSpacing:'.09em', textTransform:'uppercase', marginBottom:12, opacity:.85 };
+  const gridCols    = isMobile ? '1fr' : 'repeat(auto-fill,minmax(290px,1fr))';
 
-      {courses.length===0 && (
-        <div style={{ textAlign:'center', padding:'60px 20px', color:'var(--text-muted)' }}>
-          <div style={{ fontSize:48, marginBottom:12 }}>🎓</div>
-          <div style={{ fontSize:16, fontWeight:600, color:'var(--text-secondary)', marginBottom:6 }}>No courses yet</div>
-          <div style={{ fontSize:13, marginBottom:20 }}>Add a course to start tracking your learning journey</div>
-          <button onClick={openAdd}
-            style={{ background:'var(--accent)', border:'none', borderRadius:8, color:'#fff', fontSize:13, fontWeight:600, padding:'9px 22px', cursor:'pointer', fontFamily:'Manrope,sans-serif' }}>
-            Add first course
+  const courseCard = c => {
+    const done = c.status === 'completed';
+    const pct  = courseProgress(c);
+    const days = daysLeft(c.endDate);
+    const acc  = colorHex(c.color);
+    const si   = effectiveStatusInfo(c);
+    const tl   = totalLessons(c);
+    const stamp = done ? { text:'Finished', color:'var(--success)' }
+      : days === null ? null
+      : days < 0   ? { text:`${Math.abs(days)}d overdue`, color:'var(--danger)' }
+      : days === 0 ? { text:'Due today', color:'var(--warning)' }
+      :              { text:`${days}d left`, color:days < 7 ? 'var(--warning)' : 'var(--text-secondary)' };
+    return (
+      <div key={c.id} className={`card cafe-course${done ? ' done' : ''}`} onClick={() => setSelectedId(c.id)}>
+        <span className="cafe-spine" style={{ background:acc }}/>
+        <div style={{ display:'flex', alignItems:'flex-start', gap:12, marginBottom:14 }}>
+          <span className="cafe-emoji" style={{ background:`${acc}1f`, borderColor:`${acc}55` }}>{c.emoji || '📚'}</span>
+          <div style={{ flex:1, minWidth:0 }}>
+            <div style={{ fontFamily:'Fraunces,serif', fontWeight:600, fontSize:16, lineHeight:1.25, color:'var(--text-primary)', wordBreak:'break-word' }}>{c.title}</div>
+            {(c.instructor || c.platform) && (
+              <div style={{ fontSize:11.5, color:'var(--text-secondary)', marginTop:3 }}>{[c.instructor, c.platform].filter(Boolean).join(' · ')}</div>
+            )}
+          </div>
+          {!done && (
+            <span style={{ fontSize:10.5, color:si.color, background:si.bg, borderRadius:5, padding:'2px 8px', fontWeight:600, flexShrink:0 }}>{si.label}</span>
+          )}
+        </div>
+        <div style={{ height:6, background:'var(--fill)', borderRadius:99, overflow:'hidden', marginBottom:10 }}>
+          <div style={{ height:'100%', width:`${pct}%`, background:`linear-gradient(90deg,${acc}aa,${acc})`, borderRadius:99, transition:'width .4s var(--ease)' }}/>
+        </div>
+        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:8 }}>
+          <span style={{ fontSize:11.5, color:'var(--text-secondary)' }}>
+            <b style={{ color:'var(--text-primary)', fontWeight:700 }}>{pct}%</b>
+            {tl > 0 && ` · ${doneLessons(c)}/${tl} lessons`}
+          </span>
+          {stamp && <span className="cafe-stamp" style={{ color:stamp.color }}>{stamp.text}</span>}
+        </div>
+      </div>
+    );
+  };
+
+  const boardJsx = !showBoard ? null : (
+    <div className="cafe-board">
+      <div style={{ display:'flex', alignItems:'baseline', justifyContent:'space-between', gap:8, marginBottom:6 }}>
+        <div style={{ fontFamily:'Fraunces,serif', fontSize:18, fontWeight:600 }}>Up next</div>
+        <div style={{ fontSize:10, letterSpacing:'.14em', textTransform:'uppercase', opacity:.6 }}>Today's menu</div>
+      </div>
+      {upNext.length === 0 ? (
+        <div style={{ fontSize:13, opacity:.75, padding:'8px 0 4px' }}>Nothing due — enjoy your coffee ☕</div>
+      ) : upNext.map(({ a, c }) => {
+        const over    = a.due < today;
+        const isToday = a.due === today;
+        return (
+          <div key={`${c.id}-${a.id}`} className="cafe-board-row" onClick={() => setSelectedId(c.id)}>
+            <span style={{ flexShrink:0 }}>{c.emoji || '📚'}</span>
+            <span className="cafe-board-title" style={{ minWidth:0, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{a.title}</span>
+            <span className="cafe-board-leader"/>
+            <span style={{ flexShrink:0, fontSize:12, color:over ? '#f4a28c' : isToday ? '#f3cf7a' : 'rgba(243,239,230,.8)' }}>
+              {over ? 'Overdue' : isToday ? 'Today' : new Date(a.due + 'T00:00:00').toLocaleDateString('en-GB', { weekday:'short', day:'numeric', month:'short' })}
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
+
+  const stats = [
+    { n:active.length, label:'On the go' },
+    { n:lessonsDone,   label:'Lessons done' },
+    { n:dueSoon,       label:'Due this week' },
+  ];
+
+  return shell(
+    <div style={{ maxWidth:1120, margin:'0 auto' }}>
+      <div className={heroCls} style={{ display:'flex', alignItems:isMobile ? 'flex-start' : 'flex-end', flexDirection:isMobile ? 'column' : 'row', gap:isMobile ? 14 : 12, justifyContent:'space-between', marginBottom:isMobile ? 18 : 26 }}>
+        <div>
+          <div style={{ display:'flex', alignItems:'center', gap:8, fontSize:12.5, fontWeight:600, opacity:.85, marginBottom:4 }}>
+            <svg className="cafe-cup" viewBox="0 0 32 32" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path className="steam s1" d="M11 9c-1.2-1.4 1.2-2.6 0-4"/>
+              <path className="steam s2" d="M15.5 9c-1.2-1.4 1.2-2.6 0-4"/>
+              <path className="steam s3" d="M20 9c-1.2-1.4 1.2-2.6 0-4"/>
+              <path d="M6 13h18v6a7 7 0 0 1-7 7h-4a7 7 0 0 1-7-7z"/>
+              <path d="M24 15h1.5a3 3 0 0 1 0 6H23"/>
+            </svg>
+            <span>{greeting} · {new Date().toLocaleDateString('en-GB', { weekday:'long', day:'numeric', month:'long' })}</span>
+          </div>
+          <div style={{ fontFamily:'Fraunces,serif', fontSize:isMobile ? 26 : 34, fontWeight:600, lineHeight:1.1 }}>Student Hub</div>
+          <div style={{ fontSize:13, opacity:.78, marginTop:5 }}>Pull up a chair — your courses, lessons and deadlines.</div>
+        </div>
+        <div style={{ display:'flex', gap:8, flexShrink:0 }}>
+          <button onClick={() => setAmbOpen(true)} className={onScene ? 'cafe-glass-btn' : 'btn-ghost'}
+            style={onScene ? undefined : { display:'inline-flex', alignItems:'center', gap:6, background:'var(--bg-surface-3)', border:'1px solid var(--border)', color:'var(--text-primary)' }}>
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><line x1="4" y1="6" x2="20" y2="6"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="18" x2="20" y2="18"/><circle cx="9" cy="6" r="2" fill="currentColor"/><circle cx="15" cy="12" r="2" fill="currentColor"/><circle cx="7" cy="18" r="2" fill="currentColor"/></svg>
+            Ambience
+          </button>
+          <button onClick={openAdd} className="btn-primary" style={{ display:'inline-flex', alignItems:'center', gap:6 }}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ width:13, height:13 }} aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            Add course
           </button>
         </div>
+      </div>
+
+      {courses.length === 0 ? (
+        <div className="card" style={{ textAlign:'center', padding:'48px 20px', maxWidth:520, margin:'12px auto 0' }}>
+          <div style={{ fontSize:44, marginBottom:10 }}>☕</div>
+          <div style={{ fontFamily:'Fraunces,serif', fontSize:19, fontWeight:600, color:'var(--text-primary)', marginBottom:6 }}>Your table's free</div>
+          <div style={{ fontSize:13, color:'var(--text-secondary)', marginBottom:20 }}>Add a course to start tracking lessons, assignments and deadlines.</div>
+          <button onClick={openAdd} className="btn-primary">Add first course</button>
+        </div>
+      ) : (
+        <div style={{ display:'grid', gridTemplateColumns:!isMobile && showBoard ? 'minmax(170px,230px) minmax(0,1fr)' : '1fr', gap:14, marginBottom:30 }}>
+          <div style={{ display:'grid', gridTemplateColumns:!isMobile && showBoard ? '1fr' : 'repeat(3,1fr)', gap:10 }}>
+            {stats.map(s => (
+              <div key={s.label} className="card cafe-stat">
+                <span style={{ fontFamily:'Fraunces,serif', fontSize:22, fontWeight:600, color:'var(--text-primary)', lineHeight:1.1 }}>{s.n}</span>
+                <span style={{ fontSize:10.5, fontWeight:700, letterSpacing:'.07em', textTransform:'uppercase', color:'var(--text-secondary)' }}>{s.label}</span>
+              </div>
+            ))}
+          </div>
+          {boardJsx}
+        </div>
       )}
 
-      {active.length>0 && (
+      {active.length > 0 && (
         <>
-          <div style={{ fontSize:10.5, fontWeight:700, letterSpacing:'.07em', color:'var(--text-secondary)', textTransform:'uppercase', marginBottom:12 }}>Active</div>
-          <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(auto-fill,minmax(270px,1fr))', gap:14, marginBottom:28 }}>
-            {active.map(c => {
-              const pct  = courseProgress(c);
-              const days = daysLeft(c.endDate);
-              const acc  = colorHex(c.color);
-              const si   = effectiveStatusInfo(c);
-              return (
-                <div key={c.id} className="card" onClick={() => setSelectedId(c.id)}
-                  style={{ padding:'16px 18px', cursor:'pointer', borderTop:`3px solid ${acc}`, transition:'transform .15s var(--ease),box-shadow .15s var(--ease)' }}
-                  onMouseEnter={e => { e.currentTarget.style.transform='translateY(-2px)'; e.currentTarget.style.boxShadow='var(--shadow-2),0 0 0 1px var(--accent-ring)'; }}
-                  onMouseLeave={e => { e.currentTarget.style.transform=''; e.currentTarget.style.boxShadow=''; }}>
-                  <div style={{ display:'flex', alignItems:'flex-start', gap:10, marginBottom:12 }}>
-                    <span style={{ fontSize:24, lineHeight:1, flexShrink:0 }}>{c.emoji||'📚'}</span>
-                    <div style={{ flex:1, minWidth:0 }}>
-                      <div style={{ fontWeight:600, fontSize:14, color:'var(--text-primary)', wordBreak:'break-word', lineHeight:1.3 }}>{c.title}</div>
-                      {(c.instructor||c.platform) && (
-                        <div style={{ fontSize:11.5, color:'var(--text-secondary)', marginTop:2 }}>{[c.instructor,c.platform].filter(Boolean).join(' · ')}</div>
-                      )}
-                    </div>
-                    <span style={{ fontSize:10.5, color:si.color, background:si.bg, borderRadius:4, padding:'2px 7px', fontWeight:600, flexShrink:0 }}>{si.label}</span>
-                  </div>
-                  <div style={{ height:5, background:'var(--fill)', borderRadius:99, overflow:'hidden', marginBottom:8 }}>
-                    <div style={{ height:'100%', width:`${pct}%`, background:`linear-gradient(90deg,${acc}99,${acc})`, borderRadius:99, transition:'width .4s var(--ease)' }}/>
-                  </div>
-                  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
-                    <span style={{ fontSize:11.5, color:'var(--text-secondary)' }}>{pct}% complete</span>
-                    {days!==null && (
-                      <span style={{ fontSize:11.5, color:days<0?'var(--danger)':days<7?'var(--warning)':'var(--text-muted)' }}>
-                        {days<0?`${Math.abs(days)}d overdue`:days===0?'Due today':`${days}d left`}
-                      </span>
-                    )}
-                  </div>
-                  {totalLessons(c)>0 && (
-                    <div style={{ marginTop:5, fontSize:11, color:'var(--text-muted)' }}>
-                      {doneLessons(c)}/{totalLessons(c)} lessons · {(c.modules||[]).length} module{(c.modules||[]).length!==1?'s':''}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
+          <div className={heroCls} style={shelfLabel}>On the desk</div>
+          <div style={{ display:'grid', gridTemplateColumns:gridCols, gap:14, marginBottom:30 }}>
+            {active.map(courseCard)}
           </div>
         </>
       )}
 
-      {completed.length>0 && (
+      {completed.length > 0 && (
         <>
-          <div style={{ fontSize:10.5, fontWeight:700, letterSpacing:'.07em', color:'var(--text-secondary)', textTransform:'uppercase', marginBottom:12 }}>Completed</div>
-          <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(auto-fill,minmax(270px,1fr))', gap:12 }}>
-            {completed.map(c => {
-              const pct = courseProgress(c);
-              const acc = colorHex(c.color);
-              return (
-                <div key={c.id} className="card" onClick={() => setSelectedId(c.id)}
-                  style={{ padding:'14px 16px', cursor:'pointer', opacity:0.8, borderTop:`3px solid ${acc}44`, transition:'opacity .15s' }}
-                  onMouseEnter={e => e.currentTarget.style.opacity='1'}
-                  onMouseLeave={e => e.currentTarget.style.opacity='0.8'}>
-                  <div style={{ display:'flex', alignItems:'center', gap:10 }}>
-                    <span style={{ fontSize:20 }}>{c.emoji||'📚'}</span>
-                    <div style={{ flex:1, minWidth:0 }}>
-                      <div style={{ fontWeight:600, fontSize:13.5, color:'var(--text-primary)', wordBreak:'break-word' }}>{c.title}</div>
-                      {(c.instructor||c.platform) && <div style={{ fontSize:11, color:'var(--text-secondary)' }}>{[c.instructor,c.platform].filter(Boolean).join(' · ')}</div>}
-                    </div>
-                    <span style={{ fontSize:11, color:'var(--accent)', background:'rgba(167,139,250,.15)', borderRadius:4, padding:'2px 7px', fontWeight:600, flexShrink:0 }}>✓ Done</span>
-                  </div>
-                  <div style={{ height:4, background:'var(--fill)', borderRadius:99, overflow:'hidden', marginTop:10 }}>
-                    <div style={{ height:'100%', width:`${pct}%`, background:acc, borderRadius:99 }}/>
-                  </div>
-                </div>
-              );
-            })}
+          <div className={heroCls} style={shelfLabel}>Finished — back on the shelf</div>
+          <div style={{ display:'grid', gridTemplateColumns:gridCols, gap:12 }}>
+            {completed.map(courseCard)}
           </div>
         </>
       )}
-
-      {courseModalJsx}
     </div>
   );
 }
@@ -10031,7 +10373,8 @@ function App() {
           onSync={syncNow} collapsed={!sidebarOpen} onToggle={()=>setSidebarOpen(v=>!v)}/>
       )}
       <div className="main">
-        {!notesFullView && !mobileNoteOpen && state.ui.view!=='admin' && (
+        {!notesFullView && !mobileNoteOpen && state.ui.view!=='admin'
+          && !(state.ui.view==='student' && studyCafePrefs(state).scene) && (
           <SectionBanner sectionId={state.ui.view} banner={state.banners?.[state.ui.view]} onChange={v=>changeBanner(state.ui.view,v)} isMobile={isMobile}/>
         )}
         <div style={{flex:1,minHeight:0,overflow:'hidden',display:'flex',flexDirection:'column'}}>
