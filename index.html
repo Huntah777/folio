@@ -350,6 +350,11 @@ input:focus,textarea:focus{outline:none}
 .cafe-sheet,.study-cafe .modal{color:var(--text-primary)}
 .cafe-on-scene{color:#fff7ec;text-shadow:0 1px 14px rgba(0,0,0,.5)}
 .cafe-on-scene button{text-shadow:none}
+.cafe-name-btn{display:inline-flex;align-items:center;background:none;border:none;color:inherit;opacity:.7;cursor:pointer;font:inherit;padding:3px 5px;border-radius:6px}
+.cafe-name-btn:hover,.cafe-name-btn:focus-visible{opacity:1;background:rgba(255,255,255,.14);outline:none}
+.cafe-name-input{font:inherit;color:inherit;text-shadow:none;background:rgba(255,248,238,.16);border:1px solid rgba(255,248,238,.45);border-radius:6px;padding:2px 8px;width:150px;outline:none}
+.cafe-name-input:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-ring)}
+.cafe-name-input::placeholder{color:inherit;opacity:.6}
 .cafe-glass-btn{display:inline-flex;align-items:center;gap:6px;background:rgba(255,248,238,.14);color:#fff7ec;border:1px solid rgba(255,248,238,.28);border-radius:var(--r-pill);padding:8px 14px;font-family:'Manrope',sans-serif;font-size:12.5px;font-weight:600;cursor:pointer;-webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px);transition:background var(--dur) var(--ease),transform 140ms var(--ease)}
 .cafe-glass-btn:hover{background:rgba(255,248,238,.22)}
 .cafe-glass-btn:active{transform:scale(.96)}
@@ -1432,6 +1437,9 @@ const BANNERS_KEY = 'folio_banners';
 const LegacyBannerPrefs = {
   get() { try { return JSON.parse(localStorage.getItem(BANNERS_KEY)) || {}; } catch { return {}; } },
 };
+/* Name used in greetings — synced via state.profile so it follows you between devices. */
+const DEFAULT_PROFILE_NAME = 'Abdul-Malik';
+const profileName = state => (state?.profile?.name ?? DEFAULT_PROFILE_NAME).trim();
 const SECTION_LABELS = { today:'Today', notes:'Notes', journal:'Journal', tasks:'Tasks', calendar:'Calendar', tags:'Tags', folders:'Folders', student:'Student', admin:'Admin' };
 const BANNER_GRADIENTS = [
   'linear-gradient(135deg,#667eea,#764ba2)',
@@ -5334,7 +5342,8 @@ function CalendarView({ state, update, isMobile }) {
 /* ── TodayView ── */
 function TodayView({ state, update, isMobile }) {
   const hour = new Date().getHours();
-  const greeting = hour<12?'Good morning Abdul-Malik':hour<17?'Good afternoon Abdul-Malik':'Good evening Abdul-Malik';
+  const name = profileName(state);
+  const greeting = (hour<12?'Good morning':hour<17?'Good afternoon':'Good evening') + (name ? ` ${name}` : '');
   const todayMeetings = state.meetings.filter(m=>occursOnDay(m,new Date())).sort((a,b)=>a.time.localeCompare(b.time));
   const todayTasks = state.tasks.filter(t=>!t.done&&t.due===todayKey());
   const recent = [...state.notes].sort((a,b)=>b.updated-a.updated).slice(0,4);
@@ -9218,6 +9227,7 @@ function StudentView({ state, update, isMobile, pom, setPom }) {
      rewrite the whole cached state blob on every pixel. */
   const [ambDraft, setAmbDraft]         = useState(null);
   const [timerCourse, setTimerCourse]   = useState('');
+  const [editingName, setEditingName]   = useState(false);
   const [notifPerm, setNotifPerm]       = useState(() => ('Notification' in window) ? Notification.permission : 'denied');
 
   const cafe = studyCafePrefs(state);
@@ -9983,6 +9993,12 @@ function StudentView({ state, update, isMobile, pom, setPom }) {
   const lessonsDone = courses.reduce((s, c) => s + doneLessons(c), 0);
   const hour        = new Date().getHours();
   const greeting    = hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
+  const userName    = profileName(state);
+  const saveName    = v => {
+    const name = v.trim().slice(0, 40);
+    if (name !== userName) update('profile', p => ({ ...(p || {}), name }));
+    setEditingName(false);
+  };
   const heroCls     = onScene ? 'cafe-on-scene' : undefined;
   const showBoard   = cafe.showUpNext && courses.length > 0;
   const shelfLabel  = { fontSize:10.5, fontWeight:700, letterSpacing:'.09em', textTransform:'uppercase', marginBottom:12, opacity:.85 };
@@ -10064,7 +10080,7 @@ function StudentView({ state, update, isMobile, pom, setPom }) {
     <div style={{ maxWidth:1120, margin:'0 auto' }}>
       <div className={heroCls} style={{ display:'flex', alignItems:isMobile ? 'flex-start' : 'flex-end', flexDirection:isMobile ? 'column' : 'row', gap:isMobile ? 14 : 12, justifyContent:'space-between', marginBottom:isMobile ? 18 : 26 }}>
         <div>
-          <div style={{ display:'flex', alignItems:'center', gap:8, fontSize:12.5, fontWeight:600, opacity:.85, marginBottom:4 }}>
+          <div style={{ display:'flex', alignItems:'center', flexWrap:'wrap', gap:6, fontSize:12.5, fontWeight:600, opacity:.85, marginBottom:4 }}>
             <svg className="cafe-cup" viewBox="0 0 32 32" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               <path className="steam s1" d="M11 9c-1.2-1.4 1.2-2.6 0-4"/>
               <path className="steam s2" d="M15.5 9c-1.2-1.4 1.2-2.6 0-4"/>
@@ -10072,7 +10088,26 @@ function StudentView({ state, update, isMobile, pom, setPom }) {
               <path d="M6 13h18v6a7 7 0 0 1-7 7h-4a7 7 0 0 1-7-7z"/>
               <path d="M24 15h1.5a3 3 0 0 1 0 6H23"/>
             </svg>
-            <span>{greeting} · {new Date().toLocaleDateString('en-GB', { weekday:'long', day:'numeric', month:'long' })}</span>
+            <span>{greeting}{editingName ? ',' : userName ? `, ${userName}` : ''}</span>
+            {editingName ? (
+              <input autoFocus defaultValue={userName} maxLength={40} placeholder="Your name" aria-label="Your name"
+                className="cafe-name-input"
+                onBlur={e => saveName(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter') e.currentTarget.blur();
+                  if (e.key === 'Escape') { e.currentTarget.value = userName; e.currentTarget.blur(); }
+                }}/>
+            ) : (
+              <button type="button" className="cafe-name-btn" onClick={() => setEditingName(true)}
+                aria-label={userName ? 'Change your name' : 'Add your name'} title={userName ? 'Change your name' : 'Add your name'}>
+                {userName
+                  ? <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+                  : '+ Add your name'}
+              </button>
+            )}
+            <span style={isMobile ? { flexBasis:'100%', paddingLeft:26 } : undefined}>
+              {isMobile ? '' : '· '}{new Date().toLocaleDateString('en-GB', { weekday:'long', day:'numeric', month:'long' })}
+            </span>
           </div>
           <div style={{ fontFamily:'Fraunces,serif', fontSize:isMobile ? 26 : 34, fontWeight:600, lineHeight:1.1 }}>Student Hub</div>
           <div style={{ fontSize:13, opacity:.78, marginTop:5 }}>Pull up a chair — your courses, lessons and deadlines.</div>
