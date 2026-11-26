@@ -395,6 +395,7 @@ input:focus,textarea:focus{outline:none}
 .cafe-chip:hover{background:var(--fill-hover);color:var(--text-primary)}
 .cafe-chip.sel{background:var(--accent-soft);border-color:var(--accent);color:var(--text-primary);font-weight:600}
 .cafe-timer-ring circle{transition:stroke-dashoffset .9s linear,stroke .3s var(--ease)}
+.btn-primary.cafe-btn-ico{display:inline-flex;align-items:center;justify-content:center;gap:8px}
 .cafe-icon-btn{background:var(--fill);border:1px solid var(--border);border-radius:var(--r-pill);color:var(--text-secondary);font-family:'Manrope',sans-serif;font-size:12px;font-weight:600;padding:8px 12px;cursor:pointer}
 .cafe-icon-btn:hover{background:var(--fill-hover);color:var(--text-primary)}
 .cafe-seg{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
@@ -9097,23 +9098,27 @@ function PomodoroWidget({ pom, setPom, tasks, update, isMobile, hidden }) {
         <button onClick={()=>pomPlayClick(pom,setPom,task)}
           style={{width:'100%',background:`${accent}15`,border:`1px solid ${accent}35`,
             borderRadius:8,color:accent,fontSize:12,padding:'8px 0',marginBottom:hasTimeBlock?12:0,
+            display:'flex',alignItems:'center',justifyContent:'center',gap:7,
             cursor:'pointer',fontFamily:'Manrope,sans-serif',fontWeight:700}}>
-          ▶ Start {isWork ? 'focus' : 'break'}
+          {CAFE_PLAY}Start {isWork ? 'focus' : 'break'}
         </button>
       ) : (
         <div style={{display:'flex',gap:8,justifyContent:'center',marginBottom:hasTimeBlock?12:0}}>
           <button onClick={()=>pomPlayClick(pom,setPom,task)}
             style={{flex:1,background:`${accent}15`,border:`1px solid ${accent}35`,
               borderRadius:8,color:accent,fontSize:12,padding:'7px 0',
+              display:'flex',alignItems:'center',justifyContent:'center',gap:7,
               cursor:'pointer',fontFamily:'Manrope,sans-serif',fontWeight:600}}>
-            {pom.paused?'▶ Resume':'⏸ Pause'}
+            {pom.paused?CAFE_PLAY:CAFE_PAUSE}{pom.paused?'Resume':'Pause'}
           </button>
           {!isCap&&(
             <button onClick={()=>pomSkip(pom,setPom,tasks,update,task)}
               style={{background:'var(--bg-surface)',border:'1px solid var(--glass-border)',borderRadius:8,
                 color:'var(--text-secondary)',fontSize:12,padding:'7px 10px',cursor:'pointer',
-                fontFamily:'Manrope,sans-serif'}} title={isWork?'Skip to break':'Skip to focus'}>
-              ⏭
+                display:'flex',alignItems:'center',justifyContent:'center',
+                fontFamily:'Manrope,sans-serif'}} title={isWork?'Skip to break':'Skip to focus'}
+              aria-label={isWork?'Skip to break':'Skip to focus'}>
+              {CAFE_SKIP}
             </button>
           )}
         </div>
@@ -9164,6 +9169,30 @@ const STUDY_TIMER_PRESETS = [
   { id:'deep',    name:'Deep work', work:50, brk:10 },
   { id:'quick',   name:'Quick',     work:15, brk:3 },
 ];
+/* Soft, round-cornered icons for the timer UI. The ▶ ⏸ ⏭ ⚠ text glyphs aren't in
+   the app's fonts, so iOS/iPadOS substitute colour emoji (and elsewhere they draw
+   as heavy black shapes) — both fight the café look. These are drawn shapes, so
+   they look identical on every platform. Sized in em so they follow the label. */
+const CAFE_PLAY = (
+  <svg viewBox="0 0 24 24" width="1.05em" height="1.05em" fill="currentColor" stroke="currentColor" strokeWidth="2.6" strokeLinejoin="round" aria-hidden="true" style={{ flexShrink:0 }}>
+    <path d="M8 5.5v13l11-6.5z"/>
+  </svg>
+);
+const CAFE_PAUSE = (
+  <svg viewBox="0 0 24 24" width="1.05em" height="1.05em" fill="currentColor" aria-hidden="true" style={{ flexShrink:0 }}>
+    <rect x="6" y="4.5" width="4" height="15" rx="1.6"/><rect x="14" y="4.5" width="4" height="15" rx="1.6"/>
+  </svg>
+);
+const CAFE_SKIP = (
+  <svg viewBox="0 0 24 24" width="1.05em" height="1.05em" fill="currentColor" stroke="currentColor" strokeWidth="2.4" strokeLinejoin="round" aria-hidden="true" style={{ flexShrink:0 }}>
+    <path d="M5.5 6v12l9-6z"/><rect x="16.5" y="5" width="3" height="14" rx="1.4" stroke="none"/>
+  </svg>
+);
+const CAFE_ALERT = (
+  <svg viewBox="0 0 24 24" width="1.05em" height="1.05em" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ flexShrink:0 }}>
+    <path d="M12 4 3 19.5h18z"/><path d="M12 10v4.4"/><path d="M12 17.2v.1"/>
+  </svg>
+);
 const fmtStudy = secs => {
   const m = Math.round(secs / 60);
   if (m < 60) return `${m}m`;
@@ -9391,14 +9420,31 @@ function StudentView({ state, update, isMobile, pom, setPom }) {
     completed: { label:'Completed', color:'var(--accent)',   bg:'rgba(167,139,250,.15)'  },
   };
 
+  /* Where today falls in a course's date range. Compared as YYYY-MM-DD keys
+     (local today), not Date objects — new Date('YYYY-MM-DD') is UTC midnight,
+     which is a day off on the start/end date itself in many timezones. */
+  const coursePhase = c => {
+    const today = todayKey();
+    if (c.startDate && today < c.startDate) return 'upcoming';
+    if (c.endDate && today > c.endDate) return 'overdue';
+    return 'underway';
+  };
+
   const effectiveStatusInfo = c => {
-    const today = new Date(); today.setHours(0,0,0,0);
-    if (c.startDate && today < new Date(c.startDate))
+    const phase = coursePhase(c);
+    if (phase === 'upcoming')
       return { label:'Not started', color:'var(--text-secondary)', bg:'rgba(148,163,184,.12)' };
-    if (c.endDate && today > new Date(c.endDate) && c.status !== 'completed')
+    if (phase === 'overdue' && c.status !== 'completed')
       return { label:'Reschedule', color:'var(--danger)', bg:'rgba(239,68,68,.12)' };
     return STATUS_INFO[c.status] || STATUS_INFO.active;
   };
+
+  /* Only courses actually underway can be picked as a study focus: active,
+     started, and not past their end date. */
+  const studyable = courses.filter(c => (c.status || 'active') === 'active' && coursePhase(c) === 'underway');
+  /* A previously picked course can drop out of the list (dates edited, paused,
+     midnight rollover) — fall back to General study rather than keep a stale id. */
+  const timerCourseId = studyable.some(c => c.id === timerCourse) ? timerCourse : '';
 
   const inp = { background:'var(--bg-surface-2)', border:'1px solid var(--border)', borderRadius:7, color:'var(--text-primary)', fontSize:13, padding:'7px 11px', outline:'none', fontFamily:'Manrope,sans-serif', width:'100%', boxSizing:'border-box' };
   const pad = isMobile ? '20px 16px' : '32px 36px';
@@ -9638,8 +9684,8 @@ function StudentView({ state, update, isMobile, pom, setPom }) {
         </div>
       );
       const startBtn = (
-        <button type="button" className="btn-primary" onClick={() => startStudy(fixedCourseId ?? timerCourse)}>
-          ▶ Start {timerPreset.work}m focus
+        <button type="button" className="btn-primary cafe-btn-ico" onClick={() => startStudy(fixedCourseId ?? timerCourseId)}>
+          {CAFE_PLAY}Start {timerPreset.work}m focus
         </button>
       );
       if (compact) return (
@@ -9652,12 +9698,17 @@ function StudentView({ state, update, isMobile, pom, setPom }) {
       return (
         <div className="card" style={{ padding:'16px 18px', display:'flex', flexDirection:'column', gap:12 }}>
           <div style={{ display:'flex', flexDirection:'column', gap:3 }}>{title}{studyLine}</div>
-          <select value={timerCourse} onChange={e => setTimerCourse(e.target.value)} className="input" aria-label="What are you studying?">
+          <select value={timerCourseId} onChange={e => setTimerCourse(e.target.value)} className="input" aria-label="What are you studying?">
             <option value="">General study</option>
-            {courses.filter(c => c.status !== 'completed').map(c => (
+            {studyable.map(c => (
               <option key={c.id} value={c.id}>{c.emoji || '📚'} {c.title}</option>
             ))}
           </select>
+          {studyable.length === 0 && courses.some(c => c.status !== 'completed') && (
+            <span style={{ fontSize:11.5, color:'var(--text-secondary)', marginTop:-4 }}>
+              No courses underway right now — only active courses within their dates can be picked.
+            </span>
+          )}
           {presets}
           {startBtn}
           {alertHint}
@@ -9690,8 +9741,9 @@ function StudentView({ state, update, isMobile, pom, setPom }) {
     );
     const controls = (
       <div style={{ display:'flex', gap:6, flexWrap:'wrap', justifyContent:compact ? 'flex-start' : 'center' }}>
-        <button type="button" className="btn-primary" onClick={() => pomPlayClick(pom, setPom, pomTask)}>
-          {pom.awaitingStart ? `▶ Start ${isWork ? 'focus' : 'break'}` : pom.paused ? '▶ Resume' : '❚❚ Pause'}
+        <button type="button" className="btn-primary cafe-btn-ico" onClick={() => pomPlayClick(pom, setPom, pomTask)}>
+          {pom.awaitingStart || pom.paused ? CAFE_PLAY : CAFE_PAUSE}
+          {pom.awaitingStart ? `Start ${isWork ? 'focus' : 'break'}` : pom.paused ? 'Resume' : 'Pause'}
         </button>
         {!isCap && (
           <button type="button" className="cafe-icon-btn" onClick={() => pomSkip(pom, setPom, state.tasks, update, pomTask)}
@@ -9920,7 +9972,7 @@ function StudentView({ state, update, isMobile, pom, setPom }) {
                   <div style={{ flex:1, minWidth:0 }}>
                     <div style={{ fontSize:13, color:'var(--text-primary)', fontWeight:500, wordBreak:'break-word' }}>{a.title}</div>
                     <div style={{ display:'flex', gap:8, marginTop:3, flexWrap:'wrap' }}>
-                      {a.due && <span style={{ fontSize:11, color:isOver?'var(--danger)':'var(--text-secondary)' }}>{isOver?'⚠ ':''}{new Date(a.due+'T00:00:00').toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'})}</span>}
+                      {a.due && <span style={{ fontSize:11, color:isOver?'var(--danger)':'var(--text-secondary)', display:'inline-flex', alignItems:'center', gap:4 }}>{isOver && CAFE_ALERT}{new Date(a.due+'T00:00:00').toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'})}</span>}
                       {a.weight && <span style={{ fontSize:11, color:'var(--text-muted)' }}>{a.weight}% weight</span>}
                     </div>
                   </div>
@@ -9964,7 +10016,7 @@ function StudentView({ state, update, isMobile, pom, setPom }) {
               onMouseEnter={e => e.currentTarget.style.textDecoration='underline'}
               onMouseLeave={e => e.currentTarget.style.textDecoration='none'}>
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" style={{ width:13, height:13 }}><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
-              Open course link ↗
+              Open course link
             </a>
           </div>
         )}
