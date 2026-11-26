@@ -8870,15 +8870,26 @@ function beep(freq = 880, dur = 0.4) {
    user via the service worker's own timer or — if a push subscription
    exists — via real Web Push, both of which keep working when the tab is
    backgrounded or the app is fully closed. */
+/* Long break: after every `longEvery`th focus session the timer takes the longer
+   break. Both fields are optional on pom — task timers don't set them, so they
+   behave exactly as before. pom.long marks a break phase (running, or waiting
+   to start) as the long one. */
+const pomBreakAfter = (pom, sessionsDone) => {
+  const isLong = !!pom.longBreakSecs && !!pom.longEvery && sessionsDone > 0 && sessionsDone % pom.longEvery === 0;
+  return { isLong, secs: isLong ? pom.longBreakSecs : pom.breakSecs };
+};
+const pomPhaseSecs = pom => pom.phase === 'work' ? pom.workSecs : (pom.long ? pom.longBreakSecs : pom.breakSecs);
+
 function buildPomNotif(pom, task) {
   const name = task?.title || pom.label;
+  const upcoming = pom.phase === 'work' ? pomBreakAfter(pom, pom.sessionsDone + 1) : null;
   const title = pom.mode === 'cap'
     ? "Time's up"
-    : pom.phase === 'work' ? 'Focus session complete' : "Break's over";
+    : pom.phase === 'work' ? 'Focus session complete' : (pom.long ? "Long break's over" : "Break's over");
   const body = pom.mode === 'cap'
     ? `Your ${Math.round(pom.workSecs / 60)}m cap on "${name || 'task'}" has ended`
     : pom.phase === 'work'
-      ? `Time for a ${Math.round(pom.breakSecs / 60)}m break — ${name || 'your task'}`
+      ? `Time for a ${Math.round(upcoming.secs / 60)}m ${upcoming.isLong ? 'long break' : 'break'} — ${name || 'your task'}`
       : `Back to focus on ${name || 'your task'}`;
   return { id: 'pomodoro', title, body, fireAt: pom.endsAt, type: 'pomodoro' };
 }
@@ -8976,11 +8987,14 @@ function pomSkip(pom, setPom, tasks, update, task) {
     logStudy(pom, update, partial, true);
   }
   beep(880, 0.3);
-  const nextPhase = pom.phase === 'work' ? 'break' : 'work';
-  const nextSecs  = pom.phase === 'work' ? pom.breakSecs : pom.workSecs;
+  const finishingWork = pom.phase === 'work';
+  const sessionsDone  = finishingWork ? pom.sessionsDone + 1 : pom.sessionsDone;
+  const brk       = finishingWork ? pomBreakAfter(pom, sessionsDone) : null;
+  const nextPhase = finishingWork ? 'break' : 'work';
+  const nextSecs  = finishingWork ? brk.secs : pom.workSecs;
   const endsAt = Date.now() + nextSecs * 1000;
   const next = { ...pom, phase: nextPhase, remaining: nextSecs, endsAt, paused: false, awaitingStart: false,
-    sessionsDone: pom.phase === 'work' ? pom.sessionsDone + 1 : pom.sessionsDone };
+    sessionsDone, long: finishingWork ? brk.isLong : false };
   setPom(next);
   schedulePomodoroNotification(buildPomNotif(next, task));
 }
@@ -9025,12 +9039,14 @@ function PomodoroWidget({ pom, setPom, tasks, update, isMobile, hidden }) {
         ? { ...t, pomDone: (t.pomDone || 0) + 1, timeSpent: (t.timeSpent || 0) + pom.workSecs } : t));
     }
     if (finishedWork) logStudy(pom, update, pom.workSecs, true);
+    const brk       = finishedWork ? pomBreakAfter(pom, pom.sessionsDone + 1) : null;
     const nextPhase = finishedWork ? 'break' : 'work';
-    const nextSecs  = finishedWork ? pom.breakSecs : pom.workSecs;
+    const nextSecs  = finishedWork ? brk.secs : pom.workSecs;
     setPom(prev => prev ? {
       ...prev, phase: nextPhase, remaining: nextSecs, endsAt: null,
       paused: true, awaitingStart: true,
       sessionsDone: finishedWork ? prev.sessionsDone + 1 : prev.sessionsDone,
+      long: finishedWork ? brk.isLong : false,
     } : prev);
   }, [pom?.remaining, pom?.paused, pom?.awaitingStart]);
 
@@ -9048,9 +9064,11 @@ function PomodoroWidget({ pom, setPom, tasks, update, isMobile, hidden }) {
   const fmt = s => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
   const isCap = pom.mode === 'cap';
   const isWork = pom.phase === 'work';
-  const total = isWork ? pom.workSecs : pom.breakSecs;
+  const total = pomPhaseSecs(pom);
   const progress = total > 0 ? (total - pom.remaining) / total : 0;
   const accent = isCap ? 'var(--warning)' : (pom.awaitingStart ? 'var(--warning)' : (isWork ? 'var(--accent)' : 'var(--success)'));
+  /* what Skip would move to — a long break if that focus session completes the cycle */
+  const skipLabel = isWork ? (pomBreakAfter(pom, pom.sessionsDone + 1).isLong ? 'Skip to long break' : 'Skip to break') : 'Skip to focus';
 
   const partialSecs = isWork && !pom.awaitingStart ? (pom.workSecs - pom.remaining) : 0;
   const totalSpentSecs = (task?.timeSpent || 0) + partialSecs;
@@ -9061,9 +9079,10 @@ function PomodoroWidget({ pom, setPom, tasks, update, isMobile, hidden }) {
 
   const r = 26, circ = 2 * Math.PI * r;
   const dots = Math.min(pom.sessionsDone, 8);
+  /* names the phase that's running — or, once one has ended, the one waiting to start */
   const badgeLabel = isCap ? 'Time Cap'
-    : pom.awaitingStart ? (isWork ? 'Break ready' : 'Focus ready')
-    : (isWork ? 'Focus' : 'Break');
+    : pom.awaitingStart ? (isWork ? 'Focus ready' : (pom.long ? 'Long break ready' : 'Break ready'))
+    : (isWork ? 'Focus' : (pom.long ? 'Long break' : 'Break'));
 
   return (
     <div style={{position:'fixed',bottom:isMobile?72:24,right:16,
@@ -9119,7 +9138,7 @@ function PomodoroWidget({ pom, setPom, tasks, update, isMobile, hidden }) {
             borderRadius:8,color:accent,fontSize:12,padding:'8px 0',marginBottom:hasTimeBlock?12:0,
             display:'flex',alignItems:'center',justifyContent:'center',gap:7,
             cursor:'pointer',fontFamily:'Manrope,sans-serif',fontWeight:700}}>
-          {CAFE_PLAY}Start {isWork ? 'focus' : 'break'}
+          {CAFE_PLAY}Start {isWork ? 'focus' : (pom.long ? 'long break' : 'break')}
         </button>
       ) : (
         <div style={{display:'flex',gap:8,justifyContent:'center',marginBottom:hasTimeBlock?12:0}}>
@@ -9135,8 +9154,8 @@ function PomodoroWidget({ pom, setPom, tasks, update, isMobile, hidden }) {
               style={{background:'var(--bg-surface)',border:'1px solid var(--glass-border)',borderRadius:8,
                 color:'var(--text-secondary)',fontSize:12,padding:'7px 10px',cursor:'pointer',
                 display:'flex',alignItems:'center',justifyContent:'center',
-                fontFamily:'Manrope,sans-serif'}} title={isWork?'Skip to break':'Skip to focus'}
-              aria-label={isWork?'Skip to break':'Skip to focus'}>
+                fontFamily:'Manrope,sans-serif'}} title={skipLabel}
+              aria-label={skipLabel}>
               {CAFE_SKIP}
             </button>
           )}
@@ -9183,10 +9202,12 @@ const STUDY_SCENES = [
   { id:'night',    name:'Late-night desk', css:'radial-gradient(circle at 18% 10%,rgba(255,184,92,.48),transparent 38%),radial-gradient(ellipse at 50% 120%,rgba(90,60,30,.5),transparent 60%),linear-gradient(170deg,#1b2033,#121524 60%,#0b0d16)' },
 ];
 const STUDY_CAFE_DEFAULT = { scene:{ type:'preset', id:'espresso' }, dim:0, blur:0, style:'paper', showUpNext:true, timerPreset:'classic' };
+/* `long` is the long-break length (minutes), taken after every STUDY_LONG_EVERY focus sessions. */
+const STUDY_LONG_EVERY = 4;
 const STUDY_TIMER_PRESETS = [
-  { id:'classic', name:'Classic',   work:25, brk:5 },
-  { id:'deep',    name:'Deep work', work:50, brk:10 },
-  { id:'quick',   name:'Quick',     work:15, brk:3 },
+  { id:'classic', name:'Classic',   work:25, brk:5,  long:15 },
+  { id:'deep',    name:'Deep work', work:50, brk:10, long:30 },
+  { id:'quick',   name:'Quick',     work:15, brk:3,  long:10 },
 ];
 /* Soft, round-cornered icons for the timer UI. The ▶ ⏸ ⏭ ⚠ text glyphs aren't in
    the app's fonts, so iOS/iPadOS substitute colour emoji (and elsewhere they draw
@@ -9326,7 +9347,9 @@ function StudentView({ state, update, isMobile, pom, setPom }) {
     const next = {
       study:true, courseId:course?.id || null, label:course ? course.title : 'Study session',
       mode:'pomodoro', phase:'work', remaining:workSecs, endsAt:Date.now() + workSecs * 1000,
-      sessionsDone:0, workSecs, breakSecs:timerPreset.brk * 60, paused:false, awaitingStart:false,
+      sessionsDone:0, workSecs, breakSecs:timerPreset.brk * 60,
+      longBreakSecs:timerPreset.long * 60, longEvery:STUDY_LONG_EVERY, long:false,
+      paused:false, awaitingStart:false,
     };
     setPom(next);
     schedulePomodoroNotification(buildPomNotif(next, null));
@@ -9704,7 +9727,7 @@ function StudentView({ state, update, isMobile, pom, setPom }) {
         <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
           {STUDY_TIMER_PRESETS.map(p => (
             <button key={p.id} type="button" className={`cafe-chip${p.id === timerPreset.id ? ' sel' : ''}`}
-              onClick={() => setCafe({ timerPreset:p.id })} title={`${p.work} min focus, ${p.brk} min break`}>
+              onClick={() => setCafe({ timerPreset:p.id })} title={`${p.work} min focus, ${p.brk} min break, ${p.long} min long break after every ${STUDY_LONG_EVERY} sessions`}>
               {p.name} · {p.work}/{p.brk}
             </button>
           ))}
@@ -9737,6 +9760,9 @@ function StudentView({ state, update, isMobile, pom, setPom }) {
             </span>
           )}
           {presets}
+          <span style={{ fontSize:11.5, color:'var(--text-secondary)', marginTop:-6 }}>
+            Long break ({timerPreset.long}m) after every {STUDY_LONG_EVERY} sessions
+          </span>
           {startBtn}
           {alertHint}
         </div>
@@ -9745,13 +9771,21 @@ function StudentView({ state, update, isMobile, pom, setPom }) {
 
     const isCap    = pom.mode === 'cap';
     const isWork   = pom.phase === 'work';
-    const total    = isWork ? pom.workSecs : pom.breakSecs;
+    const total    = pomPhaseSecs(pom);
     const progress = total > 0 ? (total - pom.remaining) / total : 0;
     const tint     = isCap || pom.awaitingStart ? 'var(--warning)' : isWork ? 'var(--accent)' : 'var(--success)';
     const status   = isCap ? 'Time cap'
-      : pom.awaitingStart ? (isWork ? 'Break over — ready to focus' : 'Focus done — take a break')
+      : pom.awaitingStart ? (isWork ? 'Break over — ready to focus' : (pom.long ? 'Focus done — time for a long break' : 'Focus done — take a break'))
       : pom.paused ? 'Paused'
-      : isWork ? 'Focusing' : 'On a break ☕';
+      : isWork ? 'Focusing' : (pom.long ? 'On a long break ☕☕' : 'On a break ☕');
+    const skipLabel = isWork ? (pomBreakAfter(pom, pom.sessionsDone + 1).isLong ? 'Skip to long break' : 'Skip to break') : 'Skip to focus';
+    /* where this focus session / break sits in the cycle that ends in a long break */
+    const cycleN    = pom.longEvery;
+    const cycleLine = !isCap && cycleN
+      ? (isWork ? `Session ${pom.sessionsDone % cycleN + 1} of ${cycleN}`
+        : pom.long ? 'Cycle complete — rest up'
+        : `Session ${(pom.sessionsDone - 1) % cycleN + 1} of ${cycleN} done`)
+      : null;
     const name = pomTask?.title || pom.label || 'Focus';
     const size = compact ? 76 : 132, r = compact ? 32 : 57, sw = compact ? 6 : 8;
     const circ = 2 * Math.PI * r;
@@ -9766,19 +9800,27 @@ function StudentView({ state, update, isMobile, pom, setPom }) {
           fontSize={compact ? 16 : 28} fontWeight="600" fontFamily="Fraunces,serif">{fmtClock(pom.remaining)}</text>
       </svg>
     );
-    const controls = (
-      <div style={{ display:'flex', gap:6, flexWrap:'wrap', justifyContent:compact ? 'flex-start' : 'center' }}>
-        <button type="button" className="btn-primary cafe-btn-ico" onClick={() => pomPlayClick(pom, setPom, pomTask)}>
-          {pom.awaitingStart || pom.paused ? CAFE_PLAY : CAFE_PAUSE}
-          {pom.awaitingStart ? `Start ${isWork ? 'focus' : 'break'}` : pom.paused ? 'Resume' : 'Pause'}
-        </button>
-        {!isCap && (
-          <button type="button" className="cafe-icon-btn" onClick={() => pomSkip(pom, setPom, state.tasks, update, pomTask)}
-            title={isWork ? 'Skip to break' : 'Skip to focus'}>Skip</button>
-        )}
-        <button type="button" className="cafe-icon-btn" onClick={() => pomStop(pom, setPom, state.tasks, update, pomTask)} title="End session">End</button>
-      </div>
+    /* Full card: main action on its own row, Skip + End side by side beneath it, so a
+       long label ("Start long break") never strands End on a line by itself.
+       Compact (course page): one wrapping row. */
+    const primaryBtn = (
+      <button type="button" className="btn-primary cafe-btn-ico" style={compact ? undefined : { gridColumn:'1 / -1' }}
+        onClick={() => pomPlayClick(pom, setPom, pomTask)}>
+        {pom.awaitingStart || pom.paused ? CAFE_PLAY : CAFE_PAUSE}
+        {pom.awaitingStart ? `Start ${isWork ? 'focus' : (pom.long ? 'long break' : 'break')}` : pom.paused ? 'Resume' : 'Pause'}
+      </button>
     );
+    const skipBtn = !isCap && (
+      <button type="button" className="cafe-icon-btn" onClick={() => pomSkip(pom, setPom, state.tasks, update, pomTask)}
+        title={skipLabel}>Skip</button>
+    );
+    const endBtn = (
+      <button type="button" className="cafe-icon-btn" style={!compact && isCap ? { gridColumn:'1 / -1' } : undefined}
+        onClick={() => pomStop(pom, setPom, state.tasks, update, pomTask)} title="End session">End</button>
+    );
+    const controls = compact
+      ? <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>{primaryBtn}{skipBtn}{endBtn}</div>
+      : <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:6, width:'100%' }}>{primaryBtn}{skipBtn}{endBtn}</div>;
     const cups = !isCap && pom.sessionsDone > 0 && (
       <div style={{ display:'flex', gap:3, justifyContent:compact ? 'flex-start' : 'center', fontSize:12 }}
         title={`${pom.sessionsDone} focus session${pom.sessionsDone !== 1 ? 's' : ''} this sitting`}>
@@ -9789,6 +9831,7 @@ function StudentView({ state, update, isMobile, pom, setPom }) {
       <div style={{ minWidth:0, maxWidth:'100%' }}>
         <div style={{ fontSize:10, fontWeight:700, letterSpacing:'.1em', textTransform:'uppercase', color:tint }}>{status}</div>
         <div style={{ fontSize:13.5, fontWeight:600, color:'var(--text-primary)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', marginTop:2 }} title={name}>{name}</div>
+        {cycleLine && <div style={{ fontSize:11, color:'var(--text-secondary)', marginTop:2 }}>{cycleLine}</div>}
       </div>
     );
     if (compact) return (
