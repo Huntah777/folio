@@ -118,6 +118,29 @@ const unionById = (a, b) => {
   return [...byId.values()];
 };
 
+/* studyLog: { 'YYYY-MM-DD': { secs, sessions, byCourse: { [courseId]: secs } } }.
+   Study time is only ever added, never removed, so each counter merges with
+   max(): a device that was offline, or pushes from a stale copy, can no longer
+   wipe time logged elsewhere (the catch-all above would have swapped the whole
+   object). A day's total always covers every course's time. Mirrors
+   mergeStudyLog() in index.html.
+   Known limit: two devices that both log the same course on the same day while
+   neither has synced keep the larger total, not the sum. */
+const maxCounter = (a, b) => Math.max(Number(a) || 0, Number(b) || 0);
+function mergeStudyLog(a, b) {
+  if (!a && !b) return undefined;
+  const out = {};
+  for (const day of new Set([...Object.keys(a || {}), ...Object.keys(b || {})])) {
+    const x = a?.[day] || {}, y = b?.[day] || {};
+    const byCourse = {};
+    for (const id of new Set([...Object.keys(x.byCourse || {}), ...Object.keys(y.byCourse || {})]))
+      byCourse[id] = maxCounter(x.byCourse?.[id], y.byCourse?.[id]);
+    const courseSum = Object.values(byCourse).reduce((s, v) => s + v, 0);
+    out[day] = { secs: Math.max(maxCounter(x.secs, y.secs), courseSum), sessions: maxCounter(x.sessions, y.sessions), byCourse };
+  }
+  return out;
+}
+
 export function mergeState(existing, incoming, now = Date.now()) {
   /* Catch-all default for any key not handled explicitly below — notably
      kanbanCols, a small rarely-edited array with no per-item timestamps, for
@@ -142,6 +165,9 @@ export function mergeState(existing, incoming, now = Date.now()) {
   /* Shallow per-key merges, not whole-object swaps: a device pushing a partial
      or stale settings object (e.g. one recovered from a failed load) must not
      be able to wipe unrelated keys just because its own copy lacked them. */
+  const studyLog = mergeStudyLog(existing.studyLog, incoming.studyLog);
+  if (studyLog) out.studyLog = studyLog;
+
   out.banners = { ...(existing.banners || {}), ...(incoming.banners || {}) };
   out.salah   = { ...(existing.salah   || {}), ...(incoming.salah   || {}) };
   out.ui      = { ...(existing.ui      || {}), ...(incoming.ui      || {}) };

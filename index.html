@@ -8885,6 +8885,25 @@ function buildPomNotif(pom, task) {
 
 /* Student Hub sessions (pom.study) bank focus time per day in state.studyLog:
    { 'YYYY-MM-DD': { secs, sessions, byCourse: { [courseId]: secs } } } */
+/* Merge two copies of studyLog with max() per counter — time is only ever added,
+   so an offline or stale device can't wipe time logged elsewhere. Mirrors
+   mergeStudyLog() in functions/api/state.js (keep them in step). A day's total
+   always covers every course's time. */
+const maxCounter = (a, b) => Math.max(Number(a) || 0, Number(b) || 0);
+function mergeStudyLog(a, b) {
+  if (!a && !b) return undefined;
+  const out = {};
+  for (const day of new Set([...Object.keys(a || {}), ...Object.keys(b || {})])) {
+    const x = a?.[day] || {}, y = b?.[day] || {};
+    const byCourse = {};
+    for (const id of new Set([...Object.keys(x.byCourse || {}), ...Object.keys(y.byCourse || {})]))
+      byCourse[id] = maxCounter(x.byCourse?.[id], y.byCourse?.[id]);
+    const courseSum = Object.values(byCourse).reduce((s, v) => s + v, 0);
+    out[day] = { secs: Math.max(maxCounter(x.secs, y.secs), courseSum), sessions: maxCounter(x.sessions, y.sessions), byCourse };
+  }
+  return out;
+}
+
 function logStudy(pom, update, secs, countSession) {
   if (!pom?.study || secs <= 30) return;
   const day = todayKey();
@@ -9290,7 +9309,15 @@ function StudentView({ state, update, isMobile, pom, setPom }) {
   const pomTask     = pom?.taskId ? (state.tasks || []).find(t => t.id === pom.taskId) : null;
   const studyLog    = state.studyLog || {};
   const todayStudy  = studyLog[todayKey()] || { secs:0, sessions:0 };
-  const courseStudySecs = id => Object.values(studyLog).reduce((s, d) => s + (d.byCourse?.[id] || 0), 0);
+  /* Logged time plus the focus phase running right now (it's only banked when
+     the phase ends or is skipped/ended), so the number moves while you study.
+     When the phase ends, logStudy and the pom change land in the same render,
+     so it never double-counts. */
+  const runningStudySecs = id =>
+    pom?.study && pom.courseId === id && pom.phase === 'work' && !pom.awaitingStart
+      ? Math.max(0, pom.workSecs - pom.remaining) : 0;
+  const courseStudySecs = id =>
+    Object.values(studyLog).reduce((s, d) => s + (d.byCourse?.[id] || 0), 0) + runningStudySecs(id);
 
   const startStudy = courseId => {
     if (pom) pomStop(pom, setPom, state.tasks, update, pomTask);
@@ -10062,6 +10089,7 @@ function StudentView({ state, update, isMobile, pom, setPom }) {
     const acc  = colorHex(c.color);
     const si   = effectiveStatusInfo(c);
     const tl   = totalLessons(c);
+    const studied = courseStudySecs(c.id);
     const stamp = done ? { text:'Finished', color:'var(--success)' }
       : days === null ? null
       : days < 0   ? { text:`${Math.abs(days)}d overdue`, color:'var(--danger)' }
@@ -10090,6 +10118,11 @@ function StudentView({ state, update, isMobile, pom, setPom }) {
             {tl > 0 && ` · ${doneLessons(c)}/${tl} lessons`}
           </span>
           {stamp && <span className="cafe-stamp" style={{ color:stamp.color }}>{stamp.text}</span>}
+        </div>
+        <div style={{ marginTop:8, fontSize:11.5, color:'var(--text-secondary)' }} title="Time spent in Study timer sessions">
+          {studied > 0
+            ? <><b style={{ color:'var(--text-primary)', fontWeight:700 }}>{fmtStudy(studied)}</b> studied</>
+            : 'Not studied yet'}
         </div>
       </div>
     );
@@ -10380,6 +10413,8 @@ function App() {
     const folderExtras = (local?.folders||[]).filter(x => !remoteFolderIds.has(x.id));
     if (folderExtras.length) merged.folders = [...merged.folders, ...folderExtras];
     merged.tags = [...new Set([...(remote?.tags||[]), ...(local?.tags||[])])];
+    const studyLog = mergeStudyLog(local?.studyLog, remote?.studyLog);
+    if (studyLog) merged.studyLog = studyLog;
     return merged;
   };
 
