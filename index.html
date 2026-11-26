@@ -365,7 +365,6 @@ input:focus,textarea:focus{outline:none}
 .cafe-course.done:hover{opacity:1}
 .cafe-spine{position:absolute;left:0;top:0;bottom:0;width:7px}
 .cafe-spine::after{content:'';position:absolute;inset:0;background:repeating-linear-gradient(180deg,rgba(255,255,255,.28) 0 1px,transparent 1px 12px)}
-.cafe-emoji{width:42px;height:42px;border-radius:11px;display:flex;align-items:center;justify-content:center;font-size:22px;flex-shrink:0;border:1px solid}
 .cafe-stamp{font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:500;letter-spacing:.08em;text-transform:uppercase;border:1.5px solid currentColor;border-radius:5px;padding:2px 6px;transform:rotate(-3deg);white-space:nowrap}
 .cafe-board{position:relative;border-radius:14px;padding:16px 20px 14px;color:#f3efe6;background:radial-gradient(ellipse at 25% 0%,rgba(255,255,255,.08),transparent 60%),linear-gradient(160deg,#2f3b34,#222a25);border:7px solid #6b4a2e;box-shadow:0 14px 30px -14px rgba(0,0,0,.7),inset 0 0 0 1px rgba(255,255,255,.06)}
 .cafe-board-row{display:flex;align-items:baseline;gap:8px;padding:6px 0;cursor:pointer;font-size:13px}
@@ -10020,7 +10019,6 @@ function StudentView({ state, update, isMobile, pom, setPom }) {
       <div key={c.id} className={`card cafe-course${done ? ' done' : ''}`} onClick={() => setSelectedId(c.id)}>
         <span className="cafe-spine" style={{ background:acc }}/>
         <div style={{ display:'flex', alignItems:'flex-start', gap:12, marginBottom:14 }}>
-          <span className="cafe-emoji" style={{ background:`${acc}1f`, borderColor:`${acc}55` }}>{c.emoji || '📚'}</span>
           <div style={{ flex:1, minWidth:0 }}>
             <div style={{ fontFamily:'Fraunces,serif', fontWeight:600, fontSize:16, lineHeight:1.25, color:'var(--text-primary)', wordBreak:'break-word' }}>{c.title}</div>
             {(c.instructor || c.platform) && (
