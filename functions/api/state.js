@@ -23,8 +23,11 @@ const MAX_WRITE_ATTEMPTS = 3;               /* optimistic-concurrency retries */
 const TOMBSTONE_TTL_MS   = 90 * 24 * 60 * 60 * 1000; /* 90 days */
 
 /* Collections carrying soft-delete tombstones in a sibling `<key>Deleted` array.
-   Must stay in step with SEED() in index.html. */
-const TOMBSTONED = ['notes', 'tasks', 'meetings', 'journal'];
+   Must stay in step with TOMBSTONE_COLLECTIONS in index.html (the client merges
+   the same set with mergeById). A collection missing here falls through to the
+   catch-all in mergeState, which swaps the whole array — so one stale device's
+   save would silently drop items other devices added, and resurrect deletions. */
+const TOMBSTONED = ['notes', 'tasks', 'meetings', 'journal', 'courses'];
 
 const json = (data, status = 200, extraHeaders = {}) =>
   new Response(JSON.stringify(data), {
