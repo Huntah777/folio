@@ -9144,6 +9144,15 @@ function StudentView({ state, update, isMobile }) {
     completed: { label:'Completed', color:'var(--accent)',   bg:'rgba(167,139,250,.15)'  },
   };
 
+  const effectiveStatusInfo = c => {
+    const today = new Date(); today.setHours(0,0,0,0);
+    if (c.startDate && today < new Date(c.startDate))
+      return { label:'Not started', color:'var(--text-secondary)', bg:'rgba(148,163,184,.12)' };
+    if (c.endDate && today > new Date(c.endDate) && c.status !== 'completed')
+      return { label:'Reschedule', color:'var(--danger)', bg:'rgba(239,68,68,.12)' };
+    return STATUS_INFO[c.status] || STATUS_INFO.active;
+  };
+
   const inp = { background:'var(--bg-surface-2)', border:'1px solid var(--border)', borderRadius:7, color:'var(--text-primary)', fontSize:13, padding:'7px 11px', outline:'none', fontFamily:'Manrope,sans-serif', width:'100%', boxSizing:'border-box' };
   const pad = isMobile ? '20px 16px' : '32px 36px';
 
@@ -9215,7 +9224,7 @@ function StudentView({ state, update, isMobile }) {
     const pct    = courseProgress(selected);
     const days   = daysLeft(selected.endDate);
     const accent = colorHex(selected.color);
-    const si     = STATUS_INFO[selected.status] || STATUS_INFO.active;
+    const si     = effectiveStatusInfo(selected);
     const doneC  = doneLessons(selected);
     const totalC = totalLessons(selected);
     const upcoming   = (selected.assignments || []).filter(a => !a.done).sort((a, b) => (a.due||'').localeCompare(b.due||''));
@@ -9451,7 +9460,15 @@ function StudentView({ state, update, isMobile }) {
   }
 
   /* ── Home: course grid ── */
-  const active    = courses.filter(c => c.status !== 'completed');
+  const active = courses
+    .filter(c => c.status !== 'completed')
+    .sort((a, b) => {
+      const da = daysLeft(a.endDate), db = daysLeft(b.endDate);
+      if (da === null && db === null) return 0;
+      if (da === null) return 1;
+      if (db === null) return -1;
+      return da - db;
+    });
   const completed = courses.filter(c => c.status === 'completed');
 
   return (
@@ -9489,7 +9506,7 @@ function StudentView({ state, update, isMobile }) {
               const pct  = courseProgress(c);
               const days = daysLeft(c.endDate);
               const acc  = colorHex(c.color);
-              const si   = STATUS_INFO[c.status] || STATUS_INFO.active;
+              const si   = effectiveStatusInfo(c);
               return (
                 <div key={c.id} className="card" onClick={() => setSelectedId(c.id)}
                   style={{ padding:'16px 18px', cursor:'pointer', borderTop:`3px solid ${acc}`, transition:'transform .15s var(--ease),box-shadow .15s var(--ease)' }}
