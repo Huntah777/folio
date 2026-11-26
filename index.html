@@ -350,6 +350,11 @@ input:focus,textarea:focus{outline:none}
 .cafe-sheet,.study-cafe .modal{color:var(--text-primary)}
 .cafe-on-scene{color:#fff7ec;text-shadow:0 1px 14px rgba(0,0,0,.5)}
 .cafe-on-scene button{text-shadow:none}
+.cafe-name-btn{display:inline-flex;align-items:center;background:none;border:none;color:inherit;opacity:.7;cursor:pointer;font:inherit;padding:3px 5px;border-radius:6px}
+.cafe-name-btn:hover,.cafe-name-btn:focus-visible{opacity:1;background:rgba(255,255,255,.14);outline:none}
+.cafe-name-input{font:inherit;color:inherit;text-shadow:none;background:rgba(255,248,238,.16);border:1px solid rgba(255,248,238,.45);border-radius:6px;padding:2px 8px;width:150px;outline:none}
+.cafe-name-input:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-ring)}
+.cafe-name-input::placeholder{color:inherit;opacity:.6}
 .cafe-glass-btn{display:inline-flex;align-items:center;gap:6px;background:rgba(255,248,238,.14);color:#fff7ec;border:1px solid rgba(255,248,238,.28);border-radius:var(--r-pill);padding:8px 14px;font-family:'Manrope',sans-serif;font-size:12.5px;font-weight:600;cursor:pointer;-webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px);transition:background var(--dur) var(--ease),transform 140ms var(--ease)}
 .cafe-glass-btn:hover{background:rgba(255,248,238,.22)}
 .cafe-glass-btn:active{transform:scale(.96)}
@@ -367,12 +372,32 @@ input:focus,textarea:focus{outline:none}
 .cafe-board-row:hover .cafe-board-title{text-decoration:underline;text-underline-offset:3px}
 .cafe-board-leader{flex:1;min-width:16px;border-bottom:1.5px dotted rgba(243,239,230,.32);transform:translateY(-4px)}
 .cafe-stat{padding:12px 16px;display:flex;flex-direction:column;gap:2px}
+/* Top row: stats · Up next · timer. Container queries rather than isMobile so
+   a tablet in landscape (sidebar + ~800px of content) reflows too. */
+.cafe-scroll{container-type:inline-size}
+.cafe-top{display:grid;gap:14px;margin-bottom:30px;grid-template-columns:minmax(150px,190px) minmax(0,1fr) minmax(250px,290px)}
+.cafe-stats{display:grid;gap:10px;grid-template-columns:1fr;align-content:start}
+.cafe-top.no-board{grid-template-columns:minmax(0,1fr) minmax(250px,300px)}
+.cafe-top.no-board .cafe-stats{grid-template-columns:repeat(3,1fr)}
+@container (max-width:900px){
+  .cafe-top{grid-template-columns:minmax(0,1fr) minmax(240px,280px)}
+  .cafe-top .cafe-stats{grid-column:1/-1;grid-template-columns:repeat(3,1fr)}
+  .cafe-top.no-board .cafe-stats{grid-column:auto}
+}
+@container (max-width:600px){
+  .cafe-top,.cafe-top.no-board{grid-template-columns:1fr}
+  .cafe-top .cafe-stats{grid-column:auto}
+}
 .cafe-tile{position:relative;aspect-ratio:16/10;border-radius:10px;cursor:pointer;overflow:hidden;border:2px solid transparent;background-size:cover;background-position:center;transition:border-color 120ms var(--ease),transform 140ms var(--ease)}
 .cafe-tile:hover{transform:translateY(-1px)}
 .cafe-tile.sel{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-ring)}
 .cafe-tile-label{position:absolute;left:0;right:0;bottom:0;padding:14px 8px 6px;font-size:11px;font-weight:600;color:#fff7ec;background:linear-gradient(transparent,rgba(0,0,0,.6))}
 .cafe-chip{background:var(--fill);border:1px solid var(--border);border-radius:var(--r-pill);padding:4px 10px;font-size:11.5px;color:var(--text-secondary);cursor:pointer;font-family:'Manrope',sans-serif}
 .cafe-chip:hover{background:var(--fill-hover);color:var(--text-primary)}
+.cafe-chip.sel{background:var(--accent-soft);border-color:var(--accent);color:var(--text-primary);font-weight:600}
+.cafe-timer-ring circle{transition:stroke-dashoffset .9s linear,stroke .3s var(--ease)}
+.cafe-icon-btn{background:var(--fill);border:1px solid var(--border);border-radius:var(--r-pill);color:var(--text-secondary);font-family:'Manrope',sans-serif;font-size:12px;font-weight:600;padding:8px 12px;cursor:pointer}
+.cafe-icon-btn:hover{background:var(--fill-hover);color:var(--text-primary)}
 .cafe-seg{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
 .cafe-seg button{display:flex;flex-direction:column;align-items:center;gap:6px;padding:10px 8px;border-radius:var(--r-md);border:1.5px solid var(--border);background:var(--fill);color:var(--text-secondary);font-family:'Manrope',sans-serif;font-size:12px;font-weight:600;cursor:pointer}
 .cafe-seg button.sel{border-color:var(--accent);color:var(--text-primary);box-shadow:0 0 0 3px var(--accent-ring)}
@@ -1412,6 +1437,9 @@ const BANNERS_KEY = 'folio_banners';
 const LegacyBannerPrefs = {
   get() { try { return JSON.parse(localStorage.getItem(BANNERS_KEY)) || {}; } catch { return {}; } },
 };
+/* Name used in greetings — synced via state.profile so it follows you between devices. */
+const DEFAULT_PROFILE_NAME = 'Abdul-Malik';
+const profileName = state => (state?.profile?.name ?? DEFAULT_PROFILE_NAME).trim();
 const SECTION_LABELS = { today:'Today', notes:'Notes', journal:'Journal', tasks:'Tasks', calendar:'Calendar', tags:'Tags', folders:'Folders', student:'Student', admin:'Admin' };
 const BANNER_GRADIENTS = [
   'linear-gradient(135deg,#667eea,#764ba2)',
@@ -5314,7 +5342,8 @@ function CalendarView({ state, update, isMobile }) {
 /* ── TodayView ── */
 function TodayView({ state, update, isMobile }) {
   const hour = new Date().getHours();
-  const greeting = hour<12?'Good morning Abdul-Malik':hour<17?'Good afternoon Abdul-Malik':'Good evening Abdul-Malik';
+  const name = profileName(state);
+  const greeting = (hour<12?'Good morning':hour<17?'Good afternoon':'Good evening') + (name ? ` ${name}` : '');
   const todayMeetings = state.meetings.filter(m=>occursOnDay(m,new Date())).sort((a,b)=>a.time.localeCompare(b.time));
   const todayTasks = state.tasks.filter(t=>!t.done&&t.due===todayKey());
   const recent = [...state.notes].sort((a,b)=>b.updated-a.updated).slice(0,4);
@@ -8842,15 +8871,30 @@ function beep(freq = 880, dur = 0.4) {
    exists — via real Web Push, both of which keep working when the tab is
    backgrounded or the app is fully closed. */
 function buildPomNotif(pom, task) {
+  const name = task?.title || pom.label;
   const title = pom.mode === 'cap'
     ? "Time's up"
     : pom.phase === 'work' ? 'Focus session complete' : "Break's over";
   const body = pom.mode === 'cap'
-    ? `Your ${Math.round(pom.workSecs / 60)}m cap on "${task?.title || 'task'}" has ended`
+    ? `Your ${Math.round(pom.workSecs / 60)}m cap on "${name || 'task'}" has ended`
     : pom.phase === 'work'
-      ? `Time for a ${Math.round(pom.breakSecs / 60)}m break — ${task?.title || 'your task'}`
-      : `Back to focus on ${task?.title || 'your task'}`;
+      ? `Time for a ${Math.round(pom.breakSecs / 60)}m break — ${name || 'your task'}`
+      : `Back to focus on ${name || 'your task'}`;
   return { id: 'pomodoro', title, body, fireAt: pom.endsAt, type: 'pomodoro' };
+}
+
+/* Student Hub sessions (pom.study) bank focus time per day in state.studyLog:
+   { 'YYYY-MM-DD': { secs, sessions, byCourse: { [courseId]: secs } } } */
+function logStudy(pom, update, secs, countSession) {
+  if (!pom?.study || secs <= 30) return;
+  const day = todayKey();
+  update('studyLog', prev => {
+    const d = (prev || {})[day] || { secs:0, sessions:0, byCourse:{} };
+    const byCourse = pom.courseId
+      ? { ...(d.byCourse || {}), [pom.courseId]: ((d.byCourse || {})[pom.courseId] || 0) + secs }
+      : (d.byCourse || {});
+    return { ...(prev || {}), [day]: { secs: d.secs + secs, sessions: d.sessions + (countSession ? 1 : 0), byCourse } };
+  });
 }
 
 async function syncPomodoroPush(notification) {
@@ -8893,11 +8937,12 @@ function pomPlayClick(pom, setPom, task) {
 }
 
 function pomStop(pom, setPom, tasks, update, task) {
-  if (!pom.awaitingStart && pom.phase === 'work' && task) {
+  if (!pom.awaitingStart && pom.phase === 'work') {
     const remaining = pom.paused ? pom.remaining : Math.max(0, Math.round((pom.endsAt - Date.now()) / 1000));
     const partial = pom.workSecs - remaining;
-    if (partial > 30) update('tasks', tasks.map(t => t.id === task.id
+    if (task && partial > 30) update('tasks', tasks.map(t => t.id === task.id
       ? { ...t, timeSpent: (t.timeSpent || 0) + partial } : t));
+    logStudy(pom, update, partial, false);
   }
   schedulePomodoroNotification(null);
   setPom(null);
@@ -8909,6 +8954,7 @@ function pomSkip(pom, setPom, tasks, update, task) {
     const partial = pom.workSecs - remaining;
     if (task && partial > 30) update('tasks', tasks.map(t => t.id === task.id
       ? { ...t, pomDone: (t.pomDone || 0) + 1, timeSpent: (t.timeSpent || 0) + partial } : t));
+    logStudy(pom, update, partial, true);
   }
   beep(880, 0.3);
   const nextPhase = pom.phase === 'work' ? 'break' : 'work';
@@ -8920,7 +8966,9 @@ function pomSkip(pom, setPom, tasks, update, task) {
   schedulePomodoroNotification(buildPomNotif(next, task));
 }
 
-function PomodoroWidget({ pom, setPom, tasks, update, isMobile }) {
+/* `hidden` keeps the widget mounted — it owns the tick and phase-end effects —
+   while another view (the Student Hub) shows the timer itself. */
+function PomodoroWidget({ pom, setPom, tasks, update, isMobile, hidden }) {
   const task = tasks.find(t => t.id === pom?.taskId);
   const [notifPerm, setNotifPerm] = useState(('Notification' in window) ? Notification.permission : 'denied');
 
@@ -8957,6 +9005,7 @@ function PomodoroWidget({ pom, setPom, tasks, update, isMobile }) {
       update('tasks', tasks.map(t => t.id === task.id
         ? { ...t, pomDone: (t.pomDone || 0) + 1, timeSpent: (t.timeSpent || 0) + pom.workSecs } : t));
     }
+    if (finishedWork) logStudy(pom, update, pom.workSecs, true);
     const nextPhase = finishedWork ? 'break' : 'work';
     const nextSecs  = finishedWork ? pom.breakSecs : pom.workSecs;
     setPom(prev => prev ? {
@@ -8966,7 +9015,7 @@ function PomodoroWidget({ pom, setPom, tasks, update, isMobile }) {
     } : prev);
   }, [pom?.remaining, pom?.paused, pom?.awaitingStart]);
 
-  if (!pom) return null;
+  if (!pom || hidden) return null;
 
   const enableNotifs = async () => {
     if (!('Notification' in window)) return;
@@ -9028,7 +9077,7 @@ function PomodoroWidget({ pom, setPom, tasks, update, isMobile }) {
       {/* task name */}
       <div style={{fontSize:12,color:'var(--text-primary)',fontWeight:600,marginBottom:12,
         overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}} title={task?.title}>
-        {task?.title ?? '—'}
+        {task?.title ?? pom.label ?? '—'}
       </div>
 
       {/* progress ring */}
@@ -9110,7 +9159,17 @@ const STUDY_SCENES = [
   { id:'matcha',   name:'Matcha corner',css:'radial-gradient(ellipse at 80% 8%,rgba(240,235,200,.38),transparent 45%),radial-gradient(ellipse at 10% 100%,rgba(30,40,25,.5),transparent 55%),linear-gradient(150deg,#7d9268,#55684a 50%,#36432f)' },
   { id:'night',    name:'Late-night desk', css:'radial-gradient(circle at 18% 10%,rgba(255,184,92,.48),transparent 38%),radial-gradient(ellipse at 50% 120%,rgba(90,60,30,.5),transparent 60%),linear-gradient(170deg,#1b2033,#121524 60%,#0b0d16)' },
 ];
-const STUDY_CAFE_DEFAULT = { scene:{ type:'preset', id:'espresso' }, dim:0, blur:0, style:'paper', showUpNext:true };
+const STUDY_CAFE_DEFAULT = { scene:{ type:'preset', id:'espresso' }, dim:0, blur:0, style:'paper', showUpNext:true, timerPreset:'classic' };
+const STUDY_TIMER_PRESETS = [
+  { id:'classic', name:'Classic',   work:25, brk:5 },
+  { id:'deep',    name:'Deep work', work:50, brk:10 },
+  { id:'quick',   name:'Quick',     work:15, brk:3 },
+];
+const fmtStudy = secs => {
+  const m = Math.round(secs / 60);
+  if (m < 60) return `${m}m`;
+  return m % 60 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${Math.floor(m / 60)}h`;
+};
 const STUDY_PHOTO_IDEAS = ['cozy cafe','library','rainy window','coffee shop','reading nook','bookshop'];
 const STUDY_CARD_STYLES = [
   { id:'paper',    name:'Paper',    swatch:'linear-gradient(180deg,#fdf9f1,#f0e2c8)' },
@@ -9145,7 +9204,7 @@ function trackUnsplashDownload(r) {
 }
 
 /* ── StudentView ── */
-function StudentView({ state, update, isMobile }) {
+function StudentView({ state, update, isMobile, pom, setPom }) {
   const courses = state.courses || [];
   const [selectedId, setSelectedId] = useState(null);
   const [showForm, setShowForm] = useState(false);
@@ -9167,6 +9226,9 @@ function StudentView({ state, update, isMobile }) {
   /* Slider positions while dragging — committed on release so a drag doesn't
      rewrite the whole cached state blob on every pixel. */
   const [ambDraft, setAmbDraft]         = useState(null);
+  const [timerCourse, setTimerCourse]   = useState('');
+  const [editingName, setEditingName]   = useState(false);
+  const [notifPerm, setNotifPerm]       = useState(() => ('Notification' in window) ? Notification.permission : 'denied');
 
   const cafe = studyCafePrefs(state);
   const dim  = ambDraft?.dim  ?? cafe.dim;
@@ -9193,6 +9255,34 @@ function StudentView({ state, update, isMobile }) {
   const pickAmbResult = r => {
     pickPhoto({ type:'image', url:r.fullUrl, source:'unsplash', attribution:r.photographer });
     trackUnsplashDownload(r);
+  };
+
+  /* ── study timer — drives the app-wide pom, so alerts and push keep working ── */
+  const timerPreset = STUDY_TIMER_PRESETS.find(p => p.id === cafe.timerPreset) || STUDY_TIMER_PRESETS[0];
+  const pomTask     = pom?.taskId ? (state.tasks || []).find(t => t.id === pom.taskId) : null;
+  const studyLog    = state.studyLog || {};
+  const todayStudy  = studyLog[todayKey()] || { secs:0, sessions:0 };
+  const courseStudySecs = id => Object.values(studyLog).reduce((s, d) => s + (d.byCourse?.[id] || 0), 0);
+
+  const startStudy = courseId => {
+    if (pom) pomStop(pom, setPom, state.tasks, update, pomTask);
+    const course   = courses.find(c => c.id === courseId);
+    const workSecs = timerPreset.work * 60;
+    const next = {
+      study:true, courseId:course?.id || null, label:course ? course.title : 'Study session',
+      mode:'pomodoro', phase:'work', remaining:workSecs, endsAt:Date.now() + workSecs * 1000,
+      sessionsDone:0, workSecs, breakSecs:timerPreset.brk * 60, paused:false, awaitingStart:false,
+    };
+    setPom(next);
+    schedulePomodoroNotification(buildPomNotif(next, null));
+  };
+  const enableTimerAlerts = async () => {
+    if (!('Notification' in window)) return;
+    const perm = await Notification.requestPermission();
+    setNotifPerm(perm);
+    if (perm === 'granted' && pom && !pom.paused && !pom.awaitingStart && pom.endsAt) {
+      schedulePomodoroNotification(buildPomNotif(pom, pomTask));
+    }
   };
 
   const selected = courses.find(c => c.id === selectedId) || null;
@@ -9499,7 +9589,7 @@ function StudentView({ state, update, isMobile }) {
       {onScene && dim > 0 && (
         <div aria-hidden="true" className="cafe-scene" style={{ inset:0, background:`rgba(18,12,8,${dim / 100})` }}/>
       )}
-      <div className="scrollbar" style={{ position:'relative', flex:1, overflowY:'auto', overflowX:'hidden', padding:pad }}>
+      <div className="scrollbar cafe-scroll" style={{ position:'relative', flex:1, overflowY:'auto', overflowX:'hidden', padding:pad }}>
         {content}
       </div>
       {cafe.scene?.source==='unsplash' && cafe.scene.attribution?.name && (
@@ -9514,6 +9604,133 @@ function StudentView({ state, update, isMobile }) {
       {ambienceJsx}
     </div>
   );
+
+  /* Also a plain function, for the same remount reason as shell. */
+  const timerJsx = (compact, fixedCourseId) => {
+    const alertHint = notifPerm === 'default' && (
+      <button type="button" onClick={enableTimerAlerts} className="cafe-chip" style={{ alignSelf:'center' }}>
+        🔔 Alert me when it ends
+      </button>
+    );
+    const sessions = todayStudy.sessions;
+    const studyLine = (
+      <span style={{ fontSize:11.5, color:'var(--text-secondary)' }}>
+        {fixedCourseId
+          ? (courseStudySecs(fixedCourseId) > 0 ? `Studied ${fmtStudy(courseStudySecs(fixedCourseId))} so far` : 'Not studied yet')
+          : (todayStudy.secs > 0 ? `Focused today · ${fmtStudy(todayStudy.secs)}${sessions ? ` · ${sessions} session${sessions !== 1 ? 's' : ''}` : ''}` : 'No focus time yet today')}
+      </span>
+    );
+
+    if (!pom) {
+      const title = (
+        <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2"/><path d="M9 2h6"/></svg>
+          <span style={{ fontFamily:'Fraunces,serif', fontSize:16, fontWeight:600, color:'var(--text-primary)' }}>{compact ? 'Study this course' : 'Study timer'}</span>
+        </div>
+      );
+      const presets = (
+        <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
+          {STUDY_TIMER_PRESETS.map(p => (
+            <button key={p.id} type="button" className={`cafe-chip${p.id === timerPreset.id ? ' sel' : ''}`}
+              onClick={() => setCafe({ timerPreset:p.id })} title={`${p.work} min focus, ${p.brk} min break`}>
+              {p.name} · {p.work}/{p.brk}
+            </button>
+          ))}
+        </div>
+      );
+      const startBtn = (
+        <button type="button" className="btn-primary" onClick={() => startStudy(fixedCourseId ?? timerCourse)}>
+          ▶ Start {timerPreset.work}m focus
+        </button>
+      );
+      if (compact) return (
+        <div className="card" style={{ padding:'14px 18px', display:'flex', alignItems:'center', gap:14, flexWrap:'wrap', marginBottom:24 }}>
+          <div style={{ display:'flex', flexDirection:'column', gap:3, marginRight:'auto' }}>{title}{studyLine}</div>
+          {presets}
+          {startBtn}
+        </div>
+      );
+      return (
+        <div className="card" style={{ padding:'16px 18px', display:'flex', flexDirection:'column', gap:12 }}>
+          <div style={{ display:'flex', flexDirection:'column', gap:3 }}>{title}{studyLine}</div>
+          <select value={timerCourse} onChange={e => setTimerCourse(e.target.value)} className="input" aria-label="What are you studying?">
+            <option value="">General study</option>
+            {courses.filter(c => c.status !== 'completed').map(c => (
+              <option key={c.id} value={c.id}>{c.emoji || '📚'} {c.title}</option>
+            ))}
+          </select>
+          {presets}
+          {startBtn}
+          {alertHint}
+        </div>
+      );
+    }
+
+    const isCap    = pom.mode === 'cap';
+    const isWork   = pom.phase === 'work';
+    const total    = isWork ? pom.workSecs : pom.breakSecs;
+    const progress = total > 0 ? (total - pom.remaining) / total : 0;
+    const tint     = isCap || pom.awaitingStart ? 'var(--warning)' : isWork ? 'var(--accent)' : 'var(--success)';
+    const status   = isCap ? 'Time cap'
+      : pom.awaitingStart ? (isWork ? 'Break over — ready to focus' : 'Focus done — take a break')
+      : pom.paused ? 'Paused'
+      : isWork ? 'Focusing' : 'On a break ☕';
+    const name = pomTask?.title || pom.label || 'Focus';
+    const size = compact ? 76 : 132, r = compact ? 32 : 57, sw = compact ? 6 : 8;
+    const circ = 2 * Math.PI * r;
+    const ring = (
+      <svg className="cafe-timer-ring" width={size} height={size} viewBox={`0 0 ${size} ${size}`} style={{ flexShrink:0 }}
+        role="img" aria-label={`${fmtClock(pom.remaining)} remaining`}>
+        <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="var(--fill-active)" strokeWidth={sw}/>
+        <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={tint} strokeWidth={sw}
+          strokeDasharray={circ} strokeDashoffset={circ * (1 - progress)} strokeLinecap="round"
+          transform={`rotate(-90 ${size / 2} ${size / 2})`}/>
+        <text x="50%" y="50%" dominantBaseline="central" textAnchor="middle" fill="var(--text-primary)"
+          fontSize={compact ? 16 : 28} fontWeight="600" fontFamily="Fraunces,serif">{fmtClock(pom.remaining)}</text>
+      </svg>
+    );
+    const controls = (
+      <div style={{ display:'flex', gap:6, flexWrap:'wrap', justifyContent:compact ? 'flex-start' : 'center' }}>
+        <button type="button" className="btn-primary" onClick={() => pomPlayClick(pom, setPom, pomTask)}>
+          {pom.awaitingStart ? `▶ Start ${isWork ? 'focus' : 'break'}` : pom.paused ? '▶ Resume' : '❚❚ Pause'}
+        </button>
+        {!isCap && (
+          <button type="button" className="cafe-icon-btn" onClick={() => pomSkip(pom, setPom, state.tasks, update, pomTask)}
+            title={isWork ? 'Skip to break' : 'Skip to focus'}>Skip</button>
+        )}
+        <button type="button" className="cafe-icon-btn" onClick={() => pomStop(pom, setPom, state.tasks, update, pomTask)} title="End session">End</button>
+      </div>
+    );
+    const cups = !isCap && pom.sessionsDone > 0 && (
+      <div style={{ display:'flex', gap:3, justifyContent:compact ? 'flex-start' : 'center', fontSize:12 }}
+        title={`${pom.sessionsDone} focus session${pom.sessionsDone !== 1 ? 's' : ''} this sitting`}>
+        {Array.from({ length:Math.min(pom.sessionsDone, 8) }, (_, i) => <span key={i}>☕</span>)}
+      </div>
+    );
+    const header = (
+      <div style={{ minWidth:0, maxWidth:'100%' }}>
+        <div style={{ fontSize:10, fontWeight:700, letterSpacing:'.1em', textTransform:'uppercase', color:tint }}>{status}</div>
+        <div style={{ fontSize:13.5, fontWeight:600, color:'var(--text-primary)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', marginTop:2 }} title={name}>{name}</div>
+      </div>
+    );
+    if (compact) return (
+      <div className="card" style={{ padding:'14px 18px', display:'flex', alignItems:'center', gap:16, flexWrap:'wrap', marginBottom:24 }}>
+        {ring}
+        <div style={{ flex:1, minWidth:180, display:'flex', flexDirection:'column', gap:8 }}>{header}{controls}{cups}</div>
+        {alertHint}
+      </div>
+    );
+    return (
+      <div className="card" style={{ padding:'16px 18px', display:'flex', flexDirection:'column', alignItems:'center', gap:10, textAlign:'center' }}>
+        {header}
+        {ring}
+        {controls}
+        {cups}
+        {studyLine}
+        {alertHint}
+      </div>
+    );
+  };
 
   /* ── Detail view ── */
   if (selected) {
@@ -9557,7 +9774,7 @@ function StudentView({ state, update, isMobile }) {
         </div>
 
         {/* Stats cards */}
-        <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(4,1fr)', gap:12, marginBottom:20 }}>
+        <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(5,1fr)', gap:12, marginBottom:20 }}>
           {[
             { label:'Status',       val:<span style={{ color:si.color, background:si.bg, borderRadius:5, padding:'2px 8px', fontSize:12, fontWeight:600 }}>{si.label}</span> },
             { label:'Started',      val:selected.startDate ? new Date(selected.startDate).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'}) : '—' },
@@ -9567,6 +9784,7 @@ function StudentView({ state, update, isMobile }) {
                 : days<0  ? <span style={{ color:'var(--danger)',   fontWeight:600 }}>{Math.abs(days)}d overdue</span>
                 : days===0? <span style={{ color:'var(--warning)',  fontWeight:600 }}>Today!</span>
                 :           <span style={{ color:days<7?'var(--warning)':'var(--text-primary)', fontWeight:600 }}>{days}d</span> },
+            { label:'Studied',      val:courseStudySecs(selected.id) > 0 ? fmtStudy(courseStudySecs(selected.id)) : '—' },
           ].map(({ label, val }) => (
             <div key={label} className="card" style={{ padding:'12px 16px' }}>
               <div style={{ fontSize:10, fontWeight:700, letterSpacing:'.07em', color:'var(--text-secondary)', textTransform:'uppercase', marginBottom:5 }}>{label}</div>
@@ -9585,6 +9803,8 @@ function StudentView({ state, update, isMobile }) {
             <div style={{ height:'100%', width:`${pct}%`, background:`linear-gradient(90deg,${accent}99,${accent})`, borderRadius:99, transition:'width .4s var(--ease)' }}/>
           </div>
         </div>
+
+        {timerJsx(true, selected.id)}
 
         <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:20, alignItems:'start' }}>
           {/* Modules */}
@@ -9773,6 +9993,12 @@ function StudentView({ state, update, isMobile }) {
   const lessonsDone = courses.reduce((s, c) => s + doneLessons(c), 0);
   const hour        = new Date().getHours();
   const greeting    = hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
+  const userName    = profileName(state);
+  const saveName    = v => {
+    const name = v.trim().slice(0, 40);
+    if (name !== userName) update('profile', p => ({ ...(p || {}), name }));
+    setEditingName(false);
+  };
   const heroCls     = onScene ? 'cafe-on-scene' : undefined;
   const showBoard   = cafe.showUpNext && courses.length > 0;
   const shelfLabel  = { fontSize:10.5, fontWeight:700, letterSpacing:'.09em', textTransform:'uppercase', marginBottom:12, opacity:.85 };
@@ -9854,7 +10080,7 @@ function StudentView({ state, update, isMobile }) {
     <div style={{ maxWidth:1120, margin:'0 auto' }}>
       <div className={heroCls} style={{ display:'flex', alignItems:isMobile ? 'flex-start' : 'flex-end', flexDirection:isMobile ? 'column' : 'row', gap:isMobile ? 14 : 12, justifyContent:'space-between', marginBottom:isMobile ? 18 : 26 }}>
         <div>
-          <div style={{ display:'flex', alignItems:'center', gap:8, fontSize:12.5, fontWeight:600, opacity:.85, marginBottom:4 }}>
+          <div style={{ display:'flex', alignItems:'center', flexWrap:'wrap', gap:6, fontSize:12.5, fontWeight:600, opacity:.85, marginBottom:4 }}>
             <svg className="cafe-cup" viewBox="0 0 32 32" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               <path className="steam s1" d="M11 9c-1.2-1.4 1.2-2.6 0-4"/>
               <path className="steam s2" d="M15.5 9c-1.2-1.4 1.2-2.6 0-4"/>
@@ -9862,7 +10088,26 @@ function StudentView({ state, update, isMobile }) {
               <path d="M6 13h18v6a7 7 0 0 1-7 7h-4a7 7 0 0 1-7-7z"/>
               <path d="M24 15h1.5a3 3 0 0 1 0 6H23"/>
             </svg>
-            <span>{greeting} · {new Date().toLocaleDateString('en-GB', { weekday:'long', day:'numeric', month:'long' })}</span>
+            <span>{greeting}{editingName ? ',' : userName ? `, ${userName}` : ''}</span>
+            {editingName ? (
+              <input autoFocus defaultValue={userName} maxLength={40} placeholder="Your name" aria-label="Your name"
+                className="cafe-name-input"
+                onBlur={e => saveName(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter') e.currentTarget.blur();
+                  if (e.key === 'Escape') { e.currentTarget.value = userName; e.currentTarget.blur(); }
+                }}/>
+            ) : (
+              <button type="button" className="cafe-name-btn" onClick={() => setEditingName(true)}
+                aria-label={userName ? 'Change your name' : 'Add your name'} title={userName ? 'Change your name' : 'Add your name'}>
+                {userName
+                  ? <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+                  : '+ Add your name'}
+              </button>
+            )}
+            <span style={isMobile ? { flexBasis:'100%', paddingLeft:26 } : undefined}>
+              {isMobile ? '' : '· '}{new Date().toLocaleDateString('en-GB', { weekday:'long', day:'numeric', month:'long' })}
+            </span>
           </div>
           <div style={{ fontFamily:'Fraunces,serif', fontSize:isMobile ? 26 : 34, fontWeight:600, lineHeight:1.1 }}>Student Hub</div>
           <div style={{ fontSize:13, opacity:.78, marginTop:5 }}>Pull up a chair — your courses, lessons and deadlines.</div>
@@ -9881,15 +10126,18 @@ function StudentView({ state, update, isMobile }) {
       </div>
 
       {courses.length === 0 ? (
-        <div className="card" style={{ textAlign:'center', padding:'48px 20px', maxWidth:520, margin:'12px auto 0' }}>
-          <div style={{ fontSize:44, marginBottom:10 }}>☕</div>
-          <div style={{ fontFamily:'Fraunces,serif', fontSize:19, fontWeight:600, color:'var(--text-primary)', marginBottom:6 }}>Your table's free</div>
-          <div style={{ fontSize:13, color:'var(--text-secondary)', marginBottom:20 }}>Add a course to start tracking lessons, assignments and deadlines.</div>
-          <button onClick={openAdd} className="btn-primary">Add first course</button>
+        <div className="cafe-top no-board">
+          <div className="card" style={{ textAlign:'center', padding:'48px 20px' }}>
+            <div style={{ fontSize:44, marginBottom:10 }}>☕</div>
+            <div style={{ fontFamily:'Fraunces,serif', fontSize:19, fontWeight:600, color:'var(--text-primary)', marginBottom:6 }}>Your table's free</div>
+            <div style={{ fontSize:13, color:'var(--text-secondary)', marginBottom:20 }}>Add a course to start tracking lessons, assignments and deadlines.</div>
+            <button onClick={openAdd} className="btn-primary">Add first course</button>
+          </div>
+          {timerJsx(false)}
         </div>
       ) : (
-        <div style={{ display:'grid', gridTemplateColumns:!isMobile && showBoard ? 'minmax(170px,230px) minmax(0,1fr)' : '1fr', gap:14, marginBottom:30 }}>
-          <div style={{ display:'grid', gridTemplateColumns:!isMobile && showBoard ? '1fr' : 'repeat(3,1fr)', gap:10 }}>
+        <div className={`cafe-top${showBoard ? '' : ' no-board'}`}>
+          <div className="cafe-stats">
             {stats.map(s => (
               <div key={s.label} className="card cafe-stat">
                 <span style={{ fontFamily:'Fraunces,serif', fontSize:22, fontWeight:600, color:'var(--text-primary)', lineHeight:1.1 }}>{s.n}</span>
@@ -9898,6 +10146,7 @@ function StudentView({ state, update, isMobile }) {
             ))}
           </div>
           {boardJsx}
+          {timerJsx(false)}
         </div>
       )}
 
@@ -10396,7 +10645,8 @@ function App() {
         </div>
       )}
       {mediaReq && <MediaPanel req={mediaReq} state={state} update={update} isMobile={isMobile} onClose={()=>setMediaReq(null)}/>}
-      <PomodoroWidget pom={pom} setPom={setPom} tasks={state.tasks} update={update} isMobile={isMobile}/>
+      <PomodoroWidget pom={pom} setPom={setPom} tasks={state.tasks} update={update} isMobile={isMobile}
+        hidden={state.ui.view==='student'}/>
     </div>
   );
 }
